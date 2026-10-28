@@ -39,7 +39,7 @@ class RepeatPlan(Model):
     repetitions: Annotated[int, Field(ge=1, le=100)] = 1
     duration_seconds: Annotated[FiniteFloat, Field(gt=0, le=3600)]
     pause_seconds: Annotated[FiniteFloat, Field(ge=0, le=3600)] = 0
-    allow_foreground: bool = False
+    allow_foreground: bool = True
 
 
 class RunReceipt(Model):

@@ -59,11 +59,11 @@ def capstone_recording_status(handle: int) -> RecordingStatus:
 
 @MCP.tool()
 def capstone_set_recording(
-    handle: int, *, recording: bool, allow_foreground: bool = False,
+    handle: int, *, recording: bool, allow_foreground: bool = True,
 ) -> RecordingRequest:
     """Request start/stop only when the observed state differs from the request.
 
-    Requires configured hardware/data sources and explicit foreground input.
+    Requires configured hardware/data sources. Foreground input is enabled by default.
     transition_pending=true means the requested state has not yet been observed;
     it is not a claim that acquisition succeeded.
     """
@@ -76,7 +76,7 @@ def capstone_set_recording(
 @MCP.tool()
 def capstone_step_sampling_rate(
     handle: int, direction: Literal["increase", "decrease"], expected_sensor: str,
-    *, allow_foreground: bool = False,
+    *, allow_foreground: bool = True,
 ) -> SamplingRateChange:
     """Move one supported rate step for the explicitly named selected sensor.
 
@@ -95,8 +95,8 @@ def capstone_repeat_acquisition(plan: RepeatPlan) -> JobStatus:
     """Start bounded repeated runs, confirming native start/stop events each cycle.
 
     Requires the debug endpoint and UI to belong to the same Capstone process,
-    an enabled recording source, and explicit foreground opt-in. Runs remain in
-    Capstone; save the experiment separately before extracting their arrays.
+    and an enabled recording source. Foreground input is enabled by default.
+    Runs remain in Capstone; save the experiment before extracting their arrays.
     """
     return JOBS.start(plan)
 
@@ -266,11 +266,11 @@ def capstone_snapshot(
 
 @MCP.tool()
 def capstone_action(
-    ref: str, action: Action, *, allow_foreground: bool = False,
+    ref: str, action: Action, *, allow_foreground: bool = True,
 ) -> Result:
     """Activate by click (invoke), or use UIA toggle/select/expand/collapse/focus.
 
-    Invoke requires allow_foreground=true. Avoids Capstone's blocking modal
+    Foreground input defaults to true. Avoids Capstone's blocking modal
     InvokePattern provider; this is physical input, not background UIA Invoke.
     """
     JOBS.require_idle()
@@ -299,9 +299,9 @@ def capstone_screenshot(handle: int) -> Image:
 @MCP.tool()
 def capstone_click(
     handle: int, point: Point, button: Button = Button.LEFT,
-    *, double: bool = False, allow_foreground: bool = False,
+    *, double: bool = False, allow_foreground: bool = True,
 ) -> Result:
-    """Click window-relative pixels. Requires explicit foreground input opt-in."""
+    """Click window-relative pixels; foreground input is enabled by default."""
     JOBS.require_idle()
     if not allow_foreground:
         msg = "Physical input changes focus. Set allow_foreground=true explicitly."
@@ -322,7 +322,7 @@ def capstone_click(
 
 @MCP.tool()
 def capstone_drag(
-    handle: int, start: Point, end: Point, *, allow_foreground: bool = False,
+    handle: int, start: Point, end: Point, *, allow_foreground: bool = True,
 ) -> Result:
     """Drag between window-relative pixels, releasing the button even on failure."""
     JOBS.require_idle()
@@ -355,7 +355,7 @@ def capstone_drag(
 def capstone_scroll(
     handle: int, point: Point,
     notches: Annotated[int, Field(ge=-100, le=100)],
-    *, allow_foreground: bool = False,
+    *, allow_foreground: bool = True,
 ) -> Result:
     """Scroll at window-relative pixels; positive notches scroll upward."""
     JOBS.require_idle()
@@ -377,7 +377,7 @@ def capstone_scroll(
 
 @MCP.tool()
 def capstone_keys(
-    handle: int, keys: str, *, allow_foreground: bool = False,
+    handle: int, keys: str, *, allow_foreground: bool = True,
 ) -> Result:
     """Send pywinauto key syntax: ^o, {ESC}, {ENTER}, %{F4}. Changes focus."""
     JOBS.require_idle()
@@ -386,7 +386,7 @@ def capstone_keys(
 
 @MCP.tool()
 def capstone_type_text(
-    handle: int, text: str, *, allow_foreground: bool = False,
+    handle: int, text: str, *, allow_foreground: bool = True,
 ) -> Result:
     """Type literal Unicode text in the focused field, escaping shortcut syntax."""
     JOBS.require_idle()

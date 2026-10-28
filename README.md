@@ -57,7 +57,7 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 
 앱 연결 → 창 조회 → 스냅샷 → 조작
 
-실제 입력에는 `allow_foreground=true`가 필요합니다. 스냅샷의 참조값은 새 조회나 조작 후 만료됩니다.
+조작할 때 Capstone 창을 자동으로 활성화합니다. 이를 막으려면 `allow_foreground=false`를 지정하세요. 스냅샷의 참조값은 새 조회나 조작 후 만료됩니다.
 
 <details>
 <summary><strong>주요 도구</strong></summary>

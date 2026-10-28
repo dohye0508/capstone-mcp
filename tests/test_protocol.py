@@ -21,6 +21,18 @@ class WindowsResult(BaseModel):
     result: list[Window]
 
 
+class ForegroundDefault(BaseModel):
+    default: bool
+
+
+class InputProperties(BaseModel):
+    allow_foreground: ForegroundDefault
+
+
+class ForegroundSchema(BaseModel):
+    properties: InputProperties
+
+
 async def exercise_protocol() -> None:
     # Given: a real MCP subprocess and the installed, running Capstone.
     parameters = StdioServerParameters(
@@ -36,6 +48,16 @@ async def exercise_protocol() -> None:
             _ = await session.initialize()
             tools = await session.list_tools()
             assert len(tools.tools) >= 9
+            input_tools = {
+                "capstone_action", "capstone_click", "capstone_drag",
+                "capstone_scroll", "capstone_keys", "capstone_type_text",
+                "capstone_set_recording", "capstone_step_sampling_rate",
+            }
+            advertised = [tool for tool in tools.tools if tool.name in input_tools]
+            assert {tool.name for tool in advertised} == input_tools
+            for tool in advertised:
+                schema = ForegroundSchema.model_validate(tool.inputSchema)
+                assert schema.properties.allow_foreground.default is True
             attached = await session.call_tool("capstone_attach")
             assert not attached.isError
             windows = WindowsResult.model_validate(attached.structuredContent).result

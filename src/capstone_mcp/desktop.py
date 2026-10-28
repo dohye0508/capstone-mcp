@@ -150,7 +150,7 @@ class Capstone:
         return node
 
     def act(
-        self, ref: str, action: Action, *, allow_foreground: bool = False,
+        self, ref: str, action: Action, *, allow_foreground: bool = True,
     ) -> Result:
         """Activate by physical click; use UIA for non-invoke control patterns."""
         node = self.control(ref)
@@ -200,10 +200,10 @@ class Capstone:
             return output.getvalue()
 
     def keys(
-        self, handle: int, keys: str, *, allow_foreground: bool,
+        self, handle: int, keys: str, *, allow_foreground: bool = True,
         unicode_input: bool = False,
     ) -> Result:
-        """Send explicit key syntax after foreground input opt-in."""
+        """Send key syntax with foreground input enabled unless explicitly disabled."""
         if not allow_foreground:
             msg = "Keyboard input changes focus. Set allow_foreground=true explicitly."
             raise AutomationError(msg)

@@ -90,7 +90,7 @@ def test_start_reports_observed_state_not_just_input_delivery(
     install_observer(monkeypatch, app)
     # When
     result = acquisition.request_recording(
-        app, 1, recording=True, allow_foreground=True,
+        app, 1, recording=True,
     )
     # Then
     assert app.calls == 1
@@ -146,7 +146,7 @@ def test_rate_step_reports_native_change(monkeypatch: pytest.MonkeyPatch) -> Non
     app = RateAdapter()
     install_observer(monkeypatch, app)
     result = acquisition.step_sampling_rate(
-        app, 1, "increase", expected_sensor="Blue", allow_foreground=True,
+        app, 1, "increase", expected_sensor="Blue",
     )
     assert (result.before, result.after, result.changed) == ("50 Hz", "100 Hz", True)
     assert app.calls == 1

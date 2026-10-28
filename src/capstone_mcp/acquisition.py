@@ -43,7 +43,7 @@ class SamplingRateChange(Model):
 
 def step_sampling_rate(
     app: Capstone, handle: int, direction: Literal["increase", "decrease"],
-    *, expected_sensor: str, allow_foreground: bool,
+    *, expected_sensor: str, allow_foreground: bool = True,
 ) -> SamplingRateChange:
     """Click one native rate step, checking the selected sensor and stopped state."""
     state, _ = observe_recording(app, handle)
@@ -115,7 +115,7 @@ def observe_recording(app: Capstone, handle: int) -> tuple[RecordingStatus, str]
 
 
 def request_recording(
-    app: Capstone, handle: int, *, recording: bool, allow_foreground: bool,
+    app: Capstone, handle: int, *, recording: bool, allow_foreground: bool = True,
 ) -> RecordingRequest:
     """Request one idempotent start or stop; never toggle an already-correct state."""
     observed, ref = observe_recording(app, handle)
