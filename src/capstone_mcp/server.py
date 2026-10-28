@@ -31,6 +31,14 @@ from capstone_mcp.capfile_models import (
 )
 from capstone_mcp.capfiles import extract_cap_datasets, read_cap_configuration
 from capstone_mcp.desktop import AutomationError, Capstone
+from capstone_mcp.experiment_analysis import (
+    CapLinearFitRequest,
+    CapLinearFitResult,
+    CapRunComparisonRequest,
+    CapRunComparisonResult,
+    compare_cap_datasets,
+    fit_cap_datasets,
+)
 from capstone_mcp.models import Action, Button, Point, Result, Snapshot, Window
 from capstone_mcp.plotting import PlotInput, render_plot
 from capstone_mcp.repetition import AcquisitionJobs, JobStatus, RepeatPlan
@@ -224,6 +232,22 @@ def capstone_extract_dataset(
         independent_values=dataset.independent_values[offset:end],
         independent_kind=dataset.independent_kind,
     )
+
+
+@MCP.tool()
+def capstone_fit_file(
+    path: str, request: CapLinearFitRequest,
+) -> CapLinearFitResult:
+    """Extract and fit two explicit saved datasets, returning their full provenance."""
+    return fit_cap_datasets(path, request)
+
+
+@MCP.tool()
+def capstone_compare_file(
+    path: str, request: CapRunComparisonRequest,
+) -> CapRunComparisonResult:
+    """Extract and compare saved datasets with matching declared unit IDs."""
+    return compare_cap_datasets(path, request)
 
 
 @MCP.tool()

@@ -69,6 +69,7 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 | 실험 파일 조회 | `capstone_inspect_file`, `capstone_file_datasets` |
 | 수치 추출 | `capstone_extract_dataset` |
 | 그래프·피팅·비교 | `capstone_plot`, `capstone_linear_fit`, `capstone_compare_runs` |
+| 파일에서 바로 분석 | `capstone_fit_file`, `capstone_compare_file` |
 | 실시간 조회 | `capstone_live_configuration`, `capstone_current_value` |
 | 측정 상태·시작·정지 | `capstone_recording_status`, `capstone_set_recording` |
 | 샘플링 속도 조절 | `capstone_step_sampling_rate` |
@@ -77,7 +78,7 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 
 </details>
 
-`capstone_configure_sensor`에 센서 이름과 `target: "100 Hz"`를 전달하면 해당 센서를 선택하고 지원되는 속도로 설정합니다.
+`capstone_configure_sensor`에 센서 이름과 `target: "100 Hz"`를 전달하면 해당 센서를 선택하고 지원되는 속도로 설정합니다. 파일 분석 도구는 데이터셋 인덱스나 ID로 선택하며, 결과에 원본 데이터셋과 단위 정보를 함께 반환합니다.
 
 <details>
 <summary><strong>실시간 조회·반복 측정 설정</strong></summary>
