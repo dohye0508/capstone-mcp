@@ -1,0 +1,3 @@
+from win32job import Handle
+
+def OpenProcess(access: int, inherit: int, process_id: int) -> Handle: ...

@@ -1,19 +1,20 @@
 # Copyright 2026 Capstone MCP contributors.
 """Stdio MCP entry point for Capstone UI inspection and operation."""
 
+import base64
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, nullcontext
 from typing import Annotated, Final, Literal
 from uuid import UUID
 
+import anyio
 from mcp.server.fastmcp import FastMCP, Image
-from pydantic import Field
+from pydantic import Field, JsonValue, TypeAdapter
 
 from capstone_mcp.acquisition import (
     RecordingRequest,
     RecordingStatus,
     SamplingRateChange,
-    observe_recording,
-    request_recording,
-    step_sampling_rate,
 )
 from capstone_mcp.analysis import (
     FitInput,
@@ -23,6 +24,8 @@ from capstone_mcp.analysis import (
     compare_runs,
     linear_fit,
 )
+from capstone_mcp.automation_models import NativeRequest
+from capstone_mcp.automation_worker import AutomationWorker
 from capstone_mcp.bridge import NativeInventory, read_inventory, read_measurement
 from capstone_mcp.capfile_models import (
     CapConfiguration,
@@ -30,7 +33,8 @@ from capstone_mcp.capfile_models import (
     CapDatasetSummary,
 )
 from capstone_mcp.capfiles import extract_cap_datasets, read_cap_configuration
-from capstone_mcp.desktop import AutomationError, Capstone
+from capstone_mcp.csv_data import CsvPage, read_csv_page
+from capstone_mcp.desktop import AutomationError
 from capstone_mcp.experiment_analysis import (
     CapLinearFitRequest,
     CapLinearFitResult,
@@ -39,7 +43,8 @@ from capstone_mcp.experiment_analysis import (
     compare_cap_datasets,
     fit_cap_datasets,
 )
-from capstone_mcp.models import Action, Button, Point, Result, Snapshot, Window
+from capstone_mcp.file_workflows import FileArtifact
+from capstone_mcp.models import Action, Button, Model, Point, Result, Snapshot, Window
 from capstone_mcp.plotting import PlotInput, render_plot
 from capstone_mcp.repetition import AcquisitionJobs, JobStatus, RepeatPlan
 from capstone_mcp.sensor_settings import (
@@ -47,16 +52,37 @@ from capstone_mcp.sensor_settings import (
     SensorConfiguration,
     SensorSelection,
     SensorSelectionRequest,
-    select_sensor,
-    target_sampling_rate,
 )
 
-APP: Final = Capstone()
+WORKER: Final = AutomationWorker()
 JOBS: Final = AcquisitionJobs()
+WINDOWS: Final = TypeAdapter(list[Window])
+TEXT: Final = TypeAdapter(str)
+
+
+@asynccontextmanager
+async def _lifespan(_server: FastMCP[None]) -> AsyncGenerator[None, None]:
+    try:
+        yield
+    finally:
+        try:
+            await anyio.to_thread.run_sync(JOBS.close)
+        finally:
+            await anyio.to_thread.run_sync(WORKER.close)
+
+
+async def _native(request: NativeRequest, *, mutates: bool = False) -> JsonValue:
+    with JOBS.interaction() if mutates else nullcontext():
+        if request.operation == "attach" and WORKER.retired:
+            await anyio.to_thread.run_sync(WORKER.reset)
+        return await anyio.to_thread.run_sync(WORKER.call, request)
+
+
 MCP: Final = FastMCP(
     "capstone",
     host="127.0.0.1",
     port=8766,
+    lifespan=_lifespan,
     instructions=(
         "Attach, list windows, then snapshot before acting. References expire after "
         "a new snapshot or action. Inspect again to verify outcomes. Window handles "
@@ -66,15 +92,68 @@ MCP: Final = FastMCP(
 )
 
 
+class ExportedData(Model):
+    """Verified native export and a bounded page of its actual text values."""
+
+    artifact: FileArtifact
+    data: CsvPage
+
+
 @MCP.tool()
-def capstone_recording_status(handle: int) -> RecordingStatus:
+async def capstone_save_experiment(
+    handle: int, path: str, *, allow_foreground: bool = True,
+) -> FileArtifact:
+    """Save As to a new .cap path and verify the completed archive.
+
+    Never overwrites an existing file. The active experiment adopts the new path.
+    Close existing dialogs before calling.
+    """
+    return FileArtifact.model_validate(await _native(NativeRequest(
+        operation="save_experiment", handle=handle, value=path,
+        allow_foreground=allow_foreground,
+    ), mutates=True))
+
+
+@MCP.tool()
+async def capstone_export_data(
+    handle: int, path: str,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    limit: Annotated[int, Field(ge=1, le=10_000)] = 1000,
+    *, allow_foreground: bool = True,
+) -> ExportedData:
+    """Read unsaved data by native CSV export to a new path, without saving .cap.
+
+    Selects all data and aligns by index. CSV uses Capstone's configured display
+    precision, not lossless cache values. Headers preserve native labels; source
+    IDs and time alignment are not inferred. The entire CSV remains at path.
+    """
+    artifact = FileArtifact.model_validate(await _native(NativeRequest(
+        operation="export_data", handle=handle, value=path,
+        allow_foreground=allow_foreground,
+    ), mutates=True))
+    data = await anyio.to_thread.run_sync(read_csv_page, artifact.path, offset, limit)
+    return ExportedData(artifact=artifact, data=data)
+
+
+@MCP.tool()
+async def capstone_csv_page(
+    path: str, offset: Annotated[int, Field(ge=0)] = 0,
+    limit: Annotated[int, Field(ge=1, le=10_000)] = 1000,
+) -> CsvPage:
+    """Read another page of an existing CSV without repeating native export."""
+    return await anyio.to_thread.run_sync(read_csv_page, path, offset, limit)
+
+
+@MCP.tool()
+async def capstone_recording_status(handle: int) -> RecordingStatus:
     """Read actual recording toggle, enabled state, and displayed time/rate."""
-    state, _ = observe_recording(APP, handle)
-    return state
+    return RecordingStatus.model_validate(await _native(NativeRequest(
+        operation="recording_status", handle=handle,
+    )))
 
 
 @MCP.tool()
-def capstone_set_recording(
+async def capstone_set_recording(
     handle: int, *, recording: bool, allow_foreground: bool = True,
 ) -> RecordingRequest:
     """Request start/stop only when the observed state differs from the request.
@@ -83,14 +162,14 @@ def capstone_set_recording(
     transition_pending=true means the requested state has not yet been observed;
     it is not a claim that acquisition succeeded.
     """
-    JOBS.require_idle()
-    return request_recording(
-        APP, handle, recording=recording, allow_foreground=allow_foreground,
-    )
+    return RecordingRequest.model_validate(await _native(NativeRequest(
+        operation="set_recording", handle=handle, recording=recording,
+        allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_step_sampling_rate(
+async def capstone_step_sampling_rate(
     handle: int, direction: Literal["increase", "decrease"], expected_sensor: str,
     *, allow_foreground: bool = True,
 ) -> SamplingRateChange:
@@ -99,24 +178,26 @@ def capstone_step_sampling_rate(
     Read the sensor name from a fresh snapshot. Uses Capstone's native discrete
     rate buttons, not a guessed frequency setter; recording must be stopped.
     """
-    JOBS.require_idle()
-    return step_sampling_rate(
-        APP, handle, direction, expected_sensor=expected_sensor,
+    return SamplingRateChange.model_validate(await _native(NativeRequest(
+        operation="step_sampling_rate", handle=handle, direction=direction,
+        sensor=expected_sensor,
         allow_foreground=allow_foreground,
-    )
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_select_sensor(
+async def capstone_select_sensor(
     handle: int, request: SensorSelectionRequest,
 ) -> SensorSelection:
     """Select one exact sensor name from the current sampling menu and verify it."""
-    JOBS.require_idle()
-    return select_sensor(APP, handle, request)
+    return SensorSelection.model_validate(await _native(NativeRequest(
+        operation="select_sensor", handle=handle, sensor=request.sensor,
+        allow_foreground=request.allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_configure_sensor(
+async def capstone_configure_sensor(
     handle: int, request: SamplingRateRequest,
 ) -> SensorConfiguration:
     """Select the named sensor and reach a supported rate such as 100 Hz.
@@ -124,26 +205,24 @@ def capstone_configure_sensor(
     The target unit must match the native display. Unsupported targets restore
     the selected sensor's original rate rather than silently rounding.
     """
-    JOBS.require_idle()
-    selection = select_sensor(
-        APP, handle,
-        SensorSelectionRequest(
-            sensor=request.sensor, allow_foreground=request.allow_foreground,
-        ),
-    )
-    rate = target_sampling_rate(APP, handle, request)
-    return SensorConfiguration(selection=selection, rate=rate)
+    return SensorConfiguration.model_validate(await _native(NativeRequest(
+        operation="configure_sensor", handle=handle, sensor=request.sensor,
+        target=request.target, step_limit=request.step_limit,
+        allow_foreground=request.allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_repeat_acquisition(plan: RepeatPlan) -> JobStatus:
+async def capstone_repeat_acquisition(plan: RepeatPlan) -> JobStatus:
     """Start bounded repeated runs, confirming native start/stop events each cycle.
 
     Requires the debug endpoint and UI to belong to the same Capstone process,
     and an enabled recording source. Foreground input is enabled by default.
-    Runs remain in Capstone; save the experiment before extracting their arrays.
+    With plan.capture, saves a baseline and each stopped run to a new directory.
+    Optional source-ID fitting analyzes only newly attributed samples and compares
+    completed runs. Without capture, results remain in Capstone.
     """
-    return JOBS.start(plan)
+    return await anyio.to_thread.run_sync(JOBS.start, plan)
 
 
 @MCP.tool()
@@ -273,7 +352,7 @@ def capstone_compare_runs(
 
 
 @MCP.tool()
-def capstone_live_configuration(
+async def capstone_live_configuration(
     debug_port: Annotated[int, Field(ge=1024, le=65535)] = 9223,
 ) -> NativeInventory:
     """Read native sensor/measurement metadata without screen scraping.
@@ -282,11 +361,11 @@ def capstone_live_configuration(
     This returns the application's configured metadata, not proof that every
     listed sensor is physically connected.
     """
-    return read_inventory(debug_port)
+    return await anyio.to_thread.run_sync(read_inventory, debug_port)
 
 
 @MCP.tool()
-def capstone_current_value(
+async def capstone_current_value(
     measurement_euid: UUID,
     unit_type: Annotated[int, Field(ge=0)],
     debug_port: Annotated[int, Field(ge=1024, le=65535)] = 9223,
@@ -296,37 +375,42 @@ def capstone_current_value(
     Unavailable values raise an error rather than returning a fabricated zero.
     This is not an extraction of an entire recorded run.
     """
-    return read_measurement(debug_port, "{" + str(measurement_euid) + "}", unit_type)
+    return await anyio.to_thread.run_sync(
+        read_measurement, debug_port, "{" + str(measurement_euid) + "}", unit_type,
+    )
 
 
 @MCP.tool()
-def capstone_attach(
+async def capstone_attach(
     *, launch: bool = False,
     process_id: Annotated[int, Field(gt=0)] | None = None,
 ) -> list[Window]:
     """Attach to installed Capstone, optionally selecting an exact process ID."""
-    JOBS.require_idle()
-    return APP.attach(launch=launch, process_id=process_id)
+    return WINDOWS.validate_python(await _native(NativeRequest(
+        operation="attach", launch=launch, process_id=process_id,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_windows() -> list[Window]:
+async def capstone_windows() -> list[Window]:
     """List Capstone windows, including file dialogs and modal dialogs."""
-    return APP.windows()
+    return WINDOWS.validate_python(await _native(NativeRequest(operation="windows")))
 
 
 @MCP.tool()
-def capstone_snapshot(
+async def capstone_snapshot(
     handle: int,
     depth: Annotated[int, Field(ge=1, le=30)] = 12,
     limit: Annotated[int, Field(ge=1, le=3000)] = 800,
 ) -> Snapshot:
     """Read control names, roles, bounds, and fresh action references."""
-    return APP.snapshot(handle, depth, limit)
+    return Snapshot.model_validate(await _native(NativeRequest(
+        operation="snapshot", handle=handle, depth=depth, limit=limit,
+    )))
 
 
 @MCP.tool()
-def capstone_action(
+async def capstone_action(
     ref: str, action: Action, *, allow_foreground: bool = True,
 ) -> Result:
     """Activate by click (invoke), or use UIA toggle/select/expand/collapse/focus.
@@ -334,129 +418,94 @@ def capstone_action(
     Foreground input defaults to true. Avoids Capstone's blocking modal
     InvokePattern provider; this is physical input, not background UIA Invoke.
     """
-    JOBS.require_idle()
-    return APP.act(ref, action, allow_foreground=allow_foreground)
+    return Result.model_validate(await _native(NativeRequest(
+        operation="action", ref=ref, action=action, allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_read_value(ref: str) -> str:
+async def capstone_read_value(ref: str) -> str:
     """Read literal current text from a control's UIA Value pattern."""
-    return APP.control(ref).iface_value.CurrentValue
+    return TEXT.validate_python(await _native(NativeRequest(
+        operation="read_value", ref=ref,
+    )))
 
 
 @MCP.tool()
-def capstone_set_value(ref: str, value: str) -> Result:
+async def capstone_set_value(ref: str, value: str) -> Result:
     """Set literal text in a control supporting the UIA Value pattern."""
-    JOBS.require_idle()
-    return APP.set_value(ref, value)
+    return Result.model_validate(await _native(NativeRequest(
+        operation="set_value", ref=ref, value=value,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_screenshot(handle: int) -> Image:
+async def capstone_screenshot(handle: int) -> Image:
     """Capture PNG pixels at native resolution; does not raise the window."""
-    return Image(data=APP.screenshot(handle), format="png")
+    encoded = TEXT.validate_python(await _native(NativeRequest(
+        operation="screenshot", handle=handle,
+    )))
+    return Image(data=base64.b64decode(encoded, validate=True), format="png")
 
 
 @MCP.tool()
-def capstone_click(
+async def capstone_click(
     handle: int, point: Point, button: Button = Button.LEFT,
     *, double: bool = False, allow_foreground: bool = True,
 ) -> Result:
     """Click window-relative pixels; foreground input is enabled by default."""
-    JOBS.require_idle()
-    if not allow_foreground:
-        msg = "Physical input changes focus. Set allow_foreground=true explicitly."
-        raise AutomationError(msg)
-    window = APP.focus_window(handle)
-    rect = window.rectangle()
-    x, y = point.x, point.y
-    if not (0 <= x < rect.right - rect.left and 0 <= y < rect.bottom - rect.top):
-        msg = "Coordinates must be inside the current window rectangle."
-        raise AutomationError(msg)
-    window.click_input(
-        button=button.value, coords=(rect.left + x, rect.top + y),
-        double=double, absolute=True,
-    )
-    APP.refs.clear()
-    return Result(detail="Click delivered; inspect the window to verify.")
+    return Result.model_validate(await _native(NativeRequest(
+        operation="click", handle=handle, point=point, button=button,
+        double=double, allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_drag(
+async def capstone_drag(
     handle: int, start: Point, end: Point, *, allow_foreground: bool = True,
 ) -> Result:
-    """Drag between window-relative pixels, releasing the button even on failure."""
-    JOBS.require_idle()
-    if not allow_foreground:
-        msg = "Dragging changes focus. Set allow_foreground=true explicitly."
-        raise AutomationError(msg)
-    window = APP.focus_window(handle)
-    rect = window.rectangle()
-    for point in (start, end):
-        if not (
-            0 <= point.x < rect.right - rect.left
-            and 0 <= point.y < rect.bottom - rect.top
-        ):
-            msg = "Both drag endpoints must be inside the window."
-            raise AutomationError(msg)
-    try:
-        _ = window.drag_mouse_input(
-            src=(rect.left + start.x, rect.top + start.y),
-            dst=(rect.left + end.x, rect.top + end.y), absolute=True,
-        )
-    finally:
-        _ = window.release_mouse_input(
-            coords=(rect.left + end.x, rect.top + end.y), absolute=True,
-        )
-        APP.refs.clear()
-    return Result(detail="Drag delivered; inspect to verify.")
+    """Drag between window-relative pixels; hard timeout leaves outcome uncertain."""
+    return Result.model_validate(await _native(NativeRequest(
+        operation="drag", handle=handle, point=start, end=end,
+        allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_scroll(
+async def capstone_scroll(
     handle: int, point: Point,
     notches: Annotated[int, Field(ge=-100, le=100)],
     *, allow_foreground: bool = True,
 ) -> Result:
     """Scroll at window-relative pixels; positive notches scroll upward."""
-    JOBS.require_idle()
-    if not allow_foreground:
-        msg = "Scrolling changes focus. Set allow_foreground=true explicitly."
-        raise AutomationError(msg)
-    window = APP.focus_window(handle)
-    rect = window.rectangle()
-    if not (
-        0 <= point.x < rect.right - rect.left
-        and 0 <= point.y < rect.bottom - rect.top
-    ):
-        msg = "Scroll position must be inside the window."
-        raise AutomationError(msg)
-    _ = window.wheel_mouse_input(coords=(point.x, point.y), wheel_dist=notches)
-    APP.refs.clear()
-    return Result(detail="Scroll delivered; inspect to verify.")
+    return Result.model_validate(await _native(NativeRequest(
+        operation="scroll", handle=handle, point=point, notches=notches,
+        allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_keys(
+async def capstone_keys(
     handle: int, keys: str, *, allow_foreground: bool = True,
 ) -> Result:
     """Send pywinauto key syntax: ^o, {ESC}, {ENTER}, %{F4}. Changes focus."""
-    JOBS.require_idle()
-    return APP.keys(handle, keys, allow_foreground=allow_foreground)
+    return Result.model_validate(await _native(NativeRequest(
+        operation="keys", handle=handle, value=keys, allow_foreground=allow_foreground,
+    ), mutates=True))
 
 
 @MCP.tool()
-def capstone_type_text(
+async def capstone_type_text(
     handle: int, text: str, *, allow_foreground: bool = True,
 ) -> Result:
     """Type literal Unicode text in the focused field, escaping shortcut syntax."""
-    JOBS.require_idle()
     escaped = "".join(
         "{" + char + "}" if char in "+^%~(){}" else char for char in text
     )
-    return APP.keys(
-        handle, escaped, allow_foreground=allow_foreground, unicode_input=True,
-    )
+    return Result.model_validate(await _native(NativeRequest(
+        operation="keys", handle=handle, value=escaped,
+        allow_foreground=allow_foreground, unicode_input=True,
+    ), mutates=True))
 
 
 def main() -> None:

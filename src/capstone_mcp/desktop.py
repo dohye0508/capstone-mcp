@@ -5,6 +5,7 @@ from io import BytesIO
 from itertools import islice
 from pathlib import Path
 from typing import Final, assert_never
+from uuid import uuid4
 
 import win32gui
 from PIL import ImageGrab
@@ -45,6 +46,7 @@ class Capstone:
     def __init__(self) -> None:
         """Start detached; never launch a program merely by importing the server."""
         self.pid: int | None = None
+        self.session_id: str = uuid4().hex
         self.generation: int = 0
         self.refs: dict[str, UIAWrapper] = {}
         self.window_cache: dict[int, UIAWrapper] = {}
@@ -112,7 +114,7 @@ class Capstone:
         truncated = False
         while pending and len(controls) < limit:
             node, parent, level = pending.pop()
-            ref = f"{self.generation}:{len(controls)}"
+            ref = f"{self.session_id}:{self.generation}:{len(controls)}"
             self.refs[ref] = node
             info = node.element_info
             controls.append(Control(

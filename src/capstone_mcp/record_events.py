@@ -57,7 +57,11 @@ def arm_transition(port: int, *, recording: bool) -> str:
       const listener = () => finish(true);
       event.AddListener(listener, host);
       timer = setTimeout(() => finish(false), 10000);
-      waits[{key}] = {{promise, dispose: () => finish(false)}};
+      const expiry = setTimeout(() => {{
+        finish(false);
+        delete waits[{key}];
+      }}, 120000);
+      waits[{key}] = {{promise, expiry, dispose: () => finish(false)}};
       return true;
     }})()"""
     if evaluate(port, script) is not True:
@@ -72,7 +76,7 @@ def await_transition(port: int, token: str, *, recording: bool) -> None:
     script = (
         "(async () => { const waits=window.__capstoneMcpWaits;"
         f"try {{ return await waits[{key}].promise; }}"
-        f"finally {{ delete waits[{key}]; }} }})()"
+        f"finally {{ clearTimeout(waits[{key}]?.expiry); delete waits[{key}]; }} }})()"
     )
     transition = Transition.model_validate(evaluate(port, script))
     if not transition.matched or transition.recording != recording:
@@ -85,6 +89,7 @@ def dispose_transition(port: int, token: str) -> None:
     key = json.dumps(token)
     _ = evaluate(port, (
         "(() => {const waits=window.__capstoneMcpWaits;"
-        f"if(waits && waits[{key}]){{ waits[{key}].dispose(); delete waits[{key}]; }}"
+        f"if(waits && waits[{key}]){{ clearTimeout(waits[{key}].expiry);"
+        f" waits[{key}].dispose(); delete waits[{key}]; }}"
         "return true;})()"
     ))

@@ -68,6 +68,8 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 | 컨트롤 조회·조작 | `capstone_snapshot`, `capstone_action` |
 | 실험 파일 조회 | `capstone_inspect_file`, `capstone_file_datasets` |
 | 수치 추출 | `capstone_extract_dataset` |
+| 실험 저장 | `capstone_save_experiment` |
+| 저장 전 데이터 내보내기 | `capstone_export_data`, `capstone_csv_page` |
 | 그래프·피팅·비교 | `capstone_plot`, `capstone_linear_fit`, `capstone_compare_runs` |
 | 파일에서 바로 분석 | `capstone_fit_file`, `capstone_compare_file` |
 | 실시간 조회 | `capstone_live_configuration`, `capstone_current_value` |
@@ -79,6 +81,8 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 </details>
 
 `capstone_configure_sensor`에 센서 이름과 `target: "100 Hz"`를 전달하면 해당 센서를 선택하고 지원되는 속도로 설정합니다. 파일 분석 도구는 데이터셋 인덱스나 ID로 선택하며, 결과에 원본 데이터셋과 단위 정보를 함께 반환합니다.
+
+반복 측정의 `plan.capture.directory`를 지정하면 기준 파일과 회차별 `.cap` 파일을 저장합니다. `plan.capture.fit`에 `x_source_euid`와 `y_source_euid`를 지정하면 새로 측정된 샘플만 피팅하고 회차별 결과를 비교합니다.
 
 <details>
 <summary><strong>실시간 조회·반복 측정 설정</strong></summary>
@@ -100,5 +104,7 @@ Remove-Item Env:QTWEBENGINE_REMOTE_DEBUGGING
 - 그래프와 피팅 결과는 별도로 반환하며 Capstone 페이지를 수정하지 않습니다.
 - 샘플 인덱스는 시간이 아닙니다. 분석할 데이터의 회차와 단위를 확인하세요.
 - 시작·정지·취소 요청 후에는 실제 상태를 확인해야 합니다.
-- 반복 측정 결과는 자동 저장하지 않습니다. Capstone에서 저장한 뒤 데이터를 추출하세요.
+- 저장·내보내기는 새 경로만 사용하며 기존 파일을 덮어쓰지 않습니다.
+- CSV는 Capstone의 표시 정밀도를 따릅니다. 원본 수치는 `.cap` 파일에서 추출하세요.
+- UIA가 멈추면 작업 프로세스만 종료하고 입력을 재시도하지 않습니다. 다시 연결해 앱 상태를 확인하세요.
 - 실시간 연결은 PASCO 공식 API가 아닌 내부 인터페이스를 사용합니다.
