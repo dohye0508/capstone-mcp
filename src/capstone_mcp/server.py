@@ -16,6 +16,7 @@ from capstone_mcp.acquisition import (
     RecordingStatus,
     SamplingRateChange,
 )
+from capstone_mcp.agent_instructions import INSTRUCTIONS
 from capstone_mcp.analysis import (
     FitInput,
     LinearFit,
@@ -83,12 +84,7 @@ MCP: Final = FastMCP(
     host="127.0.0.1",
     port=8766,
     lifespan=_lifespan,
-    instructions=(
-        "Attach, list windows, then snapshot before acting. References expire after "
-        "a new snapshot or action. Inspect again to verify outcomes. Window handles "
-        "are restricted to Capstone. Screenshots target the window HWND. "
-        "Ask the user before overwriting files or operating hardware."
-    ),
+    instructions=INSTRUCTIONS,
 )
 
 

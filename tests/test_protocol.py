@@ -12,6 +12,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import ImageContent
 from pydantic import BaseModel
 
+from capstone_mcp.agent_instructions import INSTRUCTIONS
 from capstone_mcp.models import Snapshot, Window
 
 ROOT: Final = str(Path(__file__).resolve().parents[1])
@@ -45,7 +46,8 @@ async def exercise_protocol() -> None:
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
         ):
-            _ = await session.initialize()
+            initialized = await session.initialize()
+            assert initialized.instructions == INSTRUCTIONS
             tools = await session.list_tools()
             assert len(tools.tools) >= 9
             input_tools = {
