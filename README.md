@@ -72,9 +72,12 @@ HTTP 연결은 `uv run capstone-mcp-http`로 실행한 뒤 `http://127.0.0.1:876
 | 실시간 조회 | `capstone_live_configuration`, `capstone_current_value` |
 | 측정 상태·시작·정지 | `capstone_recording_status`, `capstone_set_recording` |
 | 샘플링 속도 조절 | `capstone_step_sampling_rate` |
+| 센서 선택·목표 속도 설정 | `capstone_select_sensor`, `capstone_configure_sensor` |
 | 반복 측정·상태·취소 | `capstone_repeat_acquisition`, `capstone_acquisition_job`, `capstone_cancel_acquisition` |
 
 </details>
+
+`capstone_configure_sensor`에 센서 이름과 `target: "100 Hz"`를 전달하면 해당 센서를 선택하고 지원되는 속도로 설정합니다.
 
 <details>
 <summary><strong>실시간 조회·반복 측정 설정</strong></summary>

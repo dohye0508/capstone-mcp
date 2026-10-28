@@ -34,6 +34,14 @@ from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.models import Action, Button, Point, Result, Snapshot, Window
 from capstone_mcp.plotting import PlotInput, render_plot
 from capstone_mcp.repetition import AcquisitionJobs, JobStatus, RepeatPlan
+from capstone_mcp.sensor_settings import (
+    SamplingRateRequest,
+    SensorConfiguration,
+    SensorSelection,
+    SensorSelectionRequest,
+    select_sensor,
+    target_sampling_rate,
+)
 
 APP: Final = Capstone()
 JOBS: Final = AcquisitionJobs()
@@ -88,6 +96,35 @@ def capstone_step_sampling_rate(
         APP, handle, direction, expected_sensor=expected_sensor,
         allow_foreground=allow_foreground,
     )
+
+
+@MCP.tool()
+def capstone_select_sensor(
+    handle: int, request: SensorSelectionRequest,
+) -> SensorSelection:
+    """Select one exact sensor name from the current sampling menu and verify it."""
+    JOBS.require_idle()
+    return select_sensor(APP, handle, request)
+
+
+@MCP.tool()
+def capstone_configure_sensor(
+    handle: int, request: SamplingRateRequest,
+) -> SensorConfiguration:
+    """Select the named sensor and reach a supported rate such as 100 Hz.
+
+    The target unit must match the native display. Unsupported targets restore
+    the selected sensor's original rate rather than silently rounding.
+    """
+    JOBS.require_idle()
+    selection = select_sensor(
+        APP, handle,
+        SensorSelectionRequest(
+            sensor=request.sensor, allow_foreground=request.allow_foreground,
+        ),
+    )
+    rate = target_sampling_rate(APP, handle, request)
+    return SensorConfiguration(selection=selection, rate=rate)
 
 
 @MCP.tool()
