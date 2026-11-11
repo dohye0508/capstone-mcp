@@ -233,6 +233,10 @@ SAVE AND EXPORT
 - CSV is aligned by index and rounded to Capstone display precision. Do not call
   it lossless, infer source IDs from headers, or assume time synchronization.
   Prefer saved .cap extraction when stored numerical precision is needed.
+- capstone_open_experiment(handle, path) opens an existing .cap through File >
+  Open Experiment and replaces the current document. It refuses when the title
+  shows unsaved changes (*) unless discard_unsaved=true. Prefer it to typing
+  Ctrl+O and a path, which can be ignored while Capstone is still starting.
 """,
     "recording": """
 RECORDING AND JOB COMPLETION

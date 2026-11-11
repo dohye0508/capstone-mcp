@@ -50,7 +50,7 @@ from capstone_mcp.experiment_analysis import (
     compare_cap_datasets,
     fit_cap_datasets,
 )
-from capstone_mcp.file_workflows import FileArtifact
+from capstone_mcp.file_workflows import FileArtifact, OpenedExperiment
 from capstone_mcp.graph_execution import GraphCapture, GraphFailure
 from capstone_mcp.graph_report import GraphAnalysisReport, summarize_graph
 from capstone_mcp.graph_requests import (
@@ -312,6 +312,25 @@ async def capstone_save_experiment(
     return FileArtifact.model_validate(await _native(NativeRequest(
         operation="save_experiment", handle=handle, value=path,
         allow_foreground=allow_foreground,
+    ), mutates=True))
+
+
+@MCP.tool()
+async def capstone_open_experiment(
+    handle: int, path: str,
+    *, discard_unsaved: bool = False, allow_foreground: bool = True,
+) -> OpenedExperiment:
+    """Open an existing .cap in the attached Capstone, replacing its document.
+
+    Uses File > Open Experiment and confirms the result by the window title.
+    Prefer this to typing Ctrl+O and a path, which Capstone can ignore while it
+    is still starting. Refuses when the current experiment has unsaved changes
+    (title ends with *) unless discard_unsaved=true, which answers the save
+    prompt with Discard. Close existing dialogs before calling.
+    """
+    return OpenedExperiment.model_validate(await _native(NativeRequest(
+        operation="open_experiment", handle=handle, value=path,
+        discard_unsaved=discard_unsaved, allow_foreground=allow_foreground,
     ), mutates=True))
 
 

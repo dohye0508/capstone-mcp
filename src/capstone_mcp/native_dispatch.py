@@ -17,7 +17,11 @@ from capstone_mcp.acquisition import (
     step_sampling_rate,
 )
 from capstone_mcp.desktop import AutomationError, Capstone
-from capstone_mcp.file_workflows import export_data, save_experiment
+from capstone_mcp.file_workflows import (
+    export_data,
+    open_experiment,
+    save_experiment,
+)
 from capstone_mcp.graph_execution import (
     GRAPH_INPUT_OPERATIONS,
     GraphCapture,
@@ -122,6 +126,10 @@ class NativeDesktop:
             )),
             "export_data": lambda r: _json(export_data(
                 self.app, r.handle, r.value, allow_foreground=r.allow_foreground,
+            )),
+            "open_experiment": lambda r: _json(open_experiment(
+                self.app, r.handle, r.value, discard_unsaved=r.discard_unsaved,
+                allow_foreground=r.allow_foreground,
             )),
             "create_graph": lambda r: _json(create_graph(
                 self.app, r.handle, allow_foreground=r.allow_foreground,
