@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import psutil
 import win32gui
+import win32process
 from PIL import ImageGrab
 from pywinauto import Application, Desktop
 from pywinauto.application import ProcessNotFoundError, process_module
@@ -126,6 +127,12 @@ class Capstone:
         """List visible windows of the attached process, without menu shadows."""
         if self.pid is None:
             msg = "Call capstone_attach first."
+            raise AutomationError(msg)
+        if not psutil.pid_exists(self.pid):
+            msg = (
+                "The attached Capstone process has exited. Start Capstone and "
+                "call capstone_attach again."
+            )
             raise AutomationError(msg)
         handles = find_windows(process=self.pid, backend="win32", visible_only=True)
         result: list[Window] = []
@@ -243,11 +250,29 @@ class Capstone:
         )
         raise AutomationError(msg)
 
+    def require_foreground(self) -> None:
+        """Refuse input when another application kept the foreground.
+
+        Windows can decline activation. Keys and clicks would then reach
+        whatever application is in front instead of Capstone.
+        """
+        foreground = win32gui.GetForegroundWindow()
+        if win32process.GetWindowThreadProcessId(foreground)[1] == self.pid:
+            return
+        title = win32gui.GetWindowText(foreground) or "an untitled window"
+        msg = (
+            "Capstone could not be brought to the foreground, so no input was "
+            f"sent. The active window is {title!r}. Bring Capstone to the "
+            "front, then retry."
+        )
+        raise AutomationError(msg)
+
     def focus_window(self, handle: int) -> UIAWrapper:
         """Activate the native HWND; UIA SetFocus alone may not activate Qt."""
         window = self.window(handle)
         self.require_input_ready(handle)
         _ = HwndWrapper(handle).set_focus()
+        self.require_foreground()
         return window
 
     def control(self, ref: str) -> UIAWrapper:
@@ -278,6 +303,7 @@ class Capstone:
                     top_level = self.owning_window(node)
                     self.require_input_ready(top_level)
                 _ = HwndWrapper(top_level).set_focus()
+                self.require_foreground()
                 rect = node.rectangle()
                 point = (
                     (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2,

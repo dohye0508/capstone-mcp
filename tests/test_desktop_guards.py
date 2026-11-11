@@ -4,8 +4,10 @@
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 
+import psutil
 import pytest
 import win32gui
+import win32process
 from pywinauto.application import ProcessNotFoundError
 
 from capstone_mcp import desktop
@@ -37,6 +39,7 @@ def _blocked_app(monkeypatch: pytest.MonkeyPatch) -> tuple[Capstone, Mock]:
     ]
     monkeypatch.setattr(app, "windows", Mock(return_value=windows))
     monkeypatch.setattr(app, "window", Mock(return_value=Mock()))
+    monkeypatch.setattr(app, "require_foreground", Mock())
     activate = Mock()
     monkeypatch.setattr(desktop, "HwndWrapper", activate)
     return app, activate
@@ -70,6 +73,7 @@ def test_menu_shadow_windows_are_not_listed(monkeypatch: pytest.MonkeyPatch) -> 
     # Given: a Qt popup menu and the system shadow window that follows it.
     app = Capstone()
     app.pid = 7
+    monkeypatch.setattr(psutil, "pid_exists", Mock(return_value=True))
     monkeypatch.setattr(desktop, "find_windows", Mock(return_value=[10, SHADOW]))
     monkeypatch.setattr(win32gui, "GetClassName", _window_class)
     monkeypatch.setattr(win32gui, "GetWindowRect", Mock(return_value=(0, 0, 5, 5)))
@@ -177,3 +181,46 @@ def test_dialog_button_under_a_second_dialog_is_not_clicked(
         _ = app.act("ref", Action.INVOKE)
     click = cast("Mock", button.click_input)
     click.assert_not_called()
+
+
+def test_exited_capstone_is_reported_instead_of_an_empty_window_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the attached process ended, for example because the user closed it.
+    app = Capstone()
+    app.pid = 7
+    monkeypatch.setattr(psutil, "pid_exists", Mock(return_value=False))
+    find = Mock()
+    monkeypatch.setattr(desktop, "find_windows", find)
+    # When / Then
+    with pytest.raises(AutomationError, match=r"has exited.*capstone_attach"):
+        _ = app.windows()
+    find.assert_not_called()
+
+
+def _foreground(monkeypatch: pytest.MonkeyPatch, owner: int) -> Capstone:
+    app = Capstone()
+    app.pid = 7
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", Mock(return_value=55))
+    monkeypatch.setattr(win32gui, "GetWindowText", Mock(return_value="Other App"))
+    monkeypatch.setattr(
+        win32process, "GetWindowThreadProcessId", Mock(return_value=(1, owner)),
+    )
+    return app
+
+
+def test_input_is_refused_when_another_application_keeps_the_foreground(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: Windows declined to activate Capstone.
+    app = _foreground(monkeypatch, owner=99)
+    # When / Then: the keys would otherwise reach the other application.
+    with pytest.raises(AutomationError, match=r"foreground.*Other App"):
+        app.require_foreground()
+
+
+def test_input_proceeds_when_a_capstone_window_is_in_front(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _foreground(monkeypatch, owner=7)
+    app.require_foreground()
