@@ -2,6 +2,7 @@
 """Capstone-scoped Windows UI Automation adapter."""
 
 import ctypes
+from collections.abc import Collection
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
@@ -152,24 +153,42 @@ class Capstone:
 
     def snapshot(self, handle: int, depth: int, limit: int) -> Snapshot:
         """Traverse a bounded tree and invalidate previous control references."""
+        return self.matching_snapshot(handle, depth, limit)
+
+    def matching_snapshot(
+        self, handle: int, depth: int, limit: int,
+        *, query: str = "", control_types: Collection[str] = (),
+    ) -> Snapshot:
+        """Keep only controls matching a name/automation-id substring and types.
+
+        depth and limit still bound the visit, not the number of matches.
+        """
         root = self.window(handle)
         self.generation += 1
         self.refs.clear()
+        needle = query.casefold()
         controls: list[Control] = []
         pending: list[tuple[UIAWrapper, str | None, int]] = [(root, None, 0)]
         truncated = False
-        while pending and len(controls) < limit:
+        visited = 0
+        while pending and visited < limit:
             node, parent, level = pending.pop()
-            ref = f"{self.session_id}:{self.generation}:{len(controls)}"
-            self.refs[ref] = node
+            ref = f"{self.session_id}:{self.generation}:{visited}"
+            visited += 1
             info = node.element_info
-            controls.append(Control(
-                ref=ref, parent=parent, name=info.name,
-                control_type=info.control_type, automation_id=info.automation_id,
-                enabled=node.is_enabled(), visible=node.is_visible(),
-                bounds=bounds(node),
-            ))
-            child_budget = 1 if level >= depth else limit - len(controls) + 1
+            if (
+                not needle or needle in info.name.casefold()
+                or needle in info.automation_id.casefold()
+            ) and (not control_types or info.control_type in control_types):
+                self.refs[ref] = node
+                controls.append(Control(
+                    ref=ref, parent=parent, name=info.name,
+                    control_type=info.control_type,
+                    automation_id=info.automation_id,
+                    enabled=node.is_enabled(), visible=node.is_visible(),
+                    bounds=bounds(node),
+                ))
+            child_budget = 1 if level >= depth else limit - visited + 1
             children = list(islice(node.iter_children(), child_budget))
             if level < depth:
                 pending.extend((child, ref, level + 1) for child in reversed(children))

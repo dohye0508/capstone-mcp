@@ -74,9 +74,10 @@ class NativeDesktop:
                 )
             ],
             "windows": lambda _r: [_json(w) for w in self.app.windows()],
-            "snapshot": lambda r: _json(
-                self.app.snapshot(r.handle, r.depth, r.limit),
-            ),
+            "snapshot": lambda r: _json(self.app.matching_snapshot(
+                r.handle, r.depth, r.limit,
+                query=r.query, control_types=r.control_types,
+            )),
             "action": lambda r: _json(self.app.act(
                 r.ref, r.action, allow_foreground=r.allow_foreground,
             )),

@@ -29,6 +29,8 @@ class NativeRequest(Model):
     launch: bool = False
     depth: int = 12
     limit: int = 800
+    query: str = ""
+    control_types: list[str] = Field(default_factory=list)
     ref: str = ""
     action: Action = Action.INVOKE
     value: str = ""

@@ -17,7 +17,7 @@ from capstone_mcp.acquisition import (
     RecordingStatus,
     SamplingRateChange,
 )
-from capstone_mcp.agent_instructions import INSTRUCTIONS
+from capstone_mcp.agent_instructions import INSTRUCTIONS, GuideTopic, guide
 from capstone_mcp.analysis import (
     FitInput,
     LinearFit,
@@ -96,6 +96,20 @@ MCP: Final = FastMCP(
     lifespan=_lifespan,
     instructions=INSTRUCTIONS,
 )
+
+
+@MCP.tool(annotations=ToolAnnotations(
+    title="Read Capstone workflow rules", readOnlyHint=True,
+    destructiveHint=False, idempotentHint=True, openWorldHint=False,
+))
+def capstone_guide(topic: GuideTopic | None = None) -> str:
+    """Return the complete rules for one kind of work; call before starting it.
+
+    Clients may truncate the server instructions, which therefore carry only
+    the essentials. Topics: workflow, files, graphs, graph_contract, windows,
+    sensors, save_export, recording, recovery. Omit topic for all of them.
+    """
+    return guide(topic)
 
 
 class ExportedData(Model):
@@ -584,10 +598,20 @@ async def capstone_snapshot(
     handle: int,
     depth: Annotated[int, Field(ge=1, le=30)] = 12,
     limit: Annotated[int, Field(ge=1, le=3000)] = 800,
+    query: Annotated[str, Field(max_length=200)] = "",
+    control_types: Annotated[list[str], Field(max_length=20)] | None = None,
 ) -> Snapshot:
-    """Read control names, roles, bounds, and fresh action references."""
+    """Read control names, roles, bounds, and fresh action references.
+
+    A full experiment window holds hundreds of controls. Pass query, a
+    case-insensitive substring of a control's name or automation_id, and/or
+    control_types such as ["Button", "CheckBox"] to return only the matches.
+    depth and limit still bound the traversal, so truncated=true means an
+    unvisited control may match. Custom-drawn graph toolbars are not exposed.
+    """
     return Snapshot.model_validate(await _native(NativeRequest(
         operation="snapshot", handle=handle, depth=depth, limit=limit,
+        query=query, control_types=control_types or [],
     )))
 
 
