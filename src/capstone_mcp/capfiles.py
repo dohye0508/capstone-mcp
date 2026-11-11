@@ -523,6 +523,26 @@ def _independent_coordinates(
     return [Decimal(index) for index in range(count)], "index"
 
 
+def _run_labels(root: Element) -> dict[str, tuple[str | None, int | None]]:
+    """Map each dataset ID to the user-visible run name and number saved for it."""
+    labels: dict[str, tuple[str | None, int | None]] = {}
+    for parameters in root.iter("RunParameterSet"):
+        identifier = parameters.attrib.get("RunParameterID")
+        if identifier is None:
+            continue
+        name: str | None = None
+        number: int | None = None
+        for value in parameters.iter("ParameterValue"):
+            if "RunName" in value.attrib:
+                name = value.attrib["RunName"]
+            if "RunNumber" in value.attrib:
+                number = _integer(
+                    value.attrib["RunNumber"], context="RunNumber",
+                )
+        labels[identifier] = (name, number)
+    return labels
+
+
 def _dataset(
     element: Element,
     *,
@@ -630,11 +650,15 @@ def _parse_archive(
     source_models = [_data_source(element) for element in source_elements]
     source_by_element = dict(zip(source_elements, source_models, strict=True))
     datasets: list[CapDataSet] = []
+    runs = _run_labels(root) if include_data else {}
     for element in root.iter("DataSet") if include_data else ():
         source_element = _ancestor(element, parent_by_child, "DataSource")
         if source_element is None:
             msg = "DataSet is not linked to a DataSource."
             raise CapFileError(msg)
+        run_name, run_number = runs.get(
+            element.attrib.get("DataSetID", ""), (None, None),
+        )
         datasets.append(
             _dataset(
                 element,
@@ -642,7 +666,7 @@ def _parse_archive(
                 source=source_by_element[source_element],
                 archive=archive,
                 members=members,
-            ),
+            ).model_copy(update={"run_name": run_name, "run_number": run_number}),
         )
     return CapFile(
         file_name=file_name,

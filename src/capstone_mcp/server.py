@@ -458,6 +458,9 @@ def capstone_inspect_file(path: str) -> CapConfiguration:
 def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
     """List decodable saved datasets with source IDs, unit IDs and sample counts.
 
+    run_name/run_number identify the recorded run a dataset belongs to; datasets
+    of one run share its dataset_id across sources. Pair x and y by that run.
+
     Supports type-7 strings and type-0 tagged doubles, with stored, interval,
     or implicit-index independent coordinates.
     Unsupported array encodings raise an error instead of reporting empty data.
@@ -466,6 +469,7 @@ def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
         CapDatasetSummary(
             index=index, dataset_id=dataset.data_set_id,
             source_euid=dataset.source_euid, name=dataset.source_name,
+            run_name=dataset.run_name, run_number=dataset.run_number,
             unit_id=dataset.unit_id, value_kind=dataset.value_kind,
             count=len(dataset.raw_values),
         )
@@ -494,6 +498,7 @@ def capstone_extract_dataset(
         dataset=CapDatasetSummary(
             index=dataset_index, dataset_id=dataset.data_set_id,
             source_euid=dataset.source_euid, name=dataset.source_name,
+            run_name=dataset.run_name, run_number=dataset.run_number,
             unit_id=dataset.unit_id, value_kind=dataset.value_kind,
             count=len(dataset.raw_values),
         ),

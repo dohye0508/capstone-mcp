@@ -115,6 +115,8 @@ class CapDataSet(CapFileModel):
 
     data_set_id: str | None
     name: str | None
+    run_name: str | None = None
+    run_number: int | None = None
     source_euid: str | None
     source_name: str | None
     unit_id: int | None
@@ -154,12 +156,18 @@ class CapFile(CapConfiguration):
 
 
 class CapDatasetSummary(CapFileModel):
-    """Index and provenance for one decoded dataset in a saved file."""
+    """Index and provenance for one decoded dataset in a saved file.
+
+    name is the measurement source name. run_name and run_number come from the
+    saved run parameters and are null when the file records none for the set.
+    """
 
     index: int
     dataset_id: str | None
     source_euid: str | None
     name: str | None
+    run_name: str | None = None
+    run_number: int | None = None
     unit_id: int | None
     value_kind: CapValueKind
     count: int
