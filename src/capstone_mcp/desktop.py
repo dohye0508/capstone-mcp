@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, assert_never
 from uuid import uuid4
 
+import psutil
 import win32gui
 from PIL import ImageGrab
 from pywinauto import Application, Desktop
@@ -22,10 +23,32 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 EXECUTABLE: Final = Path("C:/Program Files/PASCO scientific/Capstone/Capstone.exe")
+SHADOW_CLASS: Final = "SysShadow"
+GA_ROOT: Final = 2
+GWL_STYLE: Final = -16
+WS_CAPTION: Final = 0x00C00000
 
 
 class AutomationError(RuntimeError):
     """An unmet precondition prevents input delivery."""
+
+
+def capstone_processes() -> tuple[list[int], list[str]]:
+    """Separate installed-edition processes from other running Capstone builds."""
+    installed: list[int] = []
+    other: list[str] = []
+    for process in psutil.process_iter():
+        try:
+            if process.name().lower() != EXECUTABLE.name.lower():
+                continue
+            executable = Path(process.exe())
+        except psutil.Error:
+            continue
+        if executable == EXECUTABLE:
+            installed.append(process.pid)
+        else:
+            other.append(f"{process.pid}: {executable}")
+    return installed, other
 
 
 def bounds(control: UIAWrapper) -> Bounds:
@@ -68,11 +91,28 @@ class Capstone:
                 raise AutomationError(msg)
             _ = app.connect(process=process_id)
         else:
+            installed, other = capstone_processes()
+            if len(installed) > 1:
+                msg = (
+                    "Several installed Capstone instances are running. Pass the "
+                    "intended process_id: "
+                ) + ", ".join(map(str, installed))
+                raise AutomationError(msg)
             try:
                 _ = app.connect(path=str(EXECUTABLE))
-            except ProcessNotFoundError:
+            except ProcessNotFoundError as error:
                 if not launch:
-                    raise
+                    msg = (
+                        f"Installed Capstone is not running ({EXECUTABLE}). Start "
+                        "it, or call capstone_attach with launch=true."
+                    )
+                    if other:
+                        msg += (
+                            " Another Capstone build is running but cannot be "
+                            "controlled by this server (for example the Microsoft "
+                            "Store edition): "
+                        ) + "; ".join(other)
+                    raise AutomationError(msg) from error
                 _ = app.start(
                     f'"{EXECUTABLE}"', work_dir=str(EXECUTABLE.parent), timeout=30,
                 )
@@ -82,13 +122,15 @@ class Capstone:
         return self.windows()
 
     def windows(self) -> list[Window]:
-        """List visible windows only within the attached process."""
+        """List visible windows of the attached process, without menu shadows."""
         if self.pid is None:
             msg = "Call capstone_attach first."
             raise AutomationError(msg)
         handles = find_windows(process=self.pid, backend="win32", visible_only=True)
         result: list[Window] = []
         for handle in handles:
+            if win32gui.GetClassName(handle) == SHADOW_CLASS:
+                continue
             left, top, right, bottom = win32gui.GetWindowRect(handle)
             result.append(Window(
                 handle=handle, title=win32gui.GetWindowText(handle),
@@ -138,9 +180,54 @@ class Capstone:
             truncated=truncated or bool(pending),
         )
 
+    def require_input_ready(self, handle: int) -> None:
+        """Refuse input that a modal dialog would silently take over or drop."""
+        if win32gui.IsWindowEnabled(handle):
+            return
+        blockers = ", ".join(
+            f"{w.handle}: {w.title or 'untitled'}" for w in self.windows()
+            if w.handle != handle and win32gui.IsWindowEnabled(w.handle)
+        )
+        msg = (
+            "Window is disabled by a modal dialog, so no input was sent. Handle "
+            "the blocking window first: "
+        ) + (blockers or "none is visible")
+        raise AutomationError(msg)
+
+    def owning_window(self, node: UIAWrapper) -> int:
+        """Find the nearest visible native window that contains a control.
+
+        Qt reports a modal dialog below its owner in the accessibility tree,
+        so the top-level UIA parent of a dialog button is the disabled owner.
+        """
+        handles = {w.handle for w in self.windows()}
+        current: UIAWrapper | None = node
+        while current is not None:
+            if current.handle in handles:
+                return current.handle
+            current = current.parent()
+        msg = "Control no longer belongs to a visible Capstone window."
+        raise AutomationError(msg)
+
+    def require_uncovered(self, owner: int, point: tuple[int, int]) -> None:
+        """Refuse a click that a captioned window above the owner would receive."""
+        root = win32gui.GetAncestor(win32gui.WindowFromPoint(point), GA_ROOT)
+        if root == owner or not win32gui.GetWindowLong(root, GWL_STYLE) & WS_CAPTION:
+            return
+        title = next(
+            (w.title for w in self.windows() if w.handle == root),
+            "another application",
+        )
+        msg = (
+            f"Control is covered by another window ({root}: {title}), so no "
+            "click was sent. Handle that window first."
+        )
+        raise AutomationError(msg)
+
     def focus_window(self, handle: int) -> UIAWrapper:
         """Activate the native HWND; UIA SetFocus alone may not activate Qt."""
         window = self.window(handle)
+        self.require_input_ready(handle)
         _ = HwndWrapper(handle).set_focus()
         return window
 
@@ -166,14 +253,19 @@ class Capstone:
                 if not allow_foreground:
                     msg = "Activation uses mouse input; set allow_foreground=true."
                     raise AutomationError(msg)
-                _ = HwndWrapper(node.top_level_parent().handle).set_focus()
+                top_level = node.top_level_parent().handle
+                modal = not win32gui.IsWindowEnabled(top_level)
+                if modal:
+                    top_level = self.owning_window(node)
+                    self.require_input_ready(top_level)
+                _ = HwndWrapper(top_level).set_focus()
                 rect = node.rectangle()
-                node.click_input(
-                    button="left",
-                    coords=((rect.left + rect.right) // 2,
-                            (rect.top + rect.bottom) // 2),
-                    absolute=True,
+                point = (
+                    (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2,
                 )
+                if modal:
+                    self.require_uncovered(top_level, point)
+                node.click_input(button="left", coords=point, absolute=True)
                 return Result(detail="Control clicked; inspect to verify.")
             case Action.TOGGLE:
                 node.iface_toggle.Toggle()
