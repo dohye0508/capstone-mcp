@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 from xml.etree.ElementTree import Element, ParseError
 from zipfile import BadZipFile, LargeZipFile, ZipFile, ZipInfo
 
@@ -14,6 +14,7 @@ from defusedxml.ElementTree import fromstring
 
 from capstone_mcp.capfile_models import (
     CapConfiguration,
+    CapConfigurationView,
     CapDataSet,
     CapDataSource,
     CapExperimentSetting,
@@ -21,6 +22,7 @@ from capstone_mcp.capfile_models import (
     CapHardwareInterface,
     CapHardwareMeasurement,
     CapHardwareSensor,
+    CapSection,
     CapSensorSetting,
     CapValueKind,
     CapXmlNode,
@@ -31,6 +33,13 @@ from capstone_mcp.numeric_storage import (
     interval_values,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+CAP_SECTIONS: Final[tuple[CapSection, ...]] = (
+    "header", "hardware", "hardware_interfaces", "unconnected_sensors",
+    "experiment_settings", "data_sources", "workspace", "calculations",
+)
 MAX_ARCHIVE_BYTES: Final = 64 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES: Final = 4096
 MAX_TOTAL_UNCOMPRESSED_BYTES: Final = 64 * 1024 * 1024
@@ -725,4 +734,33 @@ def read_cap_configuration(path: str | Path) -> CapConfiguration:
         experiment_settings=parsed.experiment_settings,
         data_sources=parsed.data_sources,
         workspace=parsed.workspace, calculations=parsed.calculations,
+    )
+
+
+def select_configuration(
+    configuration: CapConfiguration, sections: Collection[CapSection] | None,
+) -> CapConfigurationView:
+    """Keep only the requested sections; None keeps the complete configuration."""
+    wanted = set(CAP_SECTIONS if sections is None else sections)
+
+    def pick[T](name: CapSection, value: T) -> T | None:
+        return value if name in wanted else None
+
+    return CapConfigurationView(
+        file_name=configuration.file_name, root_tag=configuration.root_tag,
+        header=pick("header", configuration.header),
+        hardware=pick("hardware", configuration.hardware),
+        hardware_interfaces=pick(
+            "hardware_interfaces", configuration.hardware_interfaces,
+        ),
+        unconnected_sensors=pick(
+            "unconnected_sensors", configuration.unconnected_sensors,
+        ),
+        experiment_settings=pick(
+            "experiment_settings", configuration.experiment_settings,
+        ),
+        data_sources=pick("data_sources", configuration.data_sources),
+        workspace=pick("workspace", configuration.workspace),
+        calculations=pick("calculations", configuration.calculations),
+        omitted_sections=[name for name in CAP_SECTIONS if name not in wanted],
     )

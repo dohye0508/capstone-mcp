@@ -30,11 +30,16 @@ from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.automation_worker import AutomationWorker
 from capstone_mcp.bridge import NativeInventory, read_inventory, read_measurement
 from capstone_mcp.capfile_models import (
-    CapConfiguration,
+    CapConfigurationView,
     CapDatasetPage,
     CapDatasetSummary,
+    CapSection,
 )
-from capstone_mcp.capfiles import extract_cap_datasets, read_cap_configuration
+from capstone_mcp.capfiles import (
+    extract_cap_datasets,
+    read_cap_configuration,
+    select_configuration,
+)
 from capstone_mcp.csv_data import CsvPage, read_csv_page
 from capstone_mcp.desktop import AutomationError
 from capstone_mcp.experiment_analysis import (
@@ -444,14 +449,21 @@ def capstone_plot(samples: PlotInput) -> Image:
 
 
 @MCP.tool()
-def capstone_inspect_file(path: str) -> CapConfiguration:
+def capstone_inspect_file(
+    path: str, sections: list[CapSection] | None = None,
+) -> CapConfigurationView:
     """Read saved .cap hardware/settings, source metadata, pages and calculations.
 
     Does not open the file in Capstone or infer live hardware connectivity.
     Array decoding is independent, so unknown recorded storage types do not
     prevent configuration inspection.
+
+    The complete result is often several hundred thousand characters, mostly
+    workspace (page layout) and data_sources. Pass sections to read only what
+    is needed, e.g. ["hardware_interfaces", "experiment_settings"]. Sections
+    not requested are null and named in omitted_sections; omit sections for all.
     """
-    return read_cap_configuration(path)
+    return select_configuration(read_cap_configuration(path), sections)
 
 
 @MCP.tool()

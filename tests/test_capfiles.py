@@ -16,6 +16,7 @@ from capstone_mcp.capfiles import (
     extract_cap_datasets,
     read_cap_configuration,
     read_cap_file,
+    select_configuration,
 )
 
 if TYPE_CHECKING:
@@ -464,3 +465,31 @@ def test_malformed_run_number_is_rejected(tmp_path: Path) -> None:
     _write_cap(path, xml=xml, payload=_payload(["1.5"]))
     with pytest.raises(CapFileError, match="RunNumber"):
         _ = extract_cap_datasets(path)
+
+
+def test_requested_sections_are_returned_and_the_rest_reported_omitted(
+    tmp_path: Path,
+) -> None:
+    # Given
+    path = tmp_path / "sections.cap"
+    _write_cap(path, xml=_xml(1), payload=_payload(["1.5"]))
+    # When: only the hardware listing is requested.
+    view = select_configuration(read_cap_configuration(path), ["hardware_interfaces"])
+    # Then: unrequested sections are null and named, not presented as empty.
+    assert view.hardware_interfaces is not None
+    assert view.hardware_interfaces[0].sensors[0].name == "Synthetic Sensor"
+    assert view.data_sources is None
+    assert view.workspace is None
+    assert "data_sources" in view.omitted_sections
+    assert "hardware_interfaces" not in view.omitted_sections
+
+
+def test_no_section_selection_keeps_the_complete_configuration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "complete.cap"
+    _write_cap(path, xml=_xml(1), payload=_payload(["1.5"]))
+    view = select_configuration(read_cap_configuration(path), None)
+    assert view.omitted_sections == []
+    assert view.data_sources is not None
+    assert view.experiment_settings is not None

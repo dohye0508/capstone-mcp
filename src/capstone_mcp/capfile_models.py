@@ -149,6 +149,32 @@ class CapConfiguration(CapFileModel):
     calculations: CapXmlNode | None
 
 
+type CapSection = Literal[
+    "header", "hardware", "hardware_interfaces", "unconnected_sensors",
+    "experiment_settings", "data_sources", "workspace", "calculations",
+]
+
+
+class CapConfigurationView(CapFileModel):
+    """Requested configuration sections of one saved experiment.
+
+    A section listed in omitted_sections was not requested and is null; that
+    does not mean the file lacks it.
+    """
+
+    file_name: str
+    root_tag: str
+    header: CapXmlNode | None = None
+    hardware: CapXmlNode | None = None
+    hardware_interfaces: list[CapHardwareInterface] | None = None
+    unconnected_sensors: list[CapHardwareSensor] | None = None
+    experiment_settings: list[CapExperimentSetting] | None = None
+    data_sources: list[CapDataSource] | None = None
+    workspace: CapXmlNode | None = None
+    calculations: CapXmlNode | None = None
+    omitted_sections: list[CapSection] = Field(default_factory=list)
+
+
 class CapFile(CapConfiguration):
     """Parsed configuration and decoded datasets from one `.cap` archive."""
 

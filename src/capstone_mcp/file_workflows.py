@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from _ctypes import COMError
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
 MAX_OUTPUT_BYTES: Final = 64 * 1024 * 1024
 TRANSITION_SECONDS: Final = 15
+TITLE_SECONDS: Final = 3.0
+TITLE_POLL_SECONDS: Final = 0.1
 
 
 class FileArtifact(Model):
@@ -177,6 +180,23 @@ def _prepare(
     return path, windows[0].title, windows[0].process_id
 
 
+def settled_title(
+    app: Capstone, handle: int, path: Path, kind: Literal["cap", "csv"],
+) -> str:
+    """Read the title after Save As renamed the document, within a short bound.
+
+    Capstone retitles the window shortly after the file is closed; an immediate
+    read returned the previous name. Export never renames the document.
+    """
+    deadline = time.monotonic() + TITLE_SECONDS
+    while True:
+        title = next(w.title for w in app.windows() if w.handle == handle)
+        renamed = title.startswith(path.name)
+        if kind != "cap" or renamed or time.monotonic() >= deadline:
+            return title
+        time.sleep(TITLE_POLL_SECONDS)
+
+
 def _artifact(
     app: Capstone, handle: int, path: Path, before: str,
     kind: Literal["cap", "csv"],
@@ -185,7 +205,7 @@ def _artifact(
     if size > MAX_OUTPUT_BYTES:
         msg = "Output was created but exceeds the 64 MiB extraction limit."
         raise AutomationError(msg)
-    after = next(w.title for w in app.windows() if w.handle == handle)
+    after = settled_title(app, handle, path, kind)
     return FileArtifact(
         path=str(path), format=kind, size_bytes=size,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
