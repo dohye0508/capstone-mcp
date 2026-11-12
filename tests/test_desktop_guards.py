@@ -8,7 +8,6 @@ import psutil
 import pytest
 import win32gui
 import win32process
-from pywinauto.application import ProcessNotFoundError
 
 from capstone_mcp import desktop
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -89,13 +88,13 @@ def test_attach_explains_an_unsupported_build_when_installed_capstone_is_absent(
     store = "13340: C:/Program Files/WindowsApps/PASCO/Capstone/Capstone.exe"
     monkeypatch.setattr(desktop, "capstone_processes", Mock(return_value=([], [store])))
     start = Mock()
-    application = Mock(
-        connect=Mock(side_effect=ProcessNotFoundError("not found")), start=start,
-    )
+    connect = Mock()
+    application = Mock(connect=connect, start=start)
     monkeypatch.setattr(desktop, "Application", Mock(return_value=application))
-    # When / Then
+    # When / Then: the answer is immediate, without scanning process modules.
     with pytest.raises(AutomationError, match=r"not running.*launch=true.*13340"):
         _ = Capstone().attach()
+    connect.assert_not_called()
     start.assert_not_called()
 
 
@@ -224,3 +223,20 @@ def test_input_proceeds_when_a_capstone_window_is_in_front(
 ) -> None:
     app = _foreground(monkeypatch, owner=7)
     app.require_foreground()
+
+
+def test_attach_connects_to_the_single_installed_instance_by_process_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given
+    monkeypatch.setattr(desktop, "capstone_processes", Mock(return_value=([42], [])))
+    connect = Mock()
+    application = Mock(connect=connect, process=42)
+    monkeypatch.setattr(desktop, "Application", Mock(return_value=application))
+    app = Capstone()
+    monkeypatch.setattr(app, "windows", Mock(return_value=[]))
+    # When
+    _ = app.attach()
+    # Then
+    connect.assert_called_once_with(process=42)
+    assert app.pid == 42

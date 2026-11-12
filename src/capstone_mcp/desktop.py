@@ -14,7 +14,7 @@ import win32gui
 import win32process
 from PIL import ImageGrab
 from pywinauto import Application, Desktop
-from pywinauto.application import ProcessNotFoundError, process_module
+from pywinauto.application import process_module
 from pywinauto.controls.hwndwrapper import HwndWrapper
 from pywinauto.controls.uiawrapper import UIAWrapper
 from pywinauto.findwindows import find_windows
@@ -100,24 +100,26 @@ class Capstone:
                     "intended process_id: "
                 ) + ", ".join(map(str, installed))
                 raise AutomationError(msg)
-            try:
-                _ = app.connect(path=str(EXECUTABLE))
-            except ProcessNotFoundError as error:
-                if not launch:
-                    msg = (
-                        f"Installed Capstone is not running ({EXECUTABLE}). Start "
-                        "it, or call capstone_attach with launch=true."
-                    )
-                    if other:
-                        msg += (
-                            " Another Capstone build is running but cannot be "
-                            "controlled by this server (for example the Microsoft "
-                            "Store edition): "
-                        ) + "; ".join(other)
-                    raise AutomationError(msg) from error
+            if installed:
+                # Connecting by path scans every process module and takes many
+                # seconds when Capstone is absent; the PID is already known.
+                _ = app.connect(process=installed[0])
+            elif launch:
                 _ = app.start(
                     f'"{EXECUTABLE}"', work_dir=str(EXECUTABLE.parent), timeout=30,
                 )
+            else:
+                msg = (
+                    f"Installed Capstone is not running ({EXECUTABLE}). Start "
+                    "it, or call capstone_attach with launch=true."
+                )
+                if other:
+                    msg += (
+                        " Another Capstone build is running but cannot be "
+                        "controlled by this server (for example the Microsoft "
+                        "Store edition): "
+                    ) + "; ".join(other)
+                raise AutomationError(msg)
         self.pid = app.process
         self.refs.clear()
         self.window_cache.clear()
