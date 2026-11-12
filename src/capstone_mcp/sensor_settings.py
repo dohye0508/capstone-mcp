@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Exact sensor selection and bounded native sampling-rate traversal."""
 
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -103,12 +104,17 @@ def _settings(app: Capstone, handle: int) -> _Settings:
 def _rate_controls(
     app: Capstone, handle: int, expected_sensor: str,
 ) -> _RateControls:
-    settings = _settings(app, handle)
-    if settings.sensor != expected_sensor:
+    recording, _ = observe_recording(app, handle)
+    if recording.recording:
+        msg = "Stop recording before changing sensor settings."
+        raise AutomationError(msg)
+    # One tree read serves the sensor check and all three rate controls: a full
+    # experiment window takes seconds to traverse, and every step repeats this.
+    snapshot = app.snapshot(handle, 16, 10_000)
+    selector = _unique_suffix(snapshot, ".SamplingRateTargetSelector")
+    if selector.name != expected_sensor:
         msg = "Selected sampling sensor does not match the requested sensor."
         raise AutomationError(msg)
-    snapshot = app.snapshot(handle, 16, 10_000)
-
     increase = _unique_suffix(snapshot, ".IncreaseSampleRateButton")
     decrease = _unique_suffix(snapshot, ".DecreaseSampleRateButton")
     label = _unique_suffix(snapshot, ".SamplingRateLabel")
@@ -209,9 +215,9 @@ def select_sensor(
 
 def _step_rate(
     app: Capstone, handle: int, request: SamplingRateRequest,
-    direction: Literal["increase", "decrease"],
-) -> tuple[str, str]:
-    before = _rate_controls(app, handle, request.sensor)
+    direction: Literal["increase", "decrease"], before: _RateControls,
+) -> _RateControls:
+    """Click one step from the controls just observed and return the new ones."""
     match direction:
         case "increase":
             ref, enabled = before.increase_ref, before.increase_enabled
@@ -225,16 +231,16 @@ def _step_rate(
     if after.display == before.display:
         msg = "Sampling-rate input was delivered but the display did not change."
         raise AutomationError(msg)
-    return before.display, after.display
+    return after
 
 
 def _restore_rate(
-    app: Capstone, handle: int, request: SamplingRateRequest,
-    direction: Literal["increase", "decrease"], expected: list[str],
+    step: Callable[[_RateControls], _RateControls], expected: list[str],
+    controls: _RateControls,
 ) -> None:
     for display in reversed(expected):
-        _, after = _step_rate(app, handle, request, direction)
-        if after != display:
+        controls = step(controls)
+        if controls.display != display:
             msg = "Sampling rate could not be restored after bounded traversal."
             raise AutomationError(msg)
 
@@ -266,7 +272,8 @@ def target_sampling_rate(
     app: Capstone, handle: int, request: SamplingRateRequest,
 ) -> SamplingRateSelection:
     """Reach a supported rate without requiring identical decimal formatting."""
-    initial = _rate_controls(app, handle, request.sensor).display
+    controls = _rate_controls(app, handle, request.sensor)
+    initial = controls.display
     current, unit = _rate_parts(initial)
     target, target_unit = _rate_parts(request.target)
     if unit != target_unit:
@@ -280,19 +287,21 @@ def target_sampling_rate(
     previous: list[str] = []
     try:
         for _ in range(request.step_limit):
-            controls = _rate_controls(app, handle, request.sensor)
             enabled = (
                 controls.increase_enabled if increasing else controls.decrease_enabled
             )
             if not enabled:
                 break
-            before, after = _step_rate(app, handle, request, direction)
+            before = controls.display
+            controls = _step_rate(app, handle, request, direction, controls)
             previous.append(before)
-            value, after_unit = _rate_parts(after)
+            value, after_unit = _rate_parts(controls.display)
             if after_unit != unit:
                 break
             if value == target:
-                return _rate_result(request, initial, after, len(previous))
+                return _rate_result(
+                    request, initial, controls.display, len(previous),
+                )
             if (
                 (increasing and (value <= current or value > target))
                 or (not increasing and (value >= current or value < target))
@@ -309,7 +318,10 @@ def target_sampling_rate(
         )
         raise AutomationError(msg) from error
     try:
-        _restore_rate(app, handle, request, reverse, previous)
+        _restore_rate(
+            lambda before: _step_rate(app, handle, request, reverse, before),
+            previous, controls,
+        )
     except Exception as error:
         msg = (
             f"Sampling-rate restoration to {initial!r} failed or is unverified. "

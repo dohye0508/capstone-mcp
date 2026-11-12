@@ -2,6 +2,7 @@
 """Operate native graph pages using current screenshot anchors and UI menus."""
 
 from _ctypes import COMError
+from contextlib import suppress
 from typing import Final
 
 import win32clipboard
@@ -28,6 +29,7 @@ from capstone_mcp.ui_events import WindowEvents
 TRANSITION_SECONDS: Final = 15
 GRAPH_MIME: Final = "ItemCutCopyPasteMimeType"
 MAX_GRAPH_BYTES: Final = 8 * 1024 * 1024
+MENU_RELEASE_ATTEMPTS: Final = 3
 
 
 def invoke_graph_menu(
@@ -84,6 +86,7 @@ def read_graph(
     pid = windows[0].process_id
     with WindowEvents(pid, clipboard=True) as events:
         _ = app.focus_window(handle)
+        release_menu_bar(app, handle)
         snapshot = app.snapshot(handle, 3, 400)
         menus = [
             c for c in snapshot.controls
@@ -94,33 +97,95 @@ def read_graph(
             msg = "Expected one enabled Display menu."
             raise AutomationError(msg)
         _ = app.control(menus[0].ref).expand()
-        popup = events.changes.until(
-            lambda: ready_graph_menu(app, {handle}, "Copy Display"), TRANSITION_SECONDS,
-            description="Display menu with Copy Display",
+        try:
+            return _copy_selected_graph(app, events, handle, pid)
+        except AutomationError as error:
+            unselected = menu_item_disabled(app, {handle}, "Copy Display")
+            close_menus(app, handle)
+            if unselected:
+                msg = (
+                    "Copy Display stayed disabled, so no graph is selected. Click "
+                    "the graph once to select it, then read it again. The Display "
+                    "menu was closed."
+                )
+                raise AutomationError(msg) from error
+            raise
+
+
+def _copy_selected_graph(
+    app: Capstone, events: WindowEvents, handle: int, pid: int,
+) -> GraphState:
+    popup = events.changes.until(
+        lambda: ready_graph_menu(app, {handle}, "Copy Display"), TRANSITION_SECONDS,
+        description="Display menu with Copy Display",
+    )
+    copies = [
+        c for c in popup.controls if c.name == "Copy Display"
+        and c.control_type == "MenuItem" and c.enabled and c.visible
+    ]
+    if len(copies) != 1:
+        msg = "Select exactly one graph before inspecting its analysis."
+        raise AutomationError(msg)
+    sequence = win32clipboard.GetClipboardSequenceNumber()
+    # Copy Display is nonmodal: invoke the named action, not a moving row.
+    _ = app.control(copies[0].ref).invoke()
+    app.refs.clear()
+    state = events.changes.until(
+        lambda: _copied_graph(sequence, pid), TRANSITION_SECONDS,
+        description="New native graph clipboard data",
+    )
+    if any(w.handle == popup.window.handle for w in app.windows()):
+        _ = app.keys(handle, "{ESC}")
+    _ = events.changes.until(
+        lambda: True if {w.handle for w in app.windows()} == {handle} else None,
+        TRANSITION_SECONDS,
+        description="Copy Display menu dismissal",
+    )
+    release_menu_bar(app, handle)
+    return state
+
+
+def menu_item_disabled(app: Capstone, before: set[int], name: str) -> bool:
+    """Report whether an open menu shows the named item but keeps it disabled."""
+    for window in app.windows():
+        if window.handle in before:
+            continue
+        try:
+            snapshot = app.snapshot(window.handle, 5, 500)
+        except (COMError, AutomationError):
+            continue
+        if any(c.name == name and c.control_type == "MenuItem" and not c.enabled
+               for c in snapshot.controls):
+            return True
+    return False
+
+
+def close_menus(app: Capstone, handle: int) -> None:
+    """Dismiss a menu this workflow opened so its failure does not block the next.
+
+    Best effort: the caller is already reporting the original failure.
+    """
+    with suppress(AutomationError, COMError, RuntimeError):
+        release_menu_bar(app, handle)
+
+
+def release_menu_bar(app: Capstone, handle: int) -> None:
+    """Leave menu mode entirely before or after a menu workflow.
+
+    Escape closes a popup but leaves its menu-bar item focused. Expanding that
+    armed item again opens nothing, so the next menu workflow would time out.
+    """
+    for _ in range(MENU_RELEASE_ATTEMPTS):
+        snapshot = app.snapshot(handle, 3, 400)
+        armed = any(
+            c.control_type == "MenuItem" and app.refs[c.ref].has_keyboard_focus()
+            for c in snapshot.controls
         )
-        copies = [
-            c for c in popup.controls if c.name == "Copy Display"
-            and c.control_type == "MenuItem" and c.enabled and c.visible
-        ]
-        if len(copies) != 1:
-            msg = "Select exactly one graph before inspecting its analysis."
-            raise AutomationError(msg)
-        sequence = win32clipboard.GetClipboardSequenceNumber()
-        # Copy Display is nonmodal: invoke the named action, not a moving row.
-        _ = app.control(copies[0].ref).invoke()
-        app.refs.clear()
-        state = events.changes.until(
-            lambda: _copied_graph(sequence, pid), TRANSITION_SECONDS,
-            description="New native graph clipboard data",
-        )
-        if any(w.handle == popup.window.handle for w in app.windows()):
-            _ = app.keys(handle, "{ESC}")
-        _ = events.changes.until(
-            lambda: True if {w.handle for w in app.windows()} == {handle} else None,
-            TRANSITION_SECONDS,
-            description="Copy Display menu dismissal",
-        )
-        return state
+        if not armed and {w.handle for w in app.windows()} == {handle}:
+            return
+        _ = app.keys(handle, "{ESC}")
+    msg = "Capstone stayed in menu mode after Escape; inspect the window."
+    raise AutomationError(msg)
 
 
 def ready_graph_menu(app: Capstone, before: set[int], name: str) -> Snapshot | None:

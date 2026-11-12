@@ -12,7 +12,12 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
    `hardware_interfaces`는 저장된 인터페이스별 센서이며,
    `unconnected_sensors`는 파일의 `UnconnectedSensor` 아래 저장된 센서입니다.
    두 목록은 저장 당시의 구성이며 현재 장치의 물리적 연결 상태를 증명하지 않습니다.
+   전체 결과는 페이지 배치(`workspace`)와 `data_sources` 때문에 수십만 자가 될 수 있습니다.
+   필요한 부분만 읽으려면 `sections`에 `["hardware_interfaces", "experiment_settings"]`처럼 지정하세요.
+   요청하지 않은 구역은 `null`이며 `omitted_sections`에 이름이 남습니다.
 2. `capstone_file_datasets`로 데이터셋의 이름, 인덱스, ID, 단위 ID, 샘플 수를 조회합니다.
+   `run_name`과 `run_number`는 저장된 회차 이름과 번호입니다. 같은 회차의 데이터셋은
+   측정 소스가 달라도 같은 `dataset_id`를 가지므로, x·y를 고를 때 이 값으로 짝을 맞춥니다.
 3. 분석할 데이터셋을 선택해 추출하거나 피팅·비교합니다.
 
 ### 수치 추출
@@ -60,9 +65,22 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
 1. `capstone_attach`로 연결합니다. 여러 인스턴스 중 하나를 선택할 때는 `process_id`를 지정합니다.
 2. `capstone_windows`로 대상 창의 `handle`을 확인합니다.
 3. `capstone_snapshot`으로 컨트롤 이름과 참조값 `ref`를 읽습니다.
+   실험 창 전체는 컨트롤이 수백 개라 결과가 매우 큽니다. `query`(이름 또는 `automation_id`의
+   일부, 대소문자 무시)와 `control_types`(예: `["Button"]`)로 필요한 컨트롤만 받을 수 있습니다.
 4. `capstone_action` 등으로 조작한 뒤 다시 조회해 결과를 확인합니다.
 
 앱이 실행되어 있지 않다면 `capstone_attach`의 `launch: true`로 실행할 수 있습니다.
+연결할 수 있는 것은 설치형 데스크톱 버전뿐입니다. Microsoft Store 버전만 실행 중이면 그 사실을 오류로 알려 줍니다.
+
+기존 실험 파일은 `capstone_open_experiment`로 엽니다. File > Open Experiment를 직접 실행하고 창 제목으로 결과를 확인합니다.
+현재 실험에 저장하지 않은 변경이 있으면 열지 않으며, 버리고 열려면 `discard_unsaved: true`를 명시해야 합니다.
+
+대화상자(업데이트 안내, About, 파일 열기 등)가 떠 있으면 Capstone이 뒤쪽 창을 비활성화합니다.
+이때 뒤쪽 창으로 보내는 클릭·키 입력은 전달하지 않고, 막고 있는 창의 `handle`과 제목을 오류로 알려 줍니다.
+그 대화상자를 먼저 처리한 뒤 다시 시도하세요.
+
+작업별 전체 규칙은 `capstone_guide`로 읽을 수 있습니다. 일부 클라이언트가 서버 안내문을 앞부분만
+남기기 때문에, 초기 안내문에는 핵심만 두고 `files`, `graphs`, `windows`, `recording` 같은 주제별 내용을 이 도구로 제공합니다.
 
 물리적 입력은 기본적으로 허용되어 Capstone 창을 활성화합니다. `allow_foreground: false`는 해당 입력을 차단하는 옵션이며, 백그라운드 조작으로 전환하는 옵션은 아닙니다. `ref`는 새 스냅샷이나 조작 후 만료되므로 재사용하지 마세요.
 
@@ -197,7 +215,9 @@ http://127.0.0.1:8766/mcp
 | 증상 | 확인할 내용 |
 | :--- | :--- |
 | 클라이언트에 도구가 표시되지 않음 | `uv` 실행 가능 여부, `--directory`의 절대 경로, 클라이언트의 서버 로그를 확인합니다. |
-| Capstone에 연결되지 않음 | 설치 경로와 실행 여부를 확인합니다. 여러 인스턴스가 있다면 대상 프로세스 ID를 지정합니다. |
+| Capstone에 연결되지 않음 | 설치 경로와 실행 여부를 확인합니다. 여러 인스턴스가 있다면 대상 프로세스 ID를 지정합니다. Store 버전은 연결할 수 없습니다. |
+| 입력이 "modal dialog"로 거부됨 | 오류에 나온 창(업데이트 안내, 대화상자 등)을 먼저 닫거나 처리합니다. |
+| 조회 결과가 너무 커서 잘림 | `capstone_snapshot`은 `query`/`control_types`, `capstone_inspect_file`은 `sections`로 범위를 줄입니다. |
 | 컨트롤 참조가 만료됨 | 새 스냅샷을 조회하고 반환된 `ref`로 다시 조작합니다. |
 | 기록 버튼이 비활성화됨 | Capstone에서 센서 연결과 측정 소스 설정을 확인합니다. |
 | 저장·내보내기가 중단됨 | 기존 대화상자, 출력 파일의 존재 여부, 상위 폴더를 확인합니다. |

@@ -115,6 +115,8 @@ class CapDataSet(CapFileModel):
 
     data_set_id: str | None
     name: str | None
+    run_name: str | None = None
+    run_number: int | None = None
     source_euid: str | None
     source_name: str | None
     unit_id: int | None
@@ -147,6 +149,32 @@ class CapConfiguration(CapFileModel):
     calculations: CapXmlNode | None
 
 
+type CapSection = Literal[
+    "header", "hardware", "hardware_interfaces", "unconnected_sensors",
+    "experiment_settings", "data_sources", "workspace", "calculations",
+]
+
+
+class CapConfigurationView(CapFileModel):
+    """Requested configuration sections of one saved experiment.
+
+    A section listed in omitted_sections was not requested and is null; that
+    does not mean the file lacks it.
+    """
+
+    file_name: str
+    root_tag: str
+    header: CapXmlNode | None = None
+    hardware: CapXmlNode | None = None
+    hardware_interfaces: list[CapHardwareInterface] | None = None
+    unconnected_sensors: list[CapHardwareSensor] | None = None
+    experiment_settings: list[CapExperimentSetting] | None = None
+    data_sources: list[CapDataSource] | None = None
+    workspace: CapXmlNode | None = None
+    calculations: CapXmlNode | None = None
+    omitted_sections: list[CapSection] = Field(default_factory=list)
+
+
 class CapFile(CapConfiguration):
     """Parsed configuration and decoded datasets from one `.cap` archive."""
 
@@ -154,12 +182,18 @@ class CapFile(CapConfiguration):
 
 
 class CapDatasetSummary(CapFileModel):
-    """Index and provenance for one decoded dataset in a saved file."""
+    """Index and provenance for one decoded dataset in a saved file.
+
+    name is the measurement source name. run_name and run_number come from the
+    saved run parameters and are null when the file records none for the set.
+    """
 
     index: int
     dataset_id: str | None
     source_euid: str | None
     name: str | None
+    run_name: str | None = None
+    run_number: int | None = None
     unit_id: int | None
     value_kind: CapValueKind
     count: int

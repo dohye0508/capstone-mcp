@@ -16,6 +16,7 @@ from capstone_mcp.capfiles import (
     extract_cap_datasets,
     read_cap_configuration,
     read_cap_file,
+    select_configuration,
 )
 
 if TYPE_CHECKING:
@@ -422,3 +423,73 @@ def test_numeric_cache_rejects_short_payload(tmp_path: Path) -> None:
     # When / Then
     with pytest.raises(CapFileError):
         _ = extract_cap_datasets(cap_path)
+
+
+def _with_run(xml: bytes, parameters: bytes) -> bytes:
+    return xml.replace(
+        b"</DataRepository>",
+        b'<RunParameterSet RunParameterID="{dataset}">' + parameters
+        + b"</RunParameterSet></DataRepository>",
+    )
+
+
+def test_saved_run_name_and_number_identify_each_dataset(tmp_path: Path) -> None:
+    # Given: Capstone stores the user-visible run label keyed by the dataset ID.
+    path = tmp_path / "named-run.cap"
+    xml = _with_run(_xml(2), (
+        b'<ParameterValue RunNumber="6" ID="{number}"/>'
+        b'<ParameterValue RunName="1k run" ID="{name}"/>'
+    ))
+    _write_cap(path, xml=xml, payload=_payload(["1.5", "2.5"]))
+    # When
+    dataset = extract_cap_datasets(path)[0]
+    # Then
+    assert dataset.run_name == "1k run"
+    assert dataset.run_number == 6
+
+
+def test_dataset_without_run_parameters_reports_no_run_label(tmp_path: Path) -> None:
+    # Given: user-entered data has no recorded run.
+    path = tmp_path / "no-run.cap"
+    _write_cap(path, xml=_xml(1), payload=_payload(["1.5"]))
+    # When
+    dataset = extract_cap_datasets(path)[0]
+    # Then: the label is absent rather than guessed from list order.
+    assert dataset.run_name is None
+    assert dataset.run_number is None
+
+
+def test_malformed_run_number_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "bad-run.cap"
+    xml = _with_run(_xml(1), b'<ParameterValue RunNumber="six" ID="{number}"/>')
+    _write_cap(path, xml=xml, payload=_payload(["1.5"]))
+    with pytest.raises(CapFileError, match="RunNumber"):
+        _ = extract_cap_datasets(path)
+
+
+def test_requested_sections_are_returned_and_the_rest_reported_omitted(
+    tmp_path: Path,
+) -> None:
+    # Given
+    path = tmp_path / "sections.cap"
+    _write_cap(path, xml=_xml(1), payload=_payload(["1.5"]))
+    # When: only the hardware listing is requested.
+    view = select_configuration(read_cap_configuration(path), ["hardware_interfaces"])
+    # Then: unrequested sections are null and named, not presented as empty.
+    assert view.hardware_interfaces is not None
+    assert view.hardware_interfaces[0].sensors[0].name == "Synthetic Sensor"
+    assert view.data_sources is None
+    assert view.workspace is None
+    assert "data_sources" in view.omitted_sections
+    assert "hardware_interfaces" not in view.omitted_sections
+
+
+def test_no_section_selection_keeps_the_complete_configuration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "complete.cap"
+    _write_cap(path, xml=_xml(1), payload=_payload(["1.5"]))
+    view = select_configuration(read_cap_configuration(path), None)
+    assert view.omitted_sections == []
+    assert view.data_sources is not None
+    assert view.experiment_settings is not None

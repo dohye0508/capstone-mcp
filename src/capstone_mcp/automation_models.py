@@ -14,7 +14,7 @@ type NativeOperation = Literal[
     "recording_status", "set_recording", "step_sampling_rate",
     "select_sensor", "configure_sensor",
     "recording_initialize", "recording_observe", "recording_change",
-    "save_experiment", "export_data",
+    "save_experiment", "export_data", "open_experiment",
     "create_graph", "select_graph_measurement",
     "read_graph", "set_graph_fits", "analyze_graph", "observe_graph",
 ]
@@ -29,6 +29,8 @@ class NativeRequest(Model):
     launch: bool = False
     depth: int = 12
     limit: int = 800
+    query: str = ""
+    control_types: list[str] = Field(default_factory=list)
     ref: str = ""
     action: Action = Action.INVOKE
     value: str = ""
@@ -44,6 +46,7 @@ class NativeRequest(Model):
     target: str = ""
     step_limit: int = 128
     allow_foreground: bool = True
+    discard_unsaved: bool = False
     plan: JsonValue = None
     menu_path: list[str] = Field(default_factory=list)
     graph_request: JsonValue = None

@@ -318,3 +318,98 @@ def test_misspelled_graph_request_keys_are_rejected() -> None:
     # When / Then: the AI must resolve the contract instead of guessing an option.
     with pytest.raises(ValidationError):
         _ = GraphFitRequest.model_validate(request)
+
+
+def _menu(*, enabled: bool) -> tuple[Window, Snapshot]:
+    bounds = Bounds(left=0, top=0, right=100, bottom=100)
+    window = Window(handle=2, title="menu", process_id=1, bounds=bounds)
+    return window, Snapshot(
+        window=window, truncated=False,
+        controls=[Control(
+            ref="copy", parent=None, name="Copy Display", control_type="MenuItem",
+            automation_id="", enabled=enabled, visible=True, bounds=bounds,
+        )],
+    )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_open_menu_reports_whether_its_named_item_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, *, enabled: bool,
+) -> None:
+    # Given: the Display menu is open on an experiment with or without a
+    # selected graph.
+    app = Capstone()
+    window, snapshot = _menu(enabled=enabled)
+    monkeypatch.setattr(app, "windows", Mock(return_value=[window]))
+    monkeypatch.setattr(app, "snapshot", Mock(return_value=snapshot))
+    # When / Then
+    assert graph_workflows.menu_item_disabled(app, {1}, "Copy Display") != enabled
+
+
+def _armed_app(
+    monkeypatch: pytest.MonkeyPatch, focus_states: list[bool],
+) -> tuple[Capstone, Mock]:
+    app = Capstone()
+    bounds = Bounds(left=0, top=0, right=100, bottom=100)
+    main = Window(handle=1, title="scratch", process_id=1, bounds=bounds)
+    item = Control(
+        ref="display", parent=None, name="Display", control_type="MenuItem",
+        automation_id="", enabled=True, visible=True, bounds=bounds,
+    )
+    snapshot = Snapshot(window=main, truncated=False, controls=[item])
+    monkeypatch.setattr(app, "windows", Mock(return_value=[main]))
+    monkeypatch.setattr(app, "snapshot", Mock(return_value=snapshot))
+    node = Mock(has_keyboard_focus=Mock(side_effect=focus_states))
+    monkeypatch.setattr(app, "refs", {"display": node})
+    keys = Mock()
+    monkeypatch.setattr(app, "keys", keys)
+    return app, keys
+
+
+def test_armed_menu_bar_is_released_with_one_more_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: Escape closed the popup but the Display item kept keyboard focus.
+    app, keys = _armed_app(monkeypatch, [True, False])
+    # When
+    graph_workflows.release_menu_bar(app, 1)
+    # Then
+    keys.assert_called_once_with(1, "{ESC}")
+
+
+def test_idle_menu_bar_receives_no_stray_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, keys = _armed_app(monkeypatch, [False])
+    graph_workflows.release_menu_bar(app, 1)
+    keys.assert_not_called()
+
+
+def test_menu_mode_that_never_ends_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, keys = _armed_app(monkeypatch, [True, True, True])
+    with pytest.raises(AutomationError, match="menu mode"):
+        graph_workflows.release_menu_bar(app, 1)
+    assert keys.call_count == graph_workflows.MENU_RELEASE_ATTEMPTS
+
+
+def test_failed_graph_read_releases_the_menu_it_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the workflow's menu left the menu bar armed.
+    app, keys = _armed_app(monkeypatch, [True, False])
+    # When
+    graph_workflows.close_menus(app, 1)
+    # Then
+    keys.assert_called_once_with(1, "{ESC}")
+
+
+def test_menu_dismissal_never_masks_the_original_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: even Escape cannot be delivered.
+    app, _keys = _armed_app(monkeypatch, [True])
+    monkeypatch.setattr(app, "keys", Mock(side_effect=AutomationError("blocked")))
+    # When / Then: the helper stays silent so the caller's error is reported.
+    graph_workflows.close_menus(app, 1)

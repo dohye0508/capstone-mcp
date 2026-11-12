@@ -17,7 +17,7 @@ from capstone_mcp.acquisition import (
     RecordingStatus,
     SamplingRateChange,
 )
-from capstone_mcp.agent_instructions import INSTRUCTIONS
+from capstone_mcp.agent_instructions import INSTRUCTIONS, GuideTopic, guide
 from capstone_mcp.analysis import (
     FitInput,
     LinearFit,
@@ -30,11 +30,16 @@ from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.automation_worker import AutomationWorker
 from capstone_mcp.bridge import NativeInventory, read_inventory, read_measurement
 from capstone_mcp.capfile_models import (
-    CapConfiguration,
+    CapConfigurationView,
     CapDatasetPage,
     CapDatasetSummary,
+    CapSection,
 )
-from capstone_mcp.capfiles import extract_cap_datasets, read_cap_configuration
+from capstone_mcp.capfiles import (
+    extract_cap_datasets,
+    read_cap_configuration,
+    select_configuration,
+)
 from capstone_mcp.csv_data import CsvPage, read_csv_page
 from capstone_mcp.desktop import AutomationError
 from capstone_mcp.experiment_analysis import (
@@ -45,7 +50,7 @@ from capstone_mcp.experiment_analysis import (
     compare_cap_datasets,
     fit_cap_datasets,
 )
-from capstone_mcp.file_workflows import FileArtifact
+from capstone_mcp.file_workflows import FileArtifact, OpenedExperiment
 from capstone_mcp.graph_execution import GraphCapture, GraphFailure
 from capstone_mcp.graph_report import GraphAnalysisReport, summarize_graph
 from capstone_mcp.graph_requests import (
@@ -96,6 +101,20 @@ MCP: Final = FastMCP(
     lifespan=_lifespan,
     instructions=INSTRUCTIONS,
 )
+
+
+@MCP.tool(annotations=ToolAnnotations(
+    title="Read Capstone workflow rules", readOnlyHint=True,
+    destructiveHint=False, idempotentHint=True, openWorldHint=False,
+))
+def capstone_guide(topic: GuideTopic | None = None) -> str:
+    """Return the complete rules for one kind of work; call before starting it.
+
+    Clients may truncate the server instructions, which therefore carry only
+    the essentials. Topics: workflow, files, graphs, graph_contract, windows,
+    sensors, save_export, recording, recovery. Omit topic for all of them.
+    """
+    return guide(topic)
 
 
 class ExportedData(Model):
@@ -297,6 +316,25 @@ async def capstone_save_experiment(
 
 
 @MCP.tool()
+async def capstone_open_experiment(
+    handle: int, path: str,
+    *, discard_unsaved: bool = False, allow_foreground: bool = True,
+) -> OpenedExperiment:
+    """Open an existing .cap in the attached Capstone, replacing its document.
+
+    Uses File > Open Experiment and confirms the result by the window title.
+    Prefer this to typing Ctrl+O and a path, which Capstone can ignore while it
+    is still starting. Refuses when the current experiment has unsaved changes
+    (title ends with *) unless discard_unsaved=true, which answers the save
+    prompt with Discard. Close existing dialogs before calling.
+    """
+    return OpenedExperiment.model_validate(await _native(NativeRequest(
+        operation="open_experiment", handle=handle, value=path,
+        discard_unsaved=discard_unsaved, allow_foreground=allow_foreground,
+    ), mutates=True))
+
+
+@MCP.tool()
 async def capstone_export_data(
     handle: int, path: str,
     offset: Annotated[int, Field(ge=0)] = 0,
@@ -430,19 +468,29 @@ def capstone_plot(samples: PlotInput) -> Image:
 
 
 @MCP.tool()
-def capstone_inspect_file(path: str) -> CapConfiguration:
+def capstone_inspect_file(
+    path: str, sections: list[CapSection] | None = None,
+) -> CapConfigurationView:
     """Read saved .cap hardware/settings, source metadata, pages and calculations.
 
     Does not open the file in Capstone or infer live hardware connectivity.
     Array decoding is independent, so unknown recorded storage types do not
     prevent configuration inspection.
+
+    The complete result is often several hundred thousand characters, mostly
+    workspace (page layout) and data_sources. Pass sections to read only what
+    is needed, e.g. ["hardware_interfaces", "experiment_settings"]. Sections
+    not requested are null and named in omitted_sections; omit sections for all.
     """
-    return read_cap_configuration(path)
+    return select_configuration(read_cap_configuration(path), sections)
 
 
 @MCP.tool()
 def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
     """List decodable saved datasets with source IDs, unit IDs and sample counts.
+
+    run_name/run_number identify the recorded run a dataset belongs to; datasets
+    of one run share its dataset_id across sources. Pair x and y by that run.
 
     Supports type-7 strings and type-0 tagged doubles, with stored, interval,
     or implicit-index independent coordinates.
@@ -452,6 +500,7 @@ def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
         CapDatasetSummary(
             index=index, dataset_id=dataset.data_set_id,
             source_euid=dataset.source_euid, name=dataset.source_name,
+            run_name=dataset.run_name, run_number=dataset.run_number,
             unit_id=dataset.unit_id, value_kind=dataset.value_kind,
             count=len(dataset.raw_values),
         )
@@ -480,6 +529,7 @@ def capstone_extract_dataset(
         dataset=CapDatasetSummary(
             index=dataset_index, dataset_id=dataset.data_set_id,
             source_euid=dataset.source_euid, name=dataset.source_name,
+            run_name=dataset.run_name, run_number=dataset.run_number,
             unit_id=dataset.unit_id, value_kind=dataset.value_kind,
             count=len(dataset.raw_values),
         ),
@@ -584,10 +634,20 @@ async def capstone_snapshot(
     handle: int,
     depth: Annotated[int, Field(ge=1, le=30)] = 12,
     limit: Annotated[int, Field(ge=1, le=3000)] = 800,
+    query: Annotated[str, Field(max_length=200)] = "",
+    control_types: Annotated[list[str], Field(max_length=20)] | None = None,
 ) -> Snapshot:
-    """Read control names, roles, bounds, and fresh action references."""
+    """Read control names, roles, bounds, and fresh action references.
+
+    A full experiment window holds hundreds of controls. Pass query, a
+    case-insensitive substring of a control's name or automation_id, and/or
+    control_types such as ["Button", "CheckBox"] to return only the matches.
+    depth and limit still bound the traversal, so truncated=true means an
+    unvisited control may match. Custom-drawn graph toolbars are not exposed.
+    """
     return Snapshot.model_validate(await _native(NativeRequest(
         operation="snapshot", handle=handle, depth=depth, limit=limit,
+        query=query, control_types=control_types or [],
     )))
 
 
