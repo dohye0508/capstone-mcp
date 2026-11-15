@@ -418,6 +418,20 @@ def test_payload_budget_includes_stored_independent_coordinates(tmp_path: Path) 
     assert dataset.numeric_values == dataset.independent_values == [Decimal("2.5")]
 
 
+def test_stored_independent_axis_reads_its_own_member(tmp_path: Path) -> None:
+    cap_path = tmp_path / "distinct-axis.cap"
+    xml = _xml(2, storage_types=(0, 0)).replace(
+        b'CacheDataCount="2"',
+        b'DataCacheDataSize="2" FileName="data/coordinates.tmp"',
+    )
+    _write_cap(cap_path, xml=xml, payload=struct.pack("<IdId", 1, 23.0, 1, 29.0))
+    with ZipFile(cap_path, "a") as archive:
+        archive.writestr("data/coordinates.tmp", struct.pack("<IdId", 1, 0.25, 1, 0.5))
+    dataset = read_cap_file(cap_path).datasets[0]
+    assert dataset.numeric_values == [Decimal(23), Decimal(29)]
+    assert dataset.independent_values == [Decimal("0.25"), Decimal("0.5")]
+
+
 def test_corrupt_deflate_returns_domain_error(tmp_path: Path) -> None:
     cap_path = tmp_path / "corrupt-deflate.cap"
     _write_cap(cap_path, xml=_xml(0))
