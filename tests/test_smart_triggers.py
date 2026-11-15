@@ -14,7 +14,6 @@ from capstone_mcp.instruments import (
     KeepSampleRequest,
     KeepSampleResult,
     SetRecordingConditionRequest,
-    SetRecordingConditionResult,
     SetSamplingModeRequest,
     SetSamplingModeResult,
     manage_instrument,
@@ -67,18 +66,24 @@ def test_set_recording_condition_rejects_empty_conditions() -> None:
 def test_set_recording_condition_raises_when_toggle_not_found() -> None:
     app = Capstone()
     mock_win = _make_window()
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[
-            Control(
-                ref="ref:btn", parent=None, name="Calculator",
-                control_type="CheckBox", automation_id="ObjNameCalculator",
-                enabled=True, visible=True,
-                bounds=Bounds(left=0, top=0, right=50, bottom=50),
-            ),
-        ],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[
+                Control(
+                    ref="ref:btn",
+                    parent=None,
+                    name="Calculator",
+                    control_type="CheckBox",
+                    automation_id="ObjNameCalculator",
+                    enabled=True,
+                    visible=True,
+                    bounds=Bounds(left=0, top=0, right=50, bottom=50),
+                ),
+            ],
+            truncated=False,
+        ),
+    )
 
     req = SetRecordingConditionRequest(
         handle=100,
@@ -94,109 +99,26 @@ def test_set_recording_condition_raises_when_toggle_not_found() -> None:
         )
 
 
-def test_set_recording_condition_success() -> None:
-    app = Capstone()
-    mock_win = _make_window()
-
-    toggle_ctrl = Control(
-        ref="ref:rc_toggle", parent=None, name="Recording Conditions",
-        control_type="CheckBox",
-        automation_id="Controls.ObjNameRecordingConditions",
-        enabled=True, visible=True,
-        bounds=Bounds(left=10, top=10, right=60, bottom=60),
-    )
-    start_type_ctrl = Control(
-        ref="ref:start_type", parent=None, name="Start Condition Type",
-        control_type="ComboBox", automation_id="start_type_combo",
-        enabled=True, visible=True,
-        bounds=Bounds(left=100, top=10, right=200, bottom=40),
-    )
-    start_thresh_ctrl = Control(
-        ref="ref:start_thresh", parent=None, name="Start Threshold",
-        control_type="Edit", automation_id="start_threshold_edit",
-        enabled=True, visible=True,
-        bounds=Bounds(left=210, top=10, right=280, bottom=40),
-    )
-    stop_type_ctrl = Control(
-        ref="ref:stop_type", parent=None, name="Stop Condition Type",
-        control_type="ComboBox", automation_id="stop_type_combo",
-        enabled=True, visible=True,
-        bounds=Bounds(left=100, top=50, right=200, bottom=80),
-    )
-    stop_thresh_ctrl = Control(
-        ref="ref:stop_thresh", parent=None, name="Stop Threshold",
-        control_type="Edit", automation_id="stop_threshold_edit",
-        enabled=True, visible=True,
-        bounds=Bounds(left=210, top=50, right=280, bottom=80),
-    )
-
-    step = 0
-
-    def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
-        nonlocal step
-        step += 1
-        ctrls = [toggle_ctrl]
-        if step > 1:
-            ctrls.extend([
-                start_type_ctrl,
-                start_thresh_ctrl,
-                stop_type_ctrl,
-                stop_thresh_ctrl,
-            ])
-        return Snapshot(window=mock_win, controls=ctrls, truncated=False)
-
-    app.snapshot = mock_snapshot
-    app.click = MagicMock()
-    app.keys = MagicMock()
-
-    toggle_node = MagicMock()
-    toggle_node.iface_toggle.ToggleState = 0  # closed
-
-    start_thresh_node = MagicMock()
-    stop_thresh_node = MagicMock()
-
-    def mock_control(ref: str) -> MagicMock:
-        if ref == "ref:rc_toggle":
-            return toggle_node
-        if ref == "ref:start_thresh":
-            return start_thresh_node
-        if ref == "ref:stop_thresh":
-            return stop_thresh_node
-        return MagicMock()
-
-    app.control = mock_control
-
+def test_sensor_trigger_rejects_unimplemented_measurement_before_input() -> None:
+    app = MagicMock(spec=Capstone)
     req = SetRecordingConditionRequest(
-        handle=100,
         start_condition=ConditionSpec(
             condition_type="sensor_threshold",
             measurement="Force",
-            operator="above",
             threshold=5.0,
         ),
-        stop_condition=ConditionSpec(
-            condition_type="time",
-            threshold=10.0,
-        ),
     )
-    inst_res = manage_instrument(
-        app,
-        InstrumentRequest(
-            action=InstrumentAction.SET_RECORDING_CONDITION,
-            set_recording_condition=req,
-        ),
-    )
-
-    assert isinstance(inst_res, InstrumentResult)
-    assert isinstance(inst_res.set_recording_condition, SetRecordingConditionResult)
-    result = inst_res.set_recording_condition
-    assert result.verified is True
-    assert result.start_condition is not None
-    assert result.start_condition.threshold == 5.0
-    assert result.stop_condition is not None
-    assert result.stop_condition.threshold == 10.0
-    # Opened and restored
-    assert app.click.call_count == 2
+    with pytest.raises(
+        AutomationError, match="Sensor-trigger selection is unsupported",
+    ):
+        manage_instrument(
+            app,
+            InstrumentRequest(
+                action=InstrumentAction.SET_RECORDING_CONDITION,
+                set_recording_condition=req,
+            ),
+        )
+    app.snapshot.assert_not_called()
 
 
 # --- Tests for set_sampling_mode ---
@@ -218,11 +140,13 @@ def test_set_sampling_mode_requires_foreground() -> None:
 def test_set_sampling_mode_raises_when_control_not_found() -> None:
     app = Capstone()
     mock_win = _make_window()
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[],
+            truncated=False,
+        ),
+    )
 
     req = SetSamplingModeRequest(handle=100, mode="keep_sample")
     with pytest.raises(AutomationError, match="Sampling mode control"):
@@ -240,16 +164,22 @@ def test_set_sampling_mode_success() -> None:
     mock_win = _make_window()
 
     mode_btn = Control(
-        ref="ref:keep_radio", parent=None, name="Keep Sample",
-        control_type="RadioButton", automation_id="mode_keep_sample",
-        enabled=True, visible=True,
+        ref="ref:keep_radio",
+        parent=None,
+        name="Keep Sample",
+        control_type="RadioButton",
+        automation_id="mode_keep_sample",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=800, right=200, bottom=830),
     )
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[mode_btn],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[mode_btn],
+            truncated=False,
+        ),
+    )
 
     btn_node = MagicMock()
     app.control = MagicMock(return_value=btn_node)
@@ -267,7 +197,7 @@ def test_set_sampling_mode_success() -> None:
     assert isinstance(inst_res.set_sampling_mode, SetSamplingModeResult)
     result = inst_res.set_sampling_mode
     assert result.mode == "keep_sample"
-    assert result.verified is True
+    assert result.verified is False
     btn_node.iface_selection_item.Select.assert_called_once()
 
 
@@ -287,14 +217,22 @@ def test_keep_sample_requires_foreground() -> None:
         )
 
 
-def test_keep_sample_raises_when_button_not_found() -> None:
+def test_keep_sample_raises_when_button_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "capstone_mcp.instruments.triggers.observe_recording",
+        MagicMock(return_value=(MagicMock(recording=True), "record")),
+    )
     app = Capstone()
     mock_win = _make_window()
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[],
+            truncated=False,
+        ),
+    )
 
     req = KeepSampleRequest(handle=100)
     with pytest.raises(AutomationError, match="Keep Sample button not found"):
@@ -307,28 +245,42 @@ def test_keep_sample_raises_when_button_not_found() -> None:
         )
 
 
-def test_keep_sample_success_with_value_entry() -> None:
+def test_keep_sample_success_with_value_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "capstone_mcp.instruments.triggers.observe_recording",
+        MagicMock(return_value=(MagicMock(recording=True), "record")),
+    )
     app = Capstone()
     mock_win = _make_window()
 
     keep_btn = Control(
-        ref="ref:keep_btn", parent=None, name="Keep Sample",
-        control_type="Button", automation_id="ControlBar.KeepSampleButton",
-        enabled=True, visible=True,
+        ref="ref:keep_btn",
+        parent=None,
+        name="Keep Sample",
+        control_type="Button",
+        automation_id="ControlBar.KeepSampleButton",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=50, top=800, right=150, bottom=830),
     )
     val_edit = Control(
-        ref="ref:val_edit", parent=None, name="Position Value",
-        control_type="Edit", automation_id="SampleValueEdit",
-        enabled=True, visible=True,
+        ref="ref:val_edit",
+        parent=None,
+        name="Position Value",
+        control_type="Edit",
+        automation_id="SampleValueEdit",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=300, top=400, right=400, bottom=430),
     )
 
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[keep_btn, val_edit],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[keep_btn, val_edit],
+            truncated=False,
+        ),
+    )
     app.click = MagicMock()
     app.keys = MagicMock()
 
@@ -347,10 +299,10 @@ def test_keep_sample_success_with_value_entry() -> None:
     assert isinstance(inst_res, InstrumentResult)
     assert isinstance(inst_res.keep_sample, KeepSampleResult)
     result = inst_res.keep_sample
-    assert result.sample_retained is True
+    assert result.sample_retained is False
     assert result.recorded_value == 0.25
     assert result.variable_name == "Position"
-    assert result.verified is True
+    assert result.verified is False
     app.click.assert_called_once_with(100, "ref:keep_btn", allow_foreground=True)
     val_node.iface_value.SetValue.assert_called_once_with("0.25")
     app.keys.assert_called_once_with(100, "{ENTER}", allow_foreground=True)

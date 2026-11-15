@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import contextlib
+from typing import TYPE_CHECKING
 
+from capstone_mcp.acquisition import observe_recording
 from capstone_mcp.desktop import AutomationError, Capstone
+from capstone_mcp.displays import click_control
+from capstone_mcp.instruments._controls import select_observed_option
 from capstone_mcp.instruments.models import (
     KEEP_SAMPLE_SUFFIX,
     RECORDING_CONDITIONS_NAME,
@@ -20,25 +24,13 @@ from capstone_mcp.instruments.models import (
     SetSamplingModeRequest,
     SetSamplingModeResult,
 )
-from capstone_mcp.models import Action, Control
+
+if TYPE_CHECKING:
+    from capstone_mcp.models import Control
 
 # ---------------------------------------------------------------------------
 # 1. Internal Helpers
 # ---------------------------------------------------------------------------
-
-
-def _click_control(
-    app: Capstone,
-    handle: int,
-    ctrl: Control,
-    *,
-    allow_foreground: bool = True,
-) -> None:
-    """Click a control using either the high-level click helper or act(INVOKE)."""
-    if hasattr(app, "click"):
-        app.click(handle, ctrl.ref, allow_foreground=allow_foreground)
-    else:
-        _ = app.act(ctrl.ref, Action.INVOKE, allow_foreground=allow_foreground)
 
 
 def _find_recording_conditions_toggle(controls: list[Control]) -> Control:
@@ -48,13 +40,10 @@ def _find_recording_conditions_toggle(controls: list[Control]) -> Control:
             continue
         cname = ctrl.name.strip()
         aid = ctrl.automation_id
-        if (
-            ctrl.control_type in ("CheckBox", "Button")
-            and (
-                aid.endswith(RECORDING_CONDITIONS_SUFFIX)
-                or cname == RECORDING_CONDITIONS_NAME
-                or RECORDING_CONDITIONS_NAME.lower() in cname.lower()
-            )
+        if ctrl.control_type in ("CheckBox", "Button") and (
+            aid.endswith(RECORDING_CONDITIONS_SUFFIX)
+            or cname == RECORDING_CONDITIONS_NAME
+            or RECORDING_CONDITIONS_NAME.lower() in cname.lower()
         ):
             return ctrl
     msg = "Recording Conditions toggle button not found in window snapshot."
@@ -68,21 +57,25 @@ def _is_panel_open(app: Capstone, toggle_ctrl: Control) -> bool:
         if hasattr(node, "iface_toggle") and node.iface_toggle:
             toggle = node.iface_toggle
             v = getattr(toggle, "ToggleState", None)
-            if isinstance(v, int):
+            if isinstance(v, int) and v in (0, 1):
                 return bool(v == 1)
             v_curr = getattr(toggle, "CurrentToggleState", None)
-            if isinstance(v_curr, int):
+            if isinstance(v_curr, int) and v_curr in (0, 1):
                 return bool(v_curr == 1)
-    return False
+    msg = "Instrument drawer state is unobservable; no toggle was sent."
+    raise AutomationError(msg)
 
 
 def _set_input_text(app: Capstone, handle: int, ctrl: Control, text: str) -> None:
     """Set text on an edit control using ValuePattern or key typing."""
+    if ctrl.control_type == "ComboBox":
+        select_observed_option(app, ctrl, text)
+        return
     node = app.control(ctrl.ref)
     try:
         node.iface_value.SetValue(text)
     except (AttributeError, RuntimeError):
-        _click_control(app, handle, ctrl, allow_foreground=True)
+        click_control(app, handle, ctrl, allow_foreground=True)
         if hasattr(app, "keys"):
             _ = app.keys(handle, "^a{BACKSPACE}")
         if hasattr(app, "type_text"):
@@ -126,16 +119,23 @@ def _apply_condition(
     controls: list[Control],
 ) -> None:
     """Apply condition specification onto controls."""
-    type_ctrl, op_ctrl, thresh_ctrl = _find_condition_controls(controls, prefix)
-
-    if type_ctrl is not None:
-        _set_input_text(app, handle, type_ctrl, cond.condition_type)
-
-    if op_ctrl is not None and cond.operator is not None:
-        _set_input_text(app, handle, op_ctrl, cond.operator)
-
-    if thresh_ctrl is not None and cond.threshold is not None:
-        _set_input_text(app, handle, thresh_ctrl, str(cond.threshold))
+    if cond.measurement is not None or cond.condition_type == "sensor_threshold":
+        msg = "Sensor-trigger selection is unsupported; no trigger was changed."
+        raise AutomationError(msg)
+    del controls
+    for index, value in (
+        (0, cond.condition_type),
+        (1, cond.operator),
+        (2, cond.threshold),
+    ):
+        if value is None:
+            continue
+        snapshot = app.snapshot(handle, depth=16, limit=10_000)
+        ctrl = _find_condition_controls(snapshot.controls, prefix)[index]
+        if ctrl is None:
+            msg = f"Required {prefix} condition control is unavailable."
+            raise AutomationError(msg)
+        _set_input_text(app, handle, ctrl, str(value))
 
 
 # ---------------------------------------------------------------------------
@@ -156,13 +156,19 @@ def set_recording_condition(
         msg = "At least one of start_condition or stop_condition must be provided."
         raise AutomationError(msg)
 
+    for cond in (request.start_condition, request.stop_condition):
+        if cond is not None and (
+            cond.measurement is not None or cond.condition_type == "sensor_threshold"
+        ):
+            msg = "Sensor-trigger selection is unsupported; no trigger was changed."
+            raise AutomationError(msg)
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     toggle_ctrl = _find_recording_conditions_toggle(snapshot.controls)
     was_open = _is_panel_open(app, toggle_ctrl)
 
     opened_by_tool = False
     if not was_open:
-        _click_control(app, request.handle, toggle_ctrl, allow_foreground=True)
+        click_control(app, request.handle, toggle_ctrl, allow_foreground=True)
         opened_by_tool = True
         snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
 
@@ -185,16 +191,20 @@ def set_recording_condition(
                 snapshot.controls,
             )
 
-        detail = "Recording conditions successfully applied."
+        detail = (
+            "Recording-condition inputs delivered; native acceptance is unverified."
+        )
         return SetRecordingConditionResult(
             start_condition=request.start_condition,
             stop_condition=request.stop_condition,
-            verified=True,
+            verified=False,
             detail=detail,
         )
     finally:
         if opened_by_tool and not request.keep_open:
-            _click_control(app, request.handle, toggle_ctrl, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_recording_conditions_toggle(fresh.controls)
+            click_control(app, request.handle, current_toggle, allow_foreground=True)
 
 
 def _find_sampling_mode_control(controls: list[Control], mode: SamplingMode) -> Control:
@@ -241,12 +251,12 @@ def set_sampling_mode(
         with contextlib.suppress(AttributeError, RuntimeError):
             node.iface_selection_item.Select()
     else:
-        _click_control(app, request.handle, mode_ctrl, allow_foreground=True)
+        click_control(app, request.handle, mode_ctrl, allow_foreground=True)
 
-    detail = f"Sampling mode switched to '{request.mode}'."
+    detail = f"Sampling mode '{request.mode}' requested; acceptance is unverified."
     return SetSamplingModeResult(
         mode=request.mode,
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
@@ -297,29 +307,39 @@ def keep_sample(
         msg = "Keep sample operation requires allow_foreground=true."
         raise AutomationError(msg)
 
+    state, _ = observe_recording(app, request.handle)
+    if not state.recording:
+        msg = "Start recording in Keep Sample mode before keeping a sample."
+        raise AutomationError(msg)
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     keep_btn = _find_keep_sample_button(snapshot.controls)
 
-    _click_control(app, request.handle, keep_btn, allow_foreground=True)
+    if not keep_btn.enabled:
+        msg = "Keep Sample control is disabled."
+        raise AutomationError(msg)
+    click_control(app, request.handle, keep_btn, allow_foreground=True)
 
     if request.value is not None:
         post_snap = app.snapshot(request.handle, depth=16, limit=10_000)
         input_ctrl = _find_manual_value_input(post_snap.controls, request.variable_name)
+        if input_ctrl is None:
+            msg = "Manual value input missing; sample retention is unverified."
+            raise AutomationError(msg)
         if input_ctrl is not None:
             _set_input_text(app, request.handle, input_ctrl, str(request.value))
             if hasattr(app, "keys"):
                 _ = app.keys(request.handle, "{ENTER}", allow_foreground=True)
 
     detail = (
-        f"Sample point recorded with value {request.value} ({request.variable_name})."
+        f"Keep Sample input delivered with value {request.value}; retention unverified."
         if request.value is not None
-        else "Sample point recorded."
+        else "Keep Sample input delivered; sample retention is unverified."
     )
 
     return KeepSampleResult(
         recorded_value=request.value,
         variable_name=request.variable_name,
-        sample_retained=True,
-        verified=True,
+        sample_retained=False,
+        verified=False,
         detail=detail,
     )

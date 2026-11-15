@@ -77,7 +77,8 @@ class InstrumentManager:
     # -----------------------------------------------------------------------
 
     def set_sampling_rate(
-        self, request: SamplingRateRequest,
+        self,
+        request: SamplingRateRequest,
     ) -> SamplingRateSelection | SensorSelection:
         """Select sensor or navigate to target sampling rate."""
         if request.target:
@@ -96,7 +97,8 @@ class InstrumentManager:
         return zero_sensor(self.app, request)
 
     def configure_signal_generator(
-        self, request: SetSignalGeneratorRequest,
+        self,
+        request: SetSignalGeneratorRequest,
     ) -> SetSignalGeneratorResult | SignalGeneratorStatusResult:
         """Configure signal generator parameters or read current status."""
         if request.read_only:
@@ -112,13 +114,15 @@ class InstrumentManager:
         return set_signal_generator(self.app, request)
 
     def set_recording_condition(
-        self, request: SetRecordingConditionRequest,
+        self,
+        request: SetRecordingConditionRequest,
     ) -> SetRecordingConditionResult:
         """Configure start/stop recording trigger conditions."""
         return set_recording_condition(self.app, request)
 
     def set_sampling_mode(
-        self, request: SetSamplingModeRequest,
+        self,
+        request: SetSamplingModeRequest,
     ) -> SetSamplingModeResult:
         """Switch Capstone sampling mode (continuous, keep_sample, fast_monitor)."""
         return set_sampling_mode(self.app, request)
@@ -128,19 +132,22 @@ class InstrumentManager:
         return keep_sample(self.app, request)
 
     def scan_wireless(
-        self, request: ScanWirelessSensorsRequest,
+        self,
+        request: ScanWirelessSensorsRequest,
     ) -> ScanWirelessSensorsResult:
         """Scan and discover Bluetooth wireless sensors."""
         return scan_wireless_sensors(self.app, request)
 
     def connect_wireless(
-        self, request: ConnectWirelessSensorRequest,
+        self,
+        request: ConnectWirelessSensorRequest,
     ) -> ConnectWirelessSensorResult:
         """Pair and connect a discovered wireless sensor."""
         return connect_wireless_sensor(self.app, request)
 
     def calibrate_sensor(
-        self, request: CalibrateSensorRequest,
+        self,
+        request: CalibrateSensorRequest,
     ) -> CalibrateSensorResult:
         """Automate multi-point sensor calibration wizard."""
         return calibrate_sensor(self.app, request)
@@ -171,7 +178,8 @@ class InstrumentManager:
         )
 
     def _manage_configure_signal_generator(
-        self, request: InstrumentRequest,
+        self,
+        request: InstrumentRequest,
     ) -> InstrumentResult:
         if request.configure_signal_generator is None:
             msg = (
@@ -187,7 +195,8 @@ class InstrumentManager:
         )
 
     def _manage_set_recording_condition(
-        self, request: InstrumentRequest,
+        self,
+        request: InstrumentRequest,
     ) -> InstrumentResult:
         if request.set_recording_condition is None:
             msg = (
@@ -203,7 +212,8 @@ class InstrumentManager:
         )
 
     def _manage_set_sampling_mode(
-        self, request: InstrumentRequest,
+        self,
+        request: InstrumentRequest,
     ) -> InstrumentResult:
         if request.set_sampling_mode is None:
             msg = (
@@ -237,8 +247,7 @@ class InstrumentManager:
     def _manage_connect_wireless(self, request: InstrumentRequest) -> InstrumentResult:
         if request.connect_wireless is None:
             msg = (
-                "connect_wireless request must be provided for "
-                "CONNECT_WIRELESS action."
+                "connect_wireless request must be provided for CONNECT_WIRELESS action."
             )
             raise AutomationError(msg)
         return InstrumentResult(
@@ -249,8 +258,7 @@ class InstrumentManager:
     def _manage_calibrate_sensor(self, request: InstrumentRequest) -> InstrumentResult:
         if request.calibrate_sensor is None:
             msg = (
-                "calibrate_sensor request must be provided for "
-                "CALIBRATE_SENSOR action."
+                "calibrate_sensor request must be provided for CALIBRATE_SENSOR action."
             )
             raise AutomationError(msg)
         return InstrumentResult(
