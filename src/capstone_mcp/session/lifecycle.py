@@ -13,7 +13,7 @@ LOGGER: Final = logging.getLogger(__name__)
 
 
 class SessionLifecycleManager:
-    """Manages automation worker and desktop process attachment state."""
+    """Track a borrowed worker; its creating server owns process cleanup."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class SessionLifecycleManager:
         return self._is_active
 
     def terminate(self) -> None:
-        """Mark session inactive and disconnect active resources."""
+        """Mark this view inactive without terminating the borrowed worker or app."""
         self._is_active = False
         LOGGER.info("Session lifecycle marked inactive (port=%d)", self._debug_port)
 

@@ -6,7 +6,6 @@ from __future__ import annotations
 import collections
 import subprocess
 import sys
-import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -58,17 +57,16 @@ def test_worker_captures_stderr_and_bounds_line_length(tmp_path: Path) -> None:
     worker.process = proc
     worker._start_stderr_reader(proc.stderr)  # pyright: ignore[reportPrivateUsage]
 
-    # Wait briefly for reader thread to consume stderr
-    time.sleep(0.3)
-
-    assert len(worker.stderr_buffer) >= 3
-    assert worker.stderr_buffer[0] == "line 1: startup\n"
-    assert worker.stderr_buffer[1] == "line 2: initializing native COM\n"
-    # Long line must be clipped to at most 4096 characters per read
-    assert len(worker.stderr_buffer[2]) <= 4096
-
-    proc.terminate()
-    _ = proc.wait(timeout=2)
+    try:
+        assert worker._stderr_thread is not None
+        worker._stderr_thread.join(timeout=5)
+        assert not worker._stderr_thread.is_alive()
+        assert len(worker.stderr_buffer) >= 3
+        assert worker.stderr_buffer[0] == "line 1: startup\n"
+        assert worker.stderr_buffer[1] == "line 2: initializing native COM\n"
+        assert len(worker.stderr_buffer[2]) <= 4096
+    finally:
+        worker.close()
 
 
 def test_worker_caps_buffer_at_200_lines(tmp_path: Path) -> None:
@@ -95,14 +93,14 @@ def test_worker_caps_buffer_at_200_lines(tmp_path: Path) -> None:
     worker.process = proc
     worker._start_stderr_reader(proc.stderr)  # pyright: ignore[reportPrivateUsage]
 
-    time.sleep(0.4)
-
-    assert len(worker.stderr_buffer) == 200
-    # Oldest messages (0..49) discarded; contains recent messages
-    assert "stderr message 249\n" in worker.stderr_buffer[-1]
-
-    proc.terminate()
-    _ = proc.wait(timeout=2)
+    try:
+        assert worker._stderr_thread is not None
+        worker._stderr_thread.join(timeout=5)
+        assert not worker._stderr_thread.is_alive()
+        assert len(worker.stderr_buffer) == 200
+        assert "stderr message 249\n" in worker.stderr_buffer[-1]
+    finally:
+        worker.close()
 
 
 def test_worker_crash_attaches_stderr_to_native_session_error(
@@ -134,14 +132,17 @@ def test_worker_crash_attaches_stderr_to_native_session_error(
 
     worker._spawn = crashing_spawn  # pyright: ignore[reportPrivateUsage]
 
-    with pytest.raises(NativeSessionError) as exc_info:
-        worker.call(NativeRequest(operation="windows"))
+    try:
+        with pytest.raises(NativeSessionError) as exc_info:
+            worker.call(NativeRequest(operation="windows"))
 
-    err = exc_info.value
-    assert len(err.stderr_tail) > 0
-    full_str = str(err)
-    assert "Fatal COM exception 0x80004005" in full_str
-    assert "[Worker stderr tail]" in full_str
+        err = exc_info.value
+        assert len(err.stderr_tail) > 0
+        full_str = str(err)
+        assert "Fatal COM exception 0x80004005" in full_str
+        assert "[Worker stderr tail]" in full_str
+    finally:
+        worker.close()
 
 
 def test_worker_reset_clears_stderr_buffer() -> None:

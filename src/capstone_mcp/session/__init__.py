@@ -17,6 +17,7 @@ from capstone_mcp.session.watcher import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from threading import Event
 
     from capstone_mcp.automation_worker import AutomationWorker
     from capstone_mcp.bridge import NativeInventory
@@ -105,6 +106,7 @@ class UnifiedSessionManager:
         *,
         halt_callback: Callable[[], Any] | None = None,
         port: int | None = None,
+        cancel: Event | None = None,
     ) -> StopConditionTrigger:
         """Continuously poll live measurement until threshold is met or timeout."""
         def sample_fn() -> float:
@@ -118,6 +120,7 @@ class UnifiedSessionManager:
             condition,
             sample_fn,
             halt_callback=halt_callback,
+            cancel=cancel,
         )
 
 

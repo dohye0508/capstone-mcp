@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import suppress
+from ctypes import wintypes
 from threading import Lock, Thread
 from typing import IO, Final
 from uuid import uuid4
@@ -29,6 +31,35 @@ MAX_STDERR_LINE_BYTES: Final = 4096
 MAX_STDERR_LINES: Final = 200
 CLEANUP_SECONDS: Final = 2
 PROCESS_ATTACH_TO_JOB: Final = 0x0101
+THREAD_TERMINATE: Final = 0x0001
+ERROR_INVALID_PARAMETER: Final = 87
+ERROR_NOT_FOUND: Final = 1168
+
+
+def _cancel_thread_io(thread: Thread | None) -> None:
+    """Cancel only a worker-owned thread's outstanding synchronous pipe I/O."""
+    if thread is None or not thread.is_alive() or thread.native_id is None:
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.CancelSynchronousIo.argtypes = (wintypes.HANDLE,)
+    kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenThread(THREAD_TERMINATE, 0, thread.native_id)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == ERROR_INVALID_PARAMETER:  # The thread already exited.
+            return
+        raise ctypes.WinError(error)
+    try:
+        if not kernel32.CancelSynchronousIo(handle):
+            error = ctypes.get_last_error()
+            if error != ERROR_NOT_FOUND:  # No outstanding I/O is also success.
+                raise ctypes.WinError(error)
+    finally:
+        kernel32.CloseHandle(handle)
 
 class NativeSessionError(RuntimeError):
     """The native session failed; an input may already have reached Capstone."""
@@ -294,19 +325,24 @@ class AutomationWorker:
             process.stderr.close()
 
     def _dispose_resources(self) -> None:
-        self._terminate_process()
-        if self.transport is not None:
-            self.transport.join(CLEANUP_SECONDS)
-            if self.transport.is_alive():
-                msg = "Worker transport did not retire; no replacement may be started."
-                raise NativeSessionError(msg)
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=1.0)
+        try:
+            self._terminate_process()
+            _cancel_thread_io(self.transport)
+            _cancel_thread_io(self._stderr_thread)
+            for thread in (self.transport, self._stderr_thread):
+                if thread is not None:
+                    thread.join(CLEANUP_SECONDS)
+                    if thread.is_alive():
+                        msg = (
+                            "Worker I/O did not retire; no replacement may be started."
+                        )
+                        raise NativeSessionError(msg)
             self._stderr_thread = None
-        self._close_streams()
-        if self.job is not None:
-            self.job.Close()
-            self.job = None
+            self._close_streams()
+        finally:
+            if self.job is not None:
+                self.job.Close()
+                self.job = None
 
     def reset(self) -> None:
         """Prepare a fresh session only for an explicit attach after worker loss."""

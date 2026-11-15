@@ -210,7 +210,9 @@ async def test_read_active_displays_doc_dict_and_list_controls() -> None:
     mock_worker.retired = False
     mock_worker.process_id = 1234
 
-    async def mock_native_dict(_req: NativeRequest) -> dict[str, object]:
+    async def mock_native_dict(req: NativeRequest) -> object:
+        if req.operation == "windows":
+            return [{"handle": 1234}]
         return {
             "controls": [
                 {"name": "Page 1", "control_type": "TabItem", "automation_id": "page_1"},
@@ -223,7 +225,9 @@ async def test_read_active_displays_doc_dict_and_list_controls() -> None:
     assert doc["active_page"] == "Page 1"
     assert doc["table_count"] == 1
 
-    async def mock_native_list(_req: NativeRequest) -> list[object]:
+    async def mock_native_list(req: NativeRequest) -> list[object]:
+        if req.operation == "windows":
+            return [{"handle": 1234}]
         return [
             {"name": "Page X", "control_type": "TabItem", "automation_id": "page_x"},
             {"name": "Graph Display", "control_type": "Pane", "automation_id": "graph_x"},

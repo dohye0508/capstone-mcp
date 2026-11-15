@@ -10,6 +10,14 @@ from capstone_mcp.graphs import GraphOperationError
 
 _ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
     (
+        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
+        "TIMEOUT_ERROR",
+        (
+            "Operation timed out; inspect Capstone responsiveness and reattach "
+            "if needed."
+        ),
+    ),
+    (
         ("recording session has not been initialized", "recording not initialized"),
         "RECORDING_NOT_INITIALIZED",
         "Initialize recording session before invoking recording operations.",
@@ -57,14 +65,6 @@ _ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
         "INVALID_ARGUMENT",
         "Check tool argument types, values, and schema constraints before retrying.",
     ),
-    (
-        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
-        "TIMEOUT_ERROR",
-        (
-            "Operation timed out; inspect Capstone responsiveness and reattach "
-            "if needed."
-        ),
-    ),
 )
 
 
@@ -94,6 +94,14 @@ def classify_native_error(error: Exception) -> tuple[str, str]:
         )
 
     lower = str(error).lower()
+    if "foreground" in lower or "focus" in lower:
+        return (
+            "AUTOMATION_ERROR",
+            (
+                "Bring the intended Capstone window to the foreground and inspect "
+                "its current state before retrying; do not change input coordinates."
+            ),
+        )
     if "control" in lower and ("not found" in lower or "missing" in lower):
         return (
             "CONTROL_NOT_FOUND",

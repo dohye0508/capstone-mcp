@@ -6,7 +6,10 @@ from __future__ import annotations
 import logging
 import operator
 import time
-from typing import TYPE_CHECKING, Any, Final
+from threading import Event
+from typing import TYPE_CHECKING, Annotated, Any, Final
+
+from pydantic import Field, FiniteFloat
 
 from capstone_mcp.models import Model
 
@@ -34,17 +37,17 @@ class StopCondition(Model):
 
     measurement_euid: str
     operator: str
-    threshold: float
+    threshold: FiniteFloat
     unit_type: int = 0
-    timeout: float = 10.0
-    poll_interval: float = 0.05
+    timeout: Annotated[FiniteFloat, Field(gt=0)] = 10.0
+    poll_interval: Annotated[FiniteFloat, Field(gt=0)] = 0.05
 
 
 class StopConditionTrigger(Model):
     """Evaluation result for threshold stop conditions."""
 
     triggered: bool
-    current_value: float
+    current_value: float | None
     threshold: float
     operator: str
     elapsed_seconds: float
@@ -73,21 +76,35 @@ class ConditionWatcher:
         sampler: Callable[[], float],
         *,
         halt_callback: Callable[[], Any] | None = None,
+        cancel: Event | None = None,
     ) -> StopConditionTrigger:
-        """Continuously poll sample values until condition is met or timeout."""
+        """Poll until threshold, cancellation, or deadline; always request halt."""
+        # Reject invalid configuration before starting the monitoring lifecycle.
+        _ = self.evaluate(0.0, condition.operator, condition.threshold)
+        try:
+            return self._monitor(condition, sampler, cancel or Event())
+        finally:
+            if halt_callback is not None:
+                halt_callback()
+
+    def _monitor(
+        self, condition: StopCondition, sampler: Callable[[], float], cancel: Event,
+    ) -> StopConditionTrigger:
         start_time = time.monotonic()
-        last_val = 0.0
+        deadline = start_time + condition.timeout
+        next_sample = start_time
+        last_val = None
 
         while True:
             elapsed = time.monotonic() - start_time
-            if elapsed > condition.timeout:
+            if cancel.is_set() or time.monotonic() >= deadline:
                 return StopConditionTrigger(
                     triggered=False,
                     current_value=last_val,
                     threshold=condition.threshold,
                     operator=condition.operator,
                     elapsed_seconds=elapsed,
-                    detail=(
+                    detail="Monitoring cancelled." if cancel.is_set() else (
                         f"Timeout of {condition.timeout:.1f}s exceeded "
                         "before threshold was met."
                     ),
@@ -96,9 +113,10 @@ class ConditionWatcher:
             val = sampler()
             last_val = val
 
+            if cancel.is_set() or time.monotonic() >= deadline:
+                continue
+
             if self.evaluate(val, condition.operator, condition.threshold):
-                if halt_callback is not None:
-                    halt_callback()
                 return StopConditionTrigger(
                     triggered=True,
                     current_value=val,
@@ -111,4 +129,8 @@ class ConditionWatcher:
                     ),
                 )
 
-            time.sleep(condition.poll_interval)
+            next_sample += condition.poll_interval
+            now = time.monotonic()
+            # Skip missed slots instead of issuing a burst of stale polls.
+            next_sample = max(next_sample, now)
+            _ = cancel.wait(max(0.0, min(next_sample, deadline) - now))

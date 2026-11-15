@@ -104,6 +104,8 @@ def _read_active_runs_doc(
     worker: AutomationWorker,
     jobs: AcquisitionJobs,
 ) -> str:
+    with jobs.lock:
+        entries = list(jobs.jobs.items())
     runs_info = {
         "process_id": worker.process_id,
         "active_jobs": [
@@ -112,10 +114,10 @@ def _read_active_runs_doc(
                 "state": (
                     job.result.result().state
                     if job.result.done()
-                    else getattr(job.backend.observe(), "text", "running")
+                    else "running"
                 ),
             }
-            for jid, job in jobs.jobs.items()
+            for jid, job in entries
         ],
     }
     return json.dumps(runs_info, indent=2)
@@ -224,11 +226,22 @@ async def _read_active_displays_doc(
         "fft_count": 0,
     }
     if not worker.retired and worker.process_id:
-        with suppress(Exception):
+        try:
+            windows = await native(NativeRequest(operation="windows"))
+            if not isinstance(windows, list) or len(windows) != 1:
+                displays_doc["error"] = (
+                    "Display inspection requires one unambiguous Capstone window."
+                )
+                return JSON_VALUE.dump_json(displays_doc, indent=2).decode("utf-8")
+            window = windows[0]
+            handle = window.get("handle") if isinstance(window, dict) else None
+            if type(handle) is not int or handle <= 0:
+                displays_doc["error"] = "Capstone returned no valid window handle."
+                return JSON_VALUE.dump_json(displays_doc, indent=2).decode("utf-8")
             snapshot_res = await native(
                 NativeRequest(
                     operation="snapshot",
-                    handle=0,
+                    handle=handle,
                     depth=12,
                     limit=5000,
                 ),
@@ -245,6 +258,8 @@ async def _read_active_displays_doc(
 
             if displays_doc["pages"] and isinstance(displays_doc["pages"], list):
                 displays_doc["active_page"] = displays_doc["pages"][0]
+        except Exception as error:  # noqa: BLE001
+            displays_doc["error"] = str(error)
     return JSON_VALUE.dump_json(displays_doc, indent=2).decode("utf-8")
 
 

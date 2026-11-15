@@ -6,7 +6,8 @@ from __future__ import annotations
 import json
 import re
 from contextlib import asynccontextmanager, nullcontext
-from typing import TYPE_CHECKING, Any, Final
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Final, override
 
 import anyio
 from mcp.server.fastmcp import FastMCP
@@ -23,10 +24,14 @@ if TYPE_CHECKING:
 
     from mcp.types import ContentBlock
     from pydantic import JsonValue
+    from starlette.applications import Starlette
 
+from capstone_mcp import bridge
 from capstone_mcp.agent_instructions import INSTRUCTIONS
 from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.automation_worker import AutomationWorker, NativeSessionError
+from capstone_mcp.desktop import AutomationError
+from capstone_mcp.instruments.models import InstrumentRequest
 from capstone_mcp.models import ToolErrorPayload
 from capstone_mcp.prompts import (
     collision_impulse_experiment,
@@ -53,17 +58,30 @@ from capstone_mcp.tools.files import ExportedData
 
 WORKER: Final = AutomationWorker()
 JOBS: Final = AcquisitionJobs()
+_APP_LIFESPAN_ACTIVE: Final = ContextVar("capstone_app_lifespan_active", default=False)
 
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP[None]) -> AsyncGenerator[None, None]:
+    if _APP_LIFESPAN_ACTIVE.get():
+        # HTTP sessions borrow resources owned by the outer ASGI lifespan.
+        yield
+        return
+    token = _APP_LIFESPAN_ACTIVE.set(True)
     try:
         yield
     finally:
         try:
-            await anyio.to_thread.run_sync(JOBS.close)
+            with anyio.CancelScope(shield=True):
+                try:
+                    await anyio.to_thread.run_sync(JOBS.close)
+                finally:
+                    try:
+                        await anyio.to_thread.run_sync(WORKER.close)
+                    finally:
+                        await anyio.to_thread.run_sync(bridge.close_connections)
         finally:
-            await anyio.to_thread.run_sync(WORKER.close)
+            _APP_LIFESPAN_ACTIVE.reset(token)
 
 
 async def _native(
@@ -71,8 +89,36 @@ async def _native(
     *,
     mutates: bool = False,
 ) -> JsonValue:
-    with JOBS.interaction() if mutates else nullcontext():
+    manual = (
+        mutates and request.operation == "manage_instrument"
+        and isinstance(request.instrument_request, dict)
+        and request.instrument_request.get("action") == "keep_sample"
+    )
+    admission = (
+        JOBS.manual_sample() if manual
+        else JOBS.interaction() if mutates else nullcontext()
+    )
+    with admission as recording_owner:
         try:
+            if manual and recording_owner is not None:
+                instrument = InstrumentRequest.model_validate(
+                    request.instrument_request,
+                )
+                sample = instrument.keep_sample
+                if sample is None or sample.handle not in {0, recording_owner.handle}:
+                    msg = "Keep Sample must target the active recording window."
+                    raise AutomationError(msg)
+                instrument = instrument.model_copy(update={
+                    "keep_sample": sample.model_copy(update={
+                        "handle": recording_owner.handle,
+                    }),
+                })
+                routed = request.model_copy(update={
+                    "instrument_request": instrument.model_dump(mode="json"),
+                })
+                return await anyio.to_thread.run_sync(
+                    recording_owner.keep_sample, routed,
+                )
             if request.operation == "attach" and WORKER.retired:
                 await anyio.to_thread.run_sync(WORKER.reset)
             return await anyio.to_thread.run_sync(WORKER.call, request)
@@ -81,7 +127,25 @@ async def _native(
             raise ToolError(payload.model_dump_json(indent=2)) from exc
 
 
-MCP: Final = FastMCP(
+class CapstoneMCP(FastMCP[None]):
+    """Keep shared runtime resources alive until the HTTP application shuts down."""
+
+    @override
+    def streamable_http_app(self) -> Starlette:
+        """Wrap the SDK session manager's lifetime with application ownership."""
+        app = super().streamable_http_app()
+        original_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def app_lifespan(application: Starlette) -> AsyncGenerator[Any, None]:
+            async with _lifespan(self), original_lifespan(application) as state:
+                yield state
+
+        app.router.lifespan_context = app_lifespan
+        return app
+
+
+MCP: Final = CapstoneMCP(
     "capstone",
     host="127.0.0.1",
     port=8766,
@@ -156,6 +220,16 @@ capstone_manage_run = _run_tools["capstone_manage_run"]
 
 _FALLBACK_ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
     (
+        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
+        "TIMEOUT_ERROR",
+        "Operation timed out; inspect Capstone responsiveness and reattach if needed.",
+    ),
+    (
+        ("validation error", "input validation"),
+        "INVALID_ARGUMENT",
+        "Check tool argument types, values, and schema constraints before retrying.",
+    ),
+    (
         (
             "capstone_attach", "attach to capstone", "not attached",
             "no running capstone",
@@ -197,7 +271,7 @@ _FALLBACK_ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
         ),
     ),
     (
-        ("file", "path"),
+        ("no such file", "file not found", "path does not exist"),
         "FILE_NOT_FOUND",
         "Verify the target file path exists and is accessible.",
     ),
@@ -209,19 +283,13 @@ _FALLBACK_ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
             "retrying."
         ),
     ),
-    (
-        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
-        "TIMEOUT_ERROR",
-        (
-            "Operation timed out; inspect Capstone responsiveness and reattach "
-            "if needed."
-        ),
-    ),
 )
 
 
 def _classify_error_text(cleaned: str) -> tuple[str, str]:
     lower = cleaned.lower()
+    if ("file" in lower or "path" in lower) and "not found" in lower:
+        return "FILE_NOT_FOUND", "Verify the target file path exists and is accessible."
     if "control" in lower and ("not found" in lower or "missing" in lower):
         return (
             "CONTROL_NOT_FOUND",
@@ -248,6 +316,14 @@ def format_tool_error(error_message: Exception | str) -> ToolErrorPayload:
             error_code=error_message.error_code or code,
             message=error_message.message,
             remediation=error_message.remediation or remediation,
+        )
+    if isinstance(error_message, TimeoutError):
+        return ToolErrorPayload(
+            error_code="TIMEOUT_ERROR", message=str(error_message),
+            remediation=(
+                "Inspect Capstone responsiveness before retrying "
+                "the timed out operation."
+            ),
         )
     msg_str = str(error_message)
     cleaned = re.sub(r"^Error executing tool \w+:\s*", "", msg_str).strip()
@@ -285,22 +361,20 @@ async def _structured_call_tool_handler(req: CallToolRequest) -> ServerResult:
         and isinstance(res.root, CallToolResult)
         and res.root.isError
     ):
-        first_content = res.root.content[0] if res.root.content else None
+        first_content = next(
+            (item for item in res.root.content if isinstance(item, TextContent)), None,
+        )
         raw_text = (
             first_content.text if isinstance(first_content, TextContent) else ""
         )
         payload = format_tool_error(raw_text)
-        return ServerResult(
-            CallToolResult(
-                content=[
-                    TextContent(
-                        type="text",
-                        text=payload.model_dump_json(indent=2),
-                    ),
-                ],
-                isError=True,
-            ),
-        )
+        structured = TextContent(type="text", text=payload.model_dump_json(indent=2))
+        content = [
+            structured if item is first_content else item for item in res.root.content
+        ]
+        if first_content is None:
+            content.insert(0, structured)
+        return ServerResult(res.root.model_copy(update={"content": content}))
     return res
 
 

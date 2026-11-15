@@ -104,7 +104,7 @@ JSON_VALUE: Final = TypeAdapter(JsonValue)
 
 
 def _json(model: BaseModel) -> JsonValue:
-    return JSON_VALUE.validate_json(model.model_dump_json())
+    return JSON_VALUE.validate_python(model.model_dump(mode="json"))
 
 
 class NativeDesktop:
@@ -682,6 +682,17 @@ class NativeDesktop:
         try:
             if request.operation in GRAPH_INPUT_OPERATIONS:
                 self._verify_frame(request)
+            elif request.operation == "manage_graph":
+                graph_request = GraphRequest.model_validate(request.graph_request)
+                if (
+                    graph_request.action == "analyze"
+                    and graph_request.analyze is not None
+                ):
+                    analysis = graph_request.analyze
+                    self._verify_frame(request.model_copy(update={
+                        "handle": analysis.handle,
+                        "frame_id": analysis.fitting.frame_id,
+                    }))
             if request.operation == "select_graph_measurement":
                 self.graph_progress.begin_input("select_measurement")
             if request.operation == "create_graph":
