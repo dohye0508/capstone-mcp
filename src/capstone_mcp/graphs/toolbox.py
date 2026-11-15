@@ -23,7 +23,6 @@ from capstone_mcp.graphs.models import (
 if TYPE_CHECKING:
     from capstone_mcp.models import Control
 
-TOOLBAR_SEARCH_HEIGHT_PX: Final = 120
 MIN_COORDINATE_PAIRS: Final = 2
 
 STATS_KEYWORDS: Final = (
@@ -115,17 +114,22 @@ def _find_toolbar_button(
     keywords: tuple[str, ...],
 ) -> Control:
     """Locate a specific tool button on the graph toolbar."""
-    gb = graph_ctrl.bounds
+    by_ref = {control.ref: control for control in controls}
     matches: list[Control] = []
     for c in controls:
         if not c.visible or not c.enabled:
             continue
-        if not (
-            c.bounds.top >= gb.top - 50
-            and c.bounds.bottom <= gb.top + TOOLBAR_SEARCH_HEIGHT_PX
-            and c.bounds.left >= gb.left - 50
-            and c.bounds.right <= gb.right + 50
-        ):
+        # Screen rectangles can overlap or touch across displays. Only the
+        # snapshot's explicit ancestry establishes which graph owns a button.
+        parent = c.parent
+        visited: set[str] = set()
+        while parent is not None and parent != graph_ctrl.ref:
+            if parent in visited or parent not in by_ref:
+                parent = None
+                break
+            visited.add(parent)
+            parent = by_ref[parent].parent
+        if parent != graph_ctrl.ref:
             continue
 
         if c.control_type not in ("Button", "CheckBox", "MenuItem", "Custom"):
