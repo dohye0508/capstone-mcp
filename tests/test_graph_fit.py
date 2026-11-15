@@ -36,7 +36,7 @@ def test_fit_graph_raises_when_graph_not_found() -> None:
         truncated=False,
     ))
 
-    req = FitGraphRequest(handle=100, mode="scale_to_fit", graph_name="Missing Graph")
+    req = FitGraphRequest(handle=100, mode="scale_to_fit", graph_name="Missing Graph", offset=Point(x=20, y=20))
     with pytest.raises(AutomationError, match="No Graph display found"):
         _ = fit_graph(app, req)
 
@@ -68,14 +68,22 @@ def test_fit_graph_scale_to_fit_success() -> None:
 
     app.click_point = mock_click_point
 
-    req = FitGraphRequest(handle=100, mode="scale_to_fit", graph_name="Graph 1")
+    req = FitGraphRequest(handle=100, mode="scale_to_fit", graph_name="Graph 1", offset=Point(x=20, y=20))
     res = fit_graph(app, req)
 
     assert res.mode == "scale_to_fit"
     assert res.target_ref == "ref:graph1"
     assert res.clicked_point == (120, 120)
     assert clicked_coords == [(120, 120)]
-    assert res.verified is True
+    assert res.verified is False
+
+
+def test_missing_observed_offset_never_clicks_default_coordinates() -> None:
+    app = MagicMock()
+    with pytest.raises(AutomationError, match="observed toolbar offset"):
+        fit_graph(app, FitGraphRequest(handle=100))
+    app.snapshot.assert_not_called()
+    app.click_point.assert_not_called()
 
 
 def test_fit_graph_with_custom_offsets() -> None:
@@ -115,4 +123,4 @@ def test_fit_graph_with_custom_offsets() -> None:
 
     assert res.clicked_point == (228, 174)
     assert clicked_coords == [(228, 174)]
-    assert res.verified is True
+    assert res.verified is False

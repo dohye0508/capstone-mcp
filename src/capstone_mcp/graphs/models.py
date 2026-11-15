@@ -425,9 +425,10 @@ class FitGraphRequest(Model):
     """Specification of target graph and scaling mode (Scale to Fit)."""
 
     handle: int = 0
+    frame_id: str | None = Field(default=None, min_length=1)
     mode: str = "scale_to_fit"
     graph_name: str | None = None
-    offset: Point = DEFAULT_SCALE_TO_FIT_OFFSET
+    offset: Point | None = None
     allow_foreground: bool = True
 
 
@@ -445,6 +446,7 @@ class SelectMeasurementRequest(Model):
     """Specification for selecting an axis measurement via popup menu."""
 
     handle: int = 0
+    frame_id: str | None = Field(default=None, min_length=1)
     point: Point = Field(default_factory=lambda: Point(x=0, y=0))
     path: list[str] = Field(default_factory=list)
     allow_foreground: bool = True
