@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import zlib
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -59,6 +60,10 @@ MAX_TOTAL_UNCOMPRESSED_BYTES: Final = 64 * 1024 * 1024
 MAX_XML_BYTES: Final = 8 * 1024 * 1024
 MAX_XML_NODES: Final = 100_000
 MAX_XML_DEPTH: Final = 128
+# Count decoded datasets, including repeated references to the same ZIP member.
+# Preserve the existing single-dataset limit while bounding retained arrays.
+MAX_TOTAL_RECORDS: Final = MAX_RECORDS
+MAX_TOTAL_PAYLOAD_BYTES: Final = MAX_TOTAL_UNCOMPRESSED_BYTES
 
 
 def _normalize_member_name(name: str) -> str:
@@ -112,8 +117,9 @@ def _read_member(
         msg = f"Archive member {info.filename!r} exceeds the safety limit."
         raise CapFileError(msg)
     try:
-        data = archive.read(info)
-    except (BadZipFile, NotImplementedError, RuntimeError, OSError) as exc:
+        with archive.open(info) as stream:
+            data = stream.read(maximum_size + 1)
+    except (BadZipFile, NotImplementedError, RuntimeError, OSError, zlib.error) as exc:
         msg = f"Unable to read archive member {info.filename!r}."
         raise CapFileError(msg) from exc
     if len(data) != info.file_size or len(data) > maximum_size:
@@ -596,6 +602,39 @@ def _dataset(
     )
 
 
+def _validate_dataset_budget(
+    elements: list[Element],
+    members: dict[str, ZipInfo],
+) -> None:
+    """Reject aggregate expansion before allocating any decoded sample arrays."""
+    total_records = 0
+    total_bytes = 0
+    for element in elements:
+        _, independent_type, count, member_name = _dataset_storage(element)
+        total_records += count
+        if total_records > MAX_TOTAL_RECORDS:
+            msg = (
+                f"Archive dataset records exceed the {MAX_TOTAL_RECORDS} safety limit."
+            )
+            raise CapFileError(msg)
+        if not count:
+            continue
+        names = [member_name]
+        if independent_type == NUMERIC_STORAGE_TYPE:
+            segment = _required_single_child(element, "DataSegmentElement")
+            independent = _required_single_child(segment, "IndependentStorageElement")
+            names.append(_normalize_member_name(independent.get("FileName", "")))
+        for name in names:
+            info = members.get(name)
+            if info is None:
+                msg = f"Dataset payload is missing: {name!r}."
+                raise CapFileError(msg)
+            total_bytes += info.file_size
+            if total_bytes > MAX_TOTAL_PAYLOAD_BYTES:
+                msg = "Archive referenced dataset payloads exceed the safety limit."
+                raise CapFileError(msg)
+
+
 def _parse_archive(
     archive: ZipFile,
     *,
@@ -620,6 +659,8 @@ def _parse_archive(
     if len(nodes) > MAX_XML_NODES:
         msg = f"main.xml contains more than {MAX_XML_NODES} elements."
         raise CapFileError(msg)
+    dataset_elements = list(root.iter("DataSet")) if include_data else []
+    _validate_dataset_budget(dataset_elements, members)
     parent_by_child = {child: parent for parent in nodes for child in parent}
     header = _single_child(root, "Header")
     hardware = _single_child(root, "Hardware")
@@ -630,7 +671,7 @@ def _parse_archive(
     source_by_element = dict(zip(source_elements, source_models, strict=True))
     datasets: list[CapDataSet] = []
     runs = _run_labels(root) if include_data else {}
-    for element in root.iter("DataSet") if include_data else ():
+    for element in dataset_elements:
         source_element = _ancestor(element, parent_by_child, "DataSource")
         if source_element is None:
             msg = "DataSet is not linked to a DataSource."

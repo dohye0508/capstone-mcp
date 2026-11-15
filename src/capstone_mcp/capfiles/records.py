@@ -138,6 +138,9 @@ def decode_interval_coordinates(
     count: int,
 ) -> list[Decimal]:
     """Reproduce ZIntervalCache start + index * interval coordinates."""
+    if count < 0 or count > MAX_RECORDS:
+        msg = f"Record count {count} is outside the valid range (0-{MAX_RECORDS})."
+        raise CapFileError(msg)
     try:
         return interval_values(start, interval, count)
     except NumericStorageError as exc:
