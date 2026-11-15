@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import time
 from typing import TYPE_CHECKING
 
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -22,6 +23,7 @@ from capstone_mcp.instruments.models import (
     ScanWirelessSensorsResult,
     WirelessSensorInfo,
 )
+from capstone_mcp.models import Action
 
 if TYPE_CHECKING:
     from capstone_mcp.models import Control, Snapshot
@@ -58,12 +60,13 @@ def _is_drawer_open(app: Capstone, toggle_ctrl: Control) -> bool:
         if hasattr(node, "iface_toggle") and node.iface_toggle:
             toggle = node.iface_toggle
             v = getattr(toggle, "ToggleState", None)
-            if isinstance(v, int):
+            if isinstance(v, int) and v in (0, 1):
                 return bool(v == 1)
             v_curr = getattr(toggle, "CurrentToggleState", None)
-            if isinstance(v_curr, int):
+            if isinstance(v_curr, int) and v_curr in (0, 1):
                 return bool(v_curr == 1)
-    return False
+    msg = "Instrument drawer state is unobservable; no toggle was sent."
+    raise AutomationError(msg)
 
 
 def _set_ctrl_value(app: Capstone, handle: int, ctrl: Control, text: str) -> None:
@@ -109,7 +112,7 @@ def _is_wireless_item(ctrl: Control) -> bool:
         "wireless" in combined
         or "smart cart" in combined
         or "bluetooth" in combined
-        or bool(re.search(r"\b\d{3}-\d{3}\b", combined))
+        or bool(re.search(r"\b\d{3}-\d{3}\b", ctrl.name))
     )
 
 
@@ -161,15 +164,19 @@ def scan_wireless_sensors(
         snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
 
     try:
-        sensors: list[WirelessSensorInfo] = []
-        seen_ids: set[str] = set()
-
-        for ctrl in snapshot.controls:
-            if _is_wireless_item(ctrl):
-                info = _extract_sensor_info(ctrl)
-                if info.sensor_id not in seen_ids:
-                    seen_ids.add(info.sensor_id)
-                    sensors.append(info)
+        by_id: dict[str, WirelessSensorInfo] = {}
+        deadline = time.monotonic() + request.timeout_seconds
+        while True:
+            snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+            for ctrl in snapshot.controls:
+                if _is_wireless_item(ctrl):
+                    info = _extract_sensor_info(ctrl)
+                    by_id[info.sensor_id] = info
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.1, remaining))
+        sensors = list(by_id.values())
 
         detail = f"Found {len(sensors)} wireless sensor(s)."
         return ScanWirelessSensorsResult(
@@ -181,27 +188,56 @@ def scan_wireless_sensors(
 
     finally:
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle.ref, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_palette_toggle(
+                fresh.controls,
+                HARDWARE_SETUP_NAME,
+                HARDWARE_SETUP_TOGGLE_SUFFIX,
+            )
+            app.click(request.handle, current_toggle.ref, allow_foreground=True)
 
 
 def _find_target_sensor(controls: list[Control], target_id: str) -> Control | None:
-    t_lower = target_id.lower()
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        if t_lower in ctrl.name.lower() or t_lower in ctrl.automation_id.lower():
-            return ctrl
-    return None
+    t_lower = target_id.strip().casefold()
+    matches = [
+        c
+        for c in controls
+        if c.visible
+        and (
+            _parse_sensor_id(c.name).casefold() == t_lower
+            or c.name.strip().casefold() == t_lower
+            or c.automation_id.casefold() == t_lower
+        )
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _find_connect_button(controls: list[Control]) -> Control | None:
-    for ctrl in controls:
-        if not ctrl.visible or ctrl.control_type != "Button":
-            continue
-        name_lower = ctrl.name.lower()
-        if "connect" in name_lower or "pair" in name_lower:
-            return ctrl
-    return None
+    candidates = [
+        ctrl for ctrl in controls
+        if ctrl.visible and ctrl.control_type == "Button" and ctrl.enabled
+        and ctrl.name.strip().lower() in ("connect", "pair")
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _await_connected(
+    app: Capstone, request: ConnectWirelessSensorRequest, target_id: str,
+) -> WirelessSensorInfo:
+    """Wait for observed connected state without replaying the pairing input."""
+    deadline = time.monotonic() + request.timeout_seconds
+    while True:
+        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+        current = _find_target_sensor(snapshot.controls, target_id)
+        if current is not None:
+            info = _extract_sensor_info(current)
+            if info.connected:
+                return info
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            msg = "Wireless connection was not confirmed before timeout."
+            raise AutomationError(msg)
+        time.sleep(min(0.1, remaining))
 
 
 def connect_wireless_sensor(
@@ -238,23 +274,42 @@ def connect_wireless_sensor(
             msg = f"Wireless sensor '{request.sensor_id}' not found in Hardware Setup."
             raise AutomationError(msg)
 
-        connect_btn = _find_connect_button(snapshot.controls)
-        click_ref = connect_btn.ref if connect_btn else target_ctrl.ref
-        app.click(request.handle, click_ref, allow_foreground=True)
-
-        sensor_name = target_ctrl.name.strip() or target_id
-        detail = f"Connected wireless sensor '{sensor_name}' ({target_id})."
+        info = _extract_sensor_info(target_ctrl)
+        if not info.connected:
+            connect_btn = _find_connect_button(snapshot.controls)
+            if connect_btn is None:
+                msg = "No explicit Connect/Pair button; sensor toggle is ambiguous."
+                raise AutomationError(msg)
+            candidates = [c for c in snapshot.controls if _is_wireless_item(c)]
+            if len(candidates) > 1:
+                _ = app.act(target_ctrl.ref, Action.SELECT, allow_foreground=True)
+                snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+                connect_btn = _find_connect_button(snapshot.controls)
+                if connect_btn is None:
+                    msg = "Connect button disappeared after sensor selection."
+                    raise AutomationError(msg)
+            opened_by_tool_before_pairing = opened_by_tool
+            opened_by_tool = False
+            app.click(request.handle, connect_btn.ref, allow_foreground=True)
+            info = _await_connected(app, request, target_id)
+            opened_by_tool = opened_by_tool_before_pairing
         return ConnectWirelessSensorResult(
             sensor_id=target_id,
-            name=sensor_name,
+            name=info.name,
             connected=True,
             verified=True,
-            detail=detail,
+            detail="Connected state observed in Hardware Setup.",
         )
 
     finally:
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle.ref, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_palette_toggle(
+                fresh.controls,
+                HARDWARE_SETUP_NAME,
+                HARDWARE_SETUP_TOGGLE_SUFFIX,
+            )
+            app.click(request.handle, current_toggle.ref, allow_foreground=True)
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +342,13 @@ def _wizard_select_measurement(
     label: str,
     snapshot: Snapshot,
 ) -> Snapshot:
-    for ctrl in snapshot.controls:
-        if ctrl.visible and label.lower() in ctrl.name.lower():
-            app.click(handle, ctrl.ref, allow_foreground=True)
-            break
+    matches = [ctrl for ctrl in snapshot.controls
+               if ctrl.visible and label.casefold() in ctrl.name.casefold()]
+    if len(matches) != 1:
+        msg = "Calibration measurement was not uniquely identified."
+        raise AutomationError(msg)
+    app.click(handle, matches[0].ref, allow_foreground=True)
+    snapshot = app.snapshot(handle, depth=16, limit=10_000)
 
     next_btn = _find_wizard_button(snapshot.controls, "Next")
     if next_btn:
@@ -306,12 +364,18 @@ def _wizard_set_standard(
     snapshot: Snapshot,
 ) -> Snapshot:
     std_edit = _find_wizard_edit(snapshot.controls, 0)
-    if std_edit:
-        _set_ctrl_value(app, handle, std_edit, str(value))
+    if std_edit is None:
+        msg = "Calibration standard input was not found."
+        raise AutomationError(msg)
+    _set_ctrl_value(app, handle, std_edit, str(value))
+    snapshot = app.snapshot(handle, depth=16, limit=10_000)
 
     set_btn = _find_wizard_button(snapshot.controls, "Set")
-    if set_btn:
-        app.click(handle, set_btn.ref, allow_foreground=True)
+    if set_btn is None:
+        msg = "Calibration Set button was not found."
+        raise AutomationError(msg)
+    app.click(handle, set_btn.ref, allow_foreground=True)
+    snapshot = app.snapshot(handle, depth=16, limit=10_000)
 
     next_btn = _find_wizard_button(snapshot.controls, "Next")
     if next_btn:
@@ -321,12 +385,13 @@ def _wizard_set_standard(
 
 
 def _wizard_finish(app: Capstone, handle: int, snapshot: Snapshot) -> None:
-    finish_btn = (
-        _find_wizard_button(snapshot.controls, "Finish")
-        or _find_wizard_button(snapshot.controls, "Done")
-    )
-    if finish_btn:
-        app.click(handle, finish_btn.ref, allow_foreground=True)
+    finish_btn = _find_wizard_button(
+        snapshot.controls, "Finish",
+    ) or _find_wizard_button(snapshot.controls, "Done")
+    if finish_btn is None:
+        msg = "Calibration Finish button was not found."
+        raise AutomationError(msg)
+    app.click(handle, finish_btn.ref, allow_foreground=True)
 
 
 def calibrate_sensor(
@@ -392,7 +457,7 @@ def calibrate_sensor(
         _wizard_finish(app, request.handle, snapshot)
 
         detail = (
-            f"Sensor '{request.sensor_name}' calibrated ({normalized_cal}): "
+            f"Calibration inputs sent for '{request.sensor_name}' ({normalized_cal}): "
             f"Std1={request.standard_1}"
             + (
                 f", Std2={request.standard_2}."
@@ -407,10 +472,14 @@ def calibrate_sensor(
             calibration_type=normalized_cal,
             standard_1=request.standard_1,
             standard_2=request.standard_2,
-            verified=True,
+            verified=False,
             detail=detail,
         )
 
     finally:
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle.ref, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_palette_toggle(
+                fresh.controls, CALIBRATION_NAME, CALIBRATION_TOGGLE_SUFFIX,
+            )
+            app.click(request.handle, current_toggle.ref, allow_foreground=True)

@@ -6,7 +6,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final, Literal
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, FiniteFloat, computed_field, model_validator
 
 from capstone_mcp.models import Model
 
@@ -299,7 +299,7 @@ class ScanWirelessSensorsRequest(Model):
     """Parameters for scanning wireless Bluetooth sensors."""
 
     handle: int = 0
-    timeout_seconds: float = 5.0
+    timeout_seconds: FiniteFloat = Field(default=5.0, gt=0, le=30)
     allow_foreground: bool = True
     keep_open: bool = False
 
@@ -318,6 +318,7 @@ class ConnectWirelessSensorRequest(Model):
 
     sensor_id: str
     handle: int = 0
+    timeout_seconds: FiniteFloat = Field(default=5.0, gt=0, le=30)
     allow_foreground: bool = True
     keep_open: bool = False
 
@@ -365,6 +366,9 @@ class CalibrateSensorResult(Model):
 _FLAT_FIELD_MAPPINGS: Final[dict[str, tuple[str, ...]]] = {
     "zero_sensor": ("sensor_name", "handle", "allow_foreground"),
     "set_sampling_rate": (
+        "sensor",
+        "target",
+        "step_limit",
         "sampling_rate",
         "rate_value",
         "rate_unit",
@@ -393,7 +397,13 @@ _FLAT_FIELD_MAPPINGS: Final[dict[str, tuple[str, ...]]] = {
     "set_sampling_mode": ("mode", "handle", "allow_foreground", "keep_open"),
     "keep_sample": ("variable_value", "handle", "allow_foreground", "keep_open"),
     "scan_wireless": ("timeout_seconds", "handle", "allow_foreground", "keep_open"),
-    "connect_wireless": ("sensor_id", "handle", "allow_foreground", "keep_open"),
+    "connect_wireless": (
+        "sensor_id",
+        "handle",
+        "timeout_seconds",
+        "allow_foreground",
+        "keep_open",
+    ),
     "calibrate_sensor": (
         "sensor_name",
         "measurement_type",
@@ -405,6 +415,22 @@ _FLAT_FIELD_MAPPINGS: Final[dict[str, tuple[str, ...]]] = {
         "keep_open",
     ),
 }
+
+
+def _normalize_rate_fields(flat: dict[str, object]) -> dict[str, object]:
+    """Translate supported flat rate aliases into the nested request contract."""
+    normalized = dict(flat)
+    if "sensor" not in normalized and "sensor_name" in normalized:
+        normalized["sensor"] = normalized.pop("sensor_name")
+    if "target" not in normalized:
+        rate = normalized.pop("sampling_rate", None)
+        if isinstance(rate, str):
+            normalized["target"] = rate
+        elif "rate_value" in normalized and "rate_unit" in normalized:
+            normalized["target"] = (
+                f"{normalized.pop('rate_value')} {normalized.pop('rate_unit')}"
+            )
+    return normalized
 
 
 class InstrumentRequest(Model):
@@ -425,8 +451,12 @@ class InstrumentRequest(Model):
     @classmethod
     def _normalize_payload(cls, data: object) -> object:
         if isinstance(data, dict):
+            data = dict(data)
             # Backward-compatible dictionary keys
-            if "sampling_rate" in data and "set_sampling_rate" not in data:
+            if (
+                isinstance(data.get("sampling_rate"), (dict, SamplingRateRequest))
+                and data.get("set_sampling_rate") is None
+            ):
                 data["set_sampling_rate"] = data["sampling_rate"]
             if "signal_generator" in data and "configure_signal_generator" not in data:
                 data["configure_signal_generator"] = data["signal_generator"]
@@ -442,9 +472,11 @@ class InstrumentRequest(Model):
                 else str(action_raw)
             )
             fields = _FLAT_FIELD_MAPPINGS.get(action_key)
-            if fields and action_key not in data:
+            if fields and data.get(action_key) is None:
                 flat = {k: data[k] for k in fields if k in data}
                 if flat:
+                    if action_key == "set_sampling_rate":
+                        flat = _normalize_rate_fields(flat)
                     data[action_key] = flat
         return data
 

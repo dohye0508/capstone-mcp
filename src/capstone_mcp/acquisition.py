@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Explicit start/stop requests based on the observed Capstone recording state."""
 
+from _ctypes import COMError
 from typing import Final, Literal
 
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -42,8 +43,12 @@ class SamplingRateChange(Model):
 
 
 def step_sampling_rate(
-    app: Capstone, handle: int, direction: Literal["increase", "decrease"],
-    *, expected_sensor: str, allow_foreground: bool = True,
+    app: Capstone,
+    handle: int,
+    direction: Literal["increase", "decrease"],
+    *,
+    expected_sensor: str,
+    allow_foreground: bool = True,
 ) -> SamplingRateChange:
     """Click one native rate step, checking the selected sensor and stopped state."""
     state, _ = observe_recording(app, handle)
@@ -52,19 +57,20 @@ def step_sampling_rate(
         raise AutomationError(msg)
     snapshot = app.snapshot(handle, 16, 10_000)
     sensors = [
-        c for c in snapshot.controls if c.visible
-        and c.automation_id.endswith(".SamplingRateTargetSelector")
+        c
+        for c in snapshot.controls
+        if c.visible and c.automation_id.endswith(".SamplingRateTargetSelector")
     ]
     if len(sensors) != 1 or sensors[0].name != expected_sensor:
         msg = "Selected sampling sensor does not match expected_sensor."
         raise AutomationError(msg)
     suffix = (
-        ".IncreaseSampleRateButton" if direction == "increase"
+        ".IncreaseSampleRateButton"
+        if direction == "increase"
         else ".DecreaseSampleRateButton"
     )
     buttons = [
-        c for c in snapshot.controls
-        if c.visible and c.automation_id.endswith(suffix)
+        c for c in snapshot.controls if c.visible and c.automation_id.endswith(suffix)
     ]
     if len(buttons) != 1 or not buttons[0].enabled:
         msg = "The requested sampling-rate step is unavailable."
@@ -78,7 +84,8 @@ def step_sampling_rate(
         msg = "Sampling rate disappeared after the request; inspect Capstone."
         raise AutomationError(msg)
     return SamplingRateChange(
-        sensor=expected_sensor, before=state.sampling_rate_display,
+        sensor=expected_sensor,
+        before=state.sampling_rate_display,
         after=after.sampling_rate_display,
         changed=state.sampling_rate_display != after.sampling_rate_display,
     )
@@ -88,14 +95,19 @@ def observe_recording(app: Capstone, handle: int) -> tuple[RecordingStatus, str]
     """Read the visible recording checkbox and nearby displays from a fresh tree."""
     snapshot = app.snapshot(handle, 16, 10_000)
     controls = [
-        control for control in snapshot.controls
+        control
+        for control in snapshot.controls
         if control.visible and control.automation_id.endswith(RECORD_SUFFIX)
     ]
     if len(controls) != 1:
         msg = "No unique visible recording control; inspect the active experiment page."
         raise AutomationError(msg)
     control = controls[0]
-    toggle = app.refs[control.ref].iface_toggle.CurrentToggleState
+    try:
+        toggle = app.refs[control.ref].iface_toggle.CurrentToggleState
+    except (COMError, KeyError) as exc:
+        msg = "Recording control became unavailable; inspect the sensor connection."
+        raise AutomationError(msg) from exc
     if toggle not in (TOGGLE_OFF, TOGGLE_ON):
         msg = "Capstone recording state is indeterminate."
         raise AutomationError(msg)
@@ -108,20 +120,28 @@ def observe_recording(app: Capstone, handle: int) -> tuple[RecordingStatus, str]
         None,
     )
     return RecordingStatus(
-        window_handle=handle, process_id=snapshot.window.process_id,
-        recording=toggle == TOGGLE_ON, control_enabled=control.enabled,
-        time_display=time_text, sampling_rate_display=rate,
+        window_handle=handle,
+        process_id=snapshot.window.process_id,
+        recording=toggle == TOGGLE_ON,
+        control_enabled=control.enabled,
+        time_display=time_text,
+        sampling_rate_display=rate,
     ), control.ref
 
 
 def request_recording(
-    app: Capstone, handle: int, *, recording: bool, allow_foreground: bool = True,
+    app: Capstone,
+    handle: int,
+    *,
+    recording: bool,
+    allow_foreground: bool = True,
 ) -> RecordingRequest:
     """Request one idempotent start or stop; never toggle an already-correct state."""
     observed, ref = observe_recording(app, handle)
     if observed.recording == recording:
         return RecordingRequest(
-            requested_recording=recording, observed=observed,
+            requested_recording=recording,
+            observed=observed,
             transition_pending=False,
         )
     if not observed.control_enabled:
@@ -130,6 +150,7 @@ def request_recording(
     _ = app.act(ref, Action.INVOKE, allow_foreground=allow_foreground)
     observed, _ = observe_recording(app, handle)
     return RecordingRequest(
-        requested_recording=recording, observed=observed,
+        requested_recording=recording,
+        observed=observed,
         transition_pending=observed.recording != recording,
     )
