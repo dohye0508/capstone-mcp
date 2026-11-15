@@ -30,6 +30,18 @@ class PolynomialRegressionResult:
     degree: int
 
 
+def _rescale_ratio(value: float, numerator: float, denominator: float) -> float:
+    """Apply a scale ratio without overflowing an intermediate quotient."""
+    value_m, value_e = math.frexp(value)
+    num_m, num_e = math.frexp(numerator)
+    den_m, den_e = math.frexp(denominator)
+    try:
+        return math.ldexp(value_m * num_m / den_m, value_e + num_e - den_e)
+    except OverflowError as exc:
+        msg = "Regression result exceeds the finite floating-point range."
+        raise ValueError(msg) from exc
+
+
 def fit_linear_series(
     x: Sequence[float],
     y: Sequence[float],
@@ -50,6 +62,10 @@ def fit_linear_series(
         msg = f"Mismatched lengths: len(x)={len(x)} vs len(y)={len(y)}"
         raise ValueError(msg)
 
+    if any(math.isinf(v) for v in (*x, *y)):
+        msg = "Regression requires finite measurements; infinity is not supported."
+        raise ValueError(msg)
+
     pairs = [
         (float(xi), float(yi))
         for xi, yi in zip(x, y, strict=True)
@@ -63,39 +79,40 @@ def fit_linear_series(
     clean_x = [p[0] for p in pairs]
     clean_y = [p[1] for p in pairs]
 
-    mean_x = sum(clean_x) / n
-    mean_y = sum(clean_y) / n
-
-    ss_xx = sum((xi - mean_x) ** 2 for xi in clean_x)
-    if math.isclose(ss_xx, 0.0, abs_tol=1e-12):
+    # Normalize before centering and squaring: units must not decide whether
+    # nonconstant data has variance, or overflow otherwise finite input.
+    x_scale = max(abs(v) for v in clean_x) or 1.0
+    y_scale = max(abs(v) for v in clean_y) or 1.0
+    scaled_x = [v / x_scale for v in clean_x]
+    scaled_y = [v / y_scale for v in clean_y]
+    mean_x = math.fsum(scaled_x) / n
+    mean_y = math.fsum(scaled_y) / n
+    dx = [v - mean_x for v in scaled_x]
+    dy = [v - mean_y for v in scaled_y]
+    ss_xx = math.fsum(v * v for v in dx)
+    if ss_xx == 0.0:
         msg = "Independent variable x has zero variance (cannot fit vertical line)"
         raise ValueError(msg)
-
-    ss_yy = sum((yi - mean_y) ** 2 for yi in clean_y)
-    ss_xy = sum(
-        (xi - mean_x) * (yi - mean_y)
-        for xi, yi in zip(clean_x, clean_y, strict=True)
-    )
-
-    slope = ss_xy / ss_xx
-    intercept = mean_y - slope * mean_x
-
-    residuals = [
-        yi - (slope * xi + intercept)
-        for xi, yi in zip(clean_x, clean_y, strict=True)
+    ss_yy = math.fsum(v * v for v in dy)
+    ss_xy = math.fsum(a * b for a, b in zip(dx, dy, strict=True))
+    scaled_slope = ss_xy / ss_xx
+    slope = _rescale_ratio(scaled_slope, y_scale, x_scale)
+    intercept = (mean_y - scaled_slope * mean_x) * y_scale
+    scaled_residuals = [
+        b - scaled_slope * a for a, b in zip(dx, dy, strict=True)
     ]
-    ss_res = sum(r**2 for r in residuals)
-
-    r_squared = (
-        max(0.0, min(1.0, 1.0 - (ss_res / ss_yy))) if ss_yy > 0.0 else 1.0
-    )
-
-    dof = max(n - 2, 1)
-    mse = ss_res / dof
-    std_err_slope = math.sqrt(mse / ss_xx) if ss_xx > 0.0 else 0.0
-    std_err_intercept = (
-        math.sqrt(mse * ((1.0 / n) + (mean_x**2 / ss_xx))) if ss_xx > 0.0 else 0.0
-    )
+    residuals = [r * y_scale for r in scaled_residuals]
+    ss_res = math.fsum(r * r for r in scaled_residuals)
+    r_squared = max(0.0, min(1.0, 1.0 - ss_res / ss_yy)) if ss_yy else 1.0
+    mse = ss_res / max(n - 2, 1)
+    std_err_slope = _rescale_ratio(math.sqrt(mse / ss_xx), y_scale, x_scale)
+    std_err_intercept = math.sqrt(mse * (1.0 / n + mean_x**2 / ss_xx)) * y_scale
+    if not all(
+        math.isfinite(v)
+        for v in (slope, intercept, std_err_slope, std_err_intercept, *residuals)
+    ):
+        msg = "Regression result exceeds the finite floating-point range."
+        raise ValueError(msg)
 
     return LinearRegressionResult(
         slope=slope,
@@ -178,8 +195,7 @@ def fit_polynomial_series(  # noqa: C901
     mean_y = sum(clean_y) / n
     ss_yy = sum((yi - mean_y) ** 2 for yi in clean_y)
     ss_res = sum(
-        (yi - sum(coeffs[p] * (xi**p) for p in range(m))) ** 2
-        for xi, yi in pairs
+        (yi - sum(coeffs[p] * (xi**p) for p in range(m))) ** 2 for xi, yi in pairs
     )
     r_squared = max(0.0, min(1.0, 1.0 - (ss_res / ss_yy))) if ss_yy > 0.0 else 1.0
 
