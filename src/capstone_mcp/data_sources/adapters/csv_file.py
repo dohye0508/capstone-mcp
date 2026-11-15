@@ -46,6 +46,9 @@ class CsvNumberRangeError(CsvDataError):
 def _numeric_cell(value: str) -> float | None:
     number = parse_csv_number(value)
     if number is None:
+        if value.strip():
+            msg = "CSV number must be finite."
+            raise CsvNumberRangeError(msg)
         return None
     result = float(number)
     if not math.isfinite(result) or (result == 0.0 and number != 0):
@@ -92,7 +95,7 @@ def read_csv_series(path: Path, x_name: str, y_name: str) -> ExperimentSeries:
 
 
 def read_csv_all_columns(path: Path) -> dict[str, list[float]]:
-    """Read complete numeric columns; refuse ambiguous or silently shortened series."""
+    """Read numeric columns with NaN placeholders for blank cells."""
     table = read_csv_table(path)
     series: dict[str, list[float]] = {}
     names: set[str] = set()
@@ -108,13 +111,13 @@ def read_csv_all_columns(path: Path) -> dict[str, list[float]]:
                 invalid = True
         if not any(value is not None for value in values):
             continue
-        if invalid or any(value is None for value in values):
-            msg = f"CSV column {header!r} contains missing or invalid samples."
+        if invalid:
+            msg = f"CSV column {header!r} contains invalid samples."
             raise CsvDataError(msg)
         name = header.strip()
         if _normalized(name) in names:
             msg = f"Duplicate numeric CSV column: {name!r}."
             raise CsvDataError(msg)
         names.add(_normalized(name))
-        series[name] = [value for value in values if value is not None]
+        series[name] = [math.nan if value is None else value for value in values]
     return series

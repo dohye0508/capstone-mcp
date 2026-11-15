@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-import logging
 import unicodedata
 from typing import TYPE_CHECKING, Final
 
 import httpx2
 
-from capstone_mcp.bridge import BridgeError
+from capstone_mcp.bridge import DEFAULT_PORT
 from capstone_mcp.data_sources.models import (
     DataSeries,
     DatasetMetadata,
@@ -18,9 +17,11 @@ from capstone_mcp.data_sources.models import (
 from capstone_mcp.session import UnifiedSessionManager
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from capstone_mcp.bridge import NativeInventory
 
-LOGGER: Final = logging.getLogger(__name__)
+MIN_SERIES_SAMPLES: Final = 2
 
 
 class LiveMeasurementAdapter:
@@ -29,52 +30,38 @@ class LiveMeasurementAdapter:
     def __init__(
         self,
         session: UnifiedSessionManager | None = None,
-        debug_port: int = 9222,
+        debug_port: int | None = None,
     ) -> None:
         """Initialize adapter with optional session manager and port."""
-        self.session = session or UnifiedSessionManager(debug_port=debug_port)
-        self.debug_port = debug_port
+        if session is not None and debug_port not in (None, session.debug_port):
+            msg = "Use the supplied session's debug port for its telemetry history."
+            raise ValueError(msg)
+        self.session = session or UnifiedSessionManager(
+            debug_port=DEFAULT_PORT if debug_port is None else debug_port,
+        )
+        self.debug_port = self.session.debug_port
 
-    def list_datasets(self) -> list[DatasetMetadata]:
-        """Query live hardware inventory and return available measurement datasets."""
+    def _inventory(self) -> NativeInventory:
         try:
-            inventory = self.session.read_live_inventory(port=self.debug_port)
-        except (
-            BridgeError,
-            httpx2.HTTPError,
-            RuntimeError,
-            OSError,
-            ValueError,
-            TimeoutError,
-        ) as exc:
+            return self.session.read_live_inventory(port=self.debug_port)
+        except (httpx2.HTTPError, RuntimeError, OSError, ValueError) as exc:
             msg = (
-                f"Capstone is not running for live source: live://measurements ({exc})"
+                "Capstone is not running for live source: "
+                f"live://measurements ({exc})"
             )
             raise ValueError(msg) from exc
 
-        datasets: list[DatasetMetadata] = []
-        for m in inventory.measurements:
-            if isinstance(m, dict):
-                name = str(
-                    m.get("MeasurementName")
-                    or m.get("name")
-                    or m.get("Name")
-                    or m.get("euid")
-                    or "Measurement",
-                )
-                units = str(m.get("Unit") or m.get("units") or m.get("Units") or "")
-                euid = str(
-                    m.get("MeasurementEUID") or m.get("euid") or m.get("EUID") or "",
-                ).strip()
-                datasets.append(
-                    DatasetMetadata(
-                        name=name,
-                        units=units,
-                        run_id=None,
-                        sample_count=self.session.telemetry.sample_count(euid),
-                    ),
-                )
-        return datasets
+    def list_datasets(self) -> list[DatasetMetadata]:
+        """Return inventory metadata and counts of retained samples."""
+        return [
+            DatasetMetadata(
+                name=name,
+                units=units,
+                run_id=None,
+                sample_count=len(self.session.telemetry.get_samples(euid)),
+            )
+            for euid, name, units in _measurements(self._inventory())
+        ]
 
     def get_series(
         self,
@@ -82,101 +69,67 @@ class LiveMeasurementAdapter:
         y_name: str,
         run_id: str | None = None,
     ) -> ExperimentSeries:
-        """Extract paired x and y DataSeries from live telemetry stream."""
-        if run_id is not None:
-            msg = "Live instantaneous measurements do not support run_id selection."
+        """Read one measurement against host elapsed time or sample index."""
+        axis = _normalized(x_name)
+        by_time = axis in {"time", "t", "시간"}
+        if run_id is not None or not (by_time or axis in {"index", "sample", "인덱스"}):
+            msg = "Use recorded data for paired measurements or a specific run."
             raise ValueError(msg)
-        try:
-            inventory = self.session.read_live_inventory(port=self.debug_port)
-        except (
-            BridgeError,
-            httpx2.HTTPError,
-            RuntimeError,
-            OSError,
-            ValueError,
-            TimeoutError,
-        ) as exc:
-            msg = (
-                f"Capstone is not running for live source: live://measurements ({exc})"
-            )
-            raise ValueError(msg) from exc
-
-        x_euid, x_units = self._resolve_measurement(inventory, x_name)
-        y_euid, y_units = self._resolve_measurement(inventory, y_name)
-
-        index_name = unicodedata.normalize("NFC", x_name.strip()).casefold()
-        if x_euid is None and index_name in {"index", "sample", "인덱스", "샘플"}:
-            x_val = 0.0
-            x_units = ""
-        elif x_euid is not None:
-            try:
-                x_val = self.session.read_live_measurement(x_euid, port=self.debug_port)
-            except Exception as exc:
-                msg = f"Failed to read live measurement for '{x_name}': {exc}"
-                raise ValueError(msg) from exc
-        else:
-            msg = f"Measurement '{x_name}' not found in live inventory."
+        target = _normalized(y_name)
+        matches = [
+            (euid, units)
+            for euid, name, units in _measurements(self._inventory())
+            if target in {_normalized(name), _normalized(euid)}
+        ]
+        if len(matches) != 1:
+            msg = f"Expected one live measurement matching '{y_name}'; use its EUID."
+            raise ValueError(msg)
+        y_euid, y_units = matches[0]
+        samples = sorted(self.session.telemetry.get_samples(y_euid))
+        if len(samples) < MIN_SERIES_SAMPLES:
+            msg = "Collect at least two samples in the same Capstone session first."
             raise ValueError(msg)
 
-        if y_euid is not None:
-            try:
-                y_val = self.session.read_live_measurement(y_euid, port=self.debug_port)
-            except Exception as exc:
-                msg = f"Failed to read live measurement for '{y_name}': {exc}"
-                raise ValueError(msg) from exc
-        else:
-            msg = f"Measurement '{y_name}' not found in live inventory."
-            raise ValueError(msg)
-
+        start = samples[0][0]
         return ExperimentSeries(
-            x=DataSeries(name=x_name, units=x_units, values=[x_val]),
-            y=DataSeries(name=y_name, units=y_units, values=[y_val]),
-            run_id=run_id,
+            x=DataSeries(
+                name=x_name,
+                units="s" if by_time else "",
+                values=(
+                    [timestamp - start for timestamp, _ in samples]
+                    if by_time else [float(i) for i in range(len(samples))]
+                ),
+            ),
+            y=DataSeries(name=y_name, units=y_units, values=[v for _, v in samples]),
+            run_id=None,
             metadata={
                 "source": "live_telemetry",
                 "uri": "live://measurements",
-                "x_euid": x_euid or "sample_index",
+                "x_basis": "host_monotonic_elapsed" if by_time else "sample_index",
                 "y_euid": y_euid,
             },
         )
 
-    def _resolve_measurement(
-        self,
-        inventory: NativeInventory,
-        target_name: str,
-    ) -> tuple[str | None, str]:
-        """Search inventory measurements for a matching name or euid."""
-        target_lower = unicodedata.normalize("NFC", target_name.strip()).casefold()
-        if not target_lower:
-            msg = "Measurement name must not be empty."
-            raise ValueError(msg)
-        exact: list[tuple[str, str]] = []
-        partial: list[tuple[str, str]] = []
-        for m in inventory.measurements:
-            if isinstance(m, dict):
-                name = unicodedata.normalize(
-                    "NFC",
-                    str(
-                        m.get("MeasurementName")
-                        or m.get("name") or m.get("Name") or "",
-                    ).strip(),
-                )
-                euid = str(
-                    m.get("MeasurementEUID") or m.get("euid") or m.get("EUID") or "",
-                ).strip()
-                units = str(
-                    m.get("Unit") or m.get("units") or m.get("Units") or "",
-                ).strip()
-                if not euid:
-                    continue
-                if target_lower in {name.casefold(), euid.casefold()}:
-                    exact.append((euid, units))
-                elif target_lower in name.casefold():
-                    partial.append((euid, units))
-        if target_lower in {"time", "t", "index", "sample"} and not exact:
-            return None, ""
-        matches = exact or partial
-        if len(matches) > 1:
-            msg = f"Measurement '{target_name}' is ambiguous; specify its EUID."
-            raise ValueError(msg)
-        return matches[0] if matches else (None, "")
+
+def _normalized(value: str) -> str:
+    return unicodedata.normalize("NFC", value.strip()).casefold()
+
+
+def _measurements(inventory: NativeInventory) -> Iterator[tuple[str, str, str]]:
+    for item in inventory.measurements:
+        if not isinstance(item, dict):
+            continue
+        euid = str(
+            item.get("MeasurementEUID") or item.get("euid") or item.get("EUID") or "",
+        )
+        if euid:
+            name = str(
+                item.get("MeasurementName")
+                or item.get("name")
+                or item.get("Name")
+                or euid,
+            )
+            units = str(
+                item.get("Unit") or item.get("units") or item.get("Units") or "",
+            )
+            yield euid, name, units

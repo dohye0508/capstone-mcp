@@ -1,7 +1,10 @@
 # Copyright 2026 Capstone MCP contributors.
 """Unified experiment data source seam for file archives, tables, and sessions."""
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from capstone_mcp.data_sources.adapters.capfile import (
     read_capfile_datasets,
@@ -13,14 +16,25 @@ from capstone_mcp.data_sources.adapters.csv_file import (
 )
 from capstone_mcp.data_sources.adapters.live_session import LiveSessionAdapter
 from capstone_mcp.data_sources.adapters.live_telemetry import LiveMeasurementAdapter
-from capstone_mcp.data_sources.models import DatasetMetadata, ExperimentSeries
+
+if TYPE_CHECKING:
+    from capstone_mcp.data_sources.models import DatasetMetadata, ExperimentSeries
+    from capstone_mcp.displays import ReadTableResult
+    from capstone_mcp.session import UnifiedSessionManager
 
 
-def list_source_datasets(source: str | Path) -> list[DatasetMetadata]:
+def list_source_datasets(
+    source: str | Path,
+    *,
+    table_result: ReadTableResult | None = None,
+    live_session: UnifiedSessionManager | None = None,
+) -> list[DatasetMetadata]:
     """List all available datasets and their metadata from any experiment source.
 
     Args:
         source: Path to experiment archive (.cap), table (.csv), or live URI.
+        table_result: A captured table page when source is live://table.
+        live_session: Optional measurement session for retained sample counts.
 
     Returns:
         List of DatasetMetadata objects.
@@ -31,9 +45,9 @@ def list_source_datasets(source: str | Path) -> list[DatasetMetadata]:
     """
     if isinstance(source, str) and source.startswith("live://"):
         if source == "live://measurements":
-            return LiveMeasurementAdapter().list_datasets()
+            return LiveMeasurementAdapter(live_session).list_datasets()
         if source == "live://table":
-            return LiveSessionAdapter().list_datasets()
+            return LiveSessionAdapter(table_result).list_datasets()
         msg = f"Unsupported live source URI: {source}"
         raise ValueError(msg)
 
@@ -52,11 +66,14 @@ def list_source_datasets(source: str | Path) -> list[DatasetMetadata]:
     raise ValueError(msg)
 
 
-def get_experiment_series(
+def get_experiment_series(  # noqa: PLR0913
     source: str | Path,
     x_name: str,
     y_name: str,
     run_id: str | None = None,
+    *,
+    table_result: ReadTableResult | None = None,
+    live_session: UnifiedSessionManager | None = None,
 ) -> ExperimentSeries:
     """Retrieve paired X and Y series from any supported experiment source.
 
@@ -65,6 +82,8 @@ def get_experiment_series(
         x_name: Target independent variable column/signal name.
         y_name: Target dependent variable column/signal name.
         run_id: Optional specific Run ID filter (e.g. 'Run #1').
+        table_result: A captured table page when source is live://table.
+        live_session: Session that collected samples when source is live://measurements.
 
     Returns:
         ExperimentSeries containing paired x and y DataSeries.
@@ -75,9 +94,13 @@ def get_experiment_series(
     """
     if isinstance(source, str) and source.startswith("live://"):
         if source == "live://measurements":
-            return LiveMeasurementAdapter().get_series(x_name, y_name, run_id=run_id)
+            return LiveMeasurementAdapter(live_session).get_series(
+                x_name, y_name, run_id=run_id,
+            )
         if source == "live://table":
-            return LiveSessionAdapter().get_series(x_name, y_name, run_id=run_id)
+            return LiveSessionAdapter(table_result).get_series(
+                x_name, y_name, run_id=run_id,
+            )
         msg = f"Unsupported live source URI: {source}"
         raise ValueError(msg)
 

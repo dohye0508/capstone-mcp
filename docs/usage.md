@@ -82,7 +82,7 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
 작업별 전체 규칙은 `capstone_guide`로 읽을 수 있습니다. 일부 클라이언트가 서버 안내문을 앞부분만
 남기기 때문에, 초기 안내문에는 핵심만 두고 `files`, `graphs`, `windows`, `recording` 같은 주제별 내용을 이 도구로 제공합니다.
 
-물리적 입력은 기본적으로 허용되어 Capstone 창을 활성화합니다. `allow_foreground: false`는 해당 입력을 차단하는 옵션이며, 백그라운드 조작으로 전환하는 옵션은 아닙니다. `ref`는 새 스냅샷이나 조작 후 만료되므로 재사용하지 마세요.
+`capstone_interact_ui`는 기본적으로 창을 활성화하지 않습니다. 마우스·키 입력과 `invoke`·`focus`에는 `allow_foreground: true`를 명시해야 합니다. `ref`는 새 스냅샷이나 조작 후 만료되므로 재사용하지 마세요.
 
 ### Capstone 안에서 그래프와 피팅 만들기
 
@@ -120,6 +120,21 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
 
 서로 다른 회차나 단위를 섞어서 모델의 오차를 비교하지 마세요. 오차가 작거나 상관계수가 높다는 이유만으로 모델이 적절하다고 결론 내리지 않으며, 이상치를 자동으로 제거하지 않습니다.
 
+### 저장한 그래프 읽기
+
+`capstone_manage_graph`의 `read`에 `.cap` 파일을 지정하면 Capstone을 열지 않고 저장된 그래프와 피팅 결과를 읽습니다.
+
+```json
+{
+  "request": {
+    "action": "read",
+    "read": {"cap_file": "C:/Experiments/회로.cap", "graph_index": 0}
+  }
+}
+```
+
+`graph_index`는 워크북에 저장된 그래프 순서이며 0부터 시작합니다. 그래프가 하나면 생략할 수 있습니다. 응답의 `cap_file`, `graph_index`, `graph_count`로 읽은 위치를 확인할 수 있습니다. 열린 문서의 미저장 변경은 마지막 저장본에 반영되지 않습니다.
+
 ### 같은 데이터의 모델 비교 보고서
 
 `capstone_graph_report(handle)`는 선택한 그래프를 읽어 렌더러별로 모델·계수·유효한 오차 지표를 정리합니다. `groups[].provenance`의 소스·회차·단위 연결을 보존하고 다른 그룹을 한 순위로 합치지 않습니다. 각 행의 `request_model`은 다시 피팅을 요청할 때 쓸 수 있는 모델 이름이며, 사용자 정의 모델처럼 설정 대상이 아니면 비어 있습니다.
@@ -155,7 +170,7 @@ CSV 내보내기는 모든 데이터를 선택하고 **인덱스 기준**으로 
 기존 작업을 저장하고 Capstone을 닫은 뒤 PowerShell에서 실행합니다.
 
 ```powershell
-$env:QTWEBENGINE_REMOTE_DEBUGGING = "127.0.0.1:9223"
+$env:QTWEBENGINE_REMOTE_DEBUGGING = "127.0.0.1:9222"
 Start-Process "C:/Program Files/PASCO scientific/Capstone/Capstone.exe"
 Remove-Item Env:QTWEBENGINE_REMOTE_DEBUGGING
 ```
@@ -171,7 +186,7 @@ Remove-Item Env:QTWEBENGINE_REMOTE_DEBUGGING
 | 항목 | 설명 |
 | :--- | :--- |
 | `process_id`, `window_handle` | 연결한 Capstone 프로세스 ID와 대상 창 핸들 |
-| `debug_port` | 위에서 지정한 디버깅 포트. 기본값 `9223` |
+| `debug_port` | 위에서 지정한 디버깅 포트. 기본값 `9222` |
 | `repetitions` | 측정 횟수, 1~100회 |
 | `duration_seconds` | 회차별 측정 시간, 0초 초과~3600초 |
 | `pause_seconds` | 회차 사이 대기 시간, 기본값 `0` |
@@ -262,17 +277,9 @@ PASCO 850 Universal Interface 또는 550 Interface의 내장 신호발생기 출
 
 고속 샘플링 파형 관측과 주파수 도메인 분석을 위한 전용 디스플레이 도구입니다.
 
-- `capstone_create_scope`: 오실로스코프 디스플레이를 추가하고 타임베이스(예: `"1 ms/div"`)를 설정합니다.
-- `capstone_set_scope_trigger`: 트리거 전압 레벨, 슬로프 엣지(`rising`/`falling`), 트리거 모드(`auto`/`normal`/`single`), 소스 채널을 설정합니다.
-- `capstone_create_fft`: 주파수 스펙트럼을 분석하는 FFT 디스플레이를 생성합니다.
-- `capstone_read_fft_peaks`: FFT 스펙트럼에서 가장 강한 상위 `top_k`개의 피크 주파수(Hz)와 진폭을 자동으로 추출합니다.
+`capstone_manage_display`의 `create_scope`와 `create_fft`는 팔레트에서 디스플레이를 추가합니다. 추가 후 새 위젯과 쓰기 가능한 컨트롤이 노출될 때만 요청한 설정을 적용합니다. `verified=false` 또는 `display_id=null`이면 입력 후 상태를 확인하지 못한 것이므로 다시 추가하기 전에 페이지를 확인하세요.
 
-```json
-{
-  "fft_id": "FFT 1",
-  "top_k": 3
-}
-```
+`set_scope_trigger`와 `read_fft_peaks`는 활성 페이지에서 확인한 위젯을 사용합니다. 위젯이 여러 개면 실제 관찰된 `scope_id` 또는 `fft_id`를 지정하세요. 설치된 버전이 위젯이나 설정을 UI Automation에 노출하지 않으면 Capstone에서 직접 설정해야 합니다.
 
 ## 지능형 기록 조건과 수동 샘플링(Keep Sample)
 
@@ -334,16 +341,20 @@ PASCO 850 Universal Interface 또는 550 Interface의 내장 신호발생기 출
 
 ### 2. 자동 랩리포트 생성기 (`capstone_generate_lab_report`)
 
-실제 `.cap` 파일이나 활성 측정 런의 데이터를 수집하여 이론값 비교, $R^2$ 선형/비선형 회귀, 오차율 표, ASCII 스파크라인 및 Tufte 스타일 벡터 SVG 그래프가 포함된 공식 랩리포트를 Markdown 및 HTML로 발행합니다:
+저장된 `.cap`, CSV, JSON 데이터로 Markdown과 HTML 보고서를 생성합니다. `.cap`에 저장 런이 여러 개면 `run_id`를 지정하고, 회귀를 계산할 때는 `axes`에 x와 y의 측정 이름을 순서대로 지정합니다.
 
 ```json
 {
   "file_path_or_run": "C:/Experiments/광전효과.cap",
   "experiment_id": "photoelectric_effect",
+  "run_id": "Run #1",
+  "axes": ["Frequency", "Stopping Voltage"],
   "output_path": "C:/Experiments/광전효과_보고서.md",
   "format": "both"
 }
 ```
+
+`.cap`에서 `axes`를 생략하면 선택한 런의 측정 요약을 반환합니다. 저장 단위는 Capstone의 단위 ID로 표시하며, `.cap` 회귀는 해당 숫자 단위에서 일반 선형 회귀로 계산합니다. 두 형식을 저장할 때는 Markdown과 HTML에 새 파일 이름을 사용합니다. 같은 이름의 파일이 이미 있으면 해당 파일을 보존하고 오류를 반환합니다.
 
 ### 3. 실시간 센서 텔레메트리 & 임계치 트리거 (`capstone://measurements/live`)
 

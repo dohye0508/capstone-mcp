@@ -4,7 +4,14 @@
 from __future__ import annotations
 
 import html
+import math
 from typing import TYPE_CHECKING, Final, Literal
+
+from capstone_mcp.numerics.sparklines import (
+    MAX_SVG_POINTS,
+    plot_bounds,
+    sampled_svg_points,
+)
 
 if TYPE_CHECKING:
     from capstone_mcp.reports.models import LabReport
@@ -174,26 +181,23 @@ def _render_svg_plot(
     width: int = 640,
     height: int = 340,
 ) -> str:
-    if (
-        not report.raw_data_points
-        or len(report.raw_data_points) < MIN_DATA_POINTS_FOR_PLOT
-    ):
+    points = (
+        report.raw_data_points
+        if report.plotted_data_points is None else report.plotted_data_points
+    )
+    keys = list(points)
+    if len(keys) < MIN_DATA_POINTS_FOR_PLOT:
         return ""
-
-    keys = list(report.raw_data_points.keys())
-    x_vals = report.raw_data_points[keys[0]]
-    y_vals = report.raw_data_points[keys[1]]
-
-    if (
-        len(x_vals) < MIN_DATA_POINTS_FOR_PLOT
-        or len(x_vals) != len(y_vals)
-    ):
+    x_vals = [math.nan if value is None else value for value in points[keys[0]]]
+    y_vals = [math.nan if value is None else value for value in points[keys[1]]]
+    bounds = plot_bounds(x_vals, y_vals) if len(x_vals) == len(y_vals) else None
+    if bounds is None or bounds[0] < MIN_DATA_POINTS_FOR_PLOT:
         return ""
-
-    min_x, max_x = min(x_vals), max(x_vals)
-    min_y, max_y = min(y_vals), max(y_vals)
+    count, min_x, max_x, min_y, max_y = bounds
     span_x = max_x - min_x or 1.0
     span_y = max_y - min_y or 1.0
+    if not math.isfinite(span_x) or not math.isfinite(span_y):
+        return ""
 
     margin_left, margin_right = 60, 30
     margin_top, margin_bottom = 30, 50
@@ -224,18 +228,24 @@ def _render_svg_plot(
         ),
     ]
 
-    if report.regression and report.regression.slope is not None:
+    if report.regression and (
+        report.regression.x_variable, report.regression.y_variable,
+    ) == (keys[0], keys[1]):
         slope = report.regression.slope
         intercept = report.regression.intercept
         y1_fit = slope * min_x + intercept
         y2_fit = slope * max_x + intercept
-        svg_elements.append(
-            f'<line x1="{map_x(min_x):.1f}" y1="{map_y(y1_fit):.1f}" '
-            f'x2="{map_x(max_x):.1f}" y2="{map_y(y2_fit):.1f}" '
-            'stroke="#2563eb" stroke-width="2.5" stroke-dasharray="4,2"/>',
-        )
+        start_y, end_y = map_y(y1_fit), map_y(y2_fit)
+        if math.isfinite(start_y) and math.isfinite(end_y):
+            svg_elements.append(
+                f'<line x1="{map_x(min_x):.1f}" y1="{start_y:.1f}" '
+                f'x2="{map_x(max_x):.1f}" y2="{end_y:.1f}" '
+                'stroke="#2563eb" stroke-width="2.5" stroke-dasharray="4,2"/>',
+            )
 
-    for px, py in zip(x_vals, y_vals, strict=True):
+    if count > MAX_SVG_POINTS:
+        svg_elements.append(f"<desc>Sampled plot of {count} finite points.</desc>")
+    for px, py in sampled_svg_points(x_vals, y_vals, count):
         svg_elements.append(
             f'<circle cx="{map_x(px):.1f}" cy="{map_y(py):.1f}" r="4.5" '
             'fill="#dc2626" stroke="#ffffff" stroke-width="1.5"/>',
@@ -397,9 +407,34 @@ def _render_html_body_header(report: LabReport) -> list[str]:
     return sections
 
 
+def _render_html_apparatus(report: LabReport) -> list[str]:
+    metadata = report.metadata
+    sections = ["  <h2>3. Apparatus &amp; Setup Configuration</h2>"]
+    if metadata.apparatus:
+        sections.extend(["  <h3>Equipment List</h3>", "  <ul>"])
+        sections.extend(
+            f"    <li>{html.escape(item)}</li>" for item in metadata.apparatus
+        )
+        sections.append("  </ul>")
+    if metadata.channels_or_sensors:
+        sections.extend([
+            "  <h3>Interface Channels &amp; Sensor Bindings</h3>",
+            "  <table>",
+            "    <thead><tr><th>Channel / Port</th><th>Sensor / Role</th></tr></thead>",
+            "    <tbody>",
+        ])
+        sections.extend(
+            f"      <tr><td>{html.escape(channel)}</td>"
+            f"<td>{html.escape(sensor)}</td></tr>"
+            for channel, sensor in metadata.channels_or_sensors.items()
+        )
+        sections.extend(["    </tbody>", "  </table>"])
+    return sections
+
+
 def _render_html_body_data(report: LabReport) -> list[str]:
     sections = [
-        "  <h2>3. Measured Data & Statistics</h2>",
+        "  <h2>4. Measured Data & Statistics</h2>",
         "  <table>",
         (
             "    <thead><tr><th>Variable</th><th>Unit</th><th>Count</th>"
@@ -426,7 +461,7 @@ def _render_html_body_data(report: LabReport) -> list[str]:
 
 
 def _render_html_body_regression(report: LabReport) -> list[str]:
-    sections = ["  <h2>4. Regression & Curve Fitting</h2>"]
+    sections = ["  <h2>5. Regression & Curve Fitting</h2>"]
     if report.regression:
         reg = report.regression
         r2 = f"{reg.r_squared:.4f}" if reg.r_squared is not None else "N/A"
@@ -455,7 +490,7 @@ def _render_html_body_regression(report: LabReport) -> list[str]:
 
 def _render_html_body_errors(report: LabReport) -> list[str]:
     sections = [
-        "  <h2>5. Error Analysis</h2>",
+        "  <h2>6. Error Analysis</h2>",
         "  <table>",
         (
             "    <thead><tr><th>Parameter</th><th>Symbol</th><th>Accepted</th>"
@@ -496,12 +531,13 @@ def render_html(report: LabReport) -> str:
         "<body>",
     ]
     sections.extend(_render_html_body_header(report))
+    sections.extend(_render_html_apparatus(report))
     sections.extend(_render_html_body_data(report))
     sections.extend(_render_html_body_regression(report))
     sections.extend(_render_html_body_errors(report))
 
     if report.discussion_questions:
-        sections.append("  <h2>6. Discussion Questions</h2>")
+        sections.append("  <h2>7. Discussion Questions</h2>")
         sections.append("  <ol>")
         sections.extend(
             f"    <li>{html.escape(q)}</li>"
@@ -510,7 +546,7 @@ def render_html(report: LabReport) -> str:
         sections.append("  </ol>")
 
     sections.extend([
-        "  <h2>7. Conclusion</h2>",
+        "  <h2>8. Conclusion</h2>",
         f"  <p>{html.escape(report.conclusion or 'Analysis complete.')}</p>",
         "</body>",
         "</html>",

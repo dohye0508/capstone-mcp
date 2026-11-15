@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
-from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from zipfile import ZipFile
 
 import pytest
@@ -18,17 +16,13 @@ from capstone_mcp.capfiles import (
     read_cap_configuration,
     read_cap_file,
 )
+from tests.golden_samples import GOLDEN_MASTER_DIR
 
-GOLDEN_MASTER_DIR: Final = Path(
-    os.environ.get(
-        "CAPSTONE_GOLDEN_MASTER_DIR",
-        "",
-    ),
-)
+if TYPE_CHECKING:
+    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("CAPSTONE_GOLDEN_MASTER_DIR")
-    or not GOLDEN_MASTER_DIR.is_dir(),
+    not GOLDEN_MASTER_DIR.is_dir(),
     reason=f"Golden master Capstone archives not found at {GOLDEN_MASTER_DIR}",
 )
 

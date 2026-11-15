@@ -13,6 +13,7 @@ from capstone_mcp.graphs.inspection import (
     close_menus,
     menu_item_disabled,
     read_graph,
+    read_saved_graph,
     release_menu_bar,
     summarize_graph,
     verify_graph_binding,
@@ -511,7 +512,9 @@ class GraphManager:
         return create_graph(self.app, request)
 
     def read(self, request: ReadGraphRequest) -> ReadGraphResult:
-        """Read graph state via native clipboard."""
+        """Read graph state from a saved archive or from the active display."""
+        if request.cap_file is not None:
+            return read_saved_graph(request.cap_file, request.graph_index)
         state = read_graph(
             self.app,
             request.handle,

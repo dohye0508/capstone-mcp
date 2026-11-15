@@ -42,8 +42,8 @@ def register_run_tools(
 
         Supported actions (request.action):
         - rename: Rename a specific Run in the Data Summary tree (request.rename)
-        - delete: Request deletion of a named run and report observed removal
-          (request.delete)
+        - delete: Delete the last recorded run (request.delete.run_name="last_run").
+          Open Sensor Data Summary before calling to verify the deletion.
         - set_visibility: Control visibility (show/hide) of specific runs
           (request.visibility)
         """

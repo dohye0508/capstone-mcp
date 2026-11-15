@@ -100,7 +100,7 @@ async def test_report_generation_and_rendering_leave_event_loop(
     monkeypatch.setattr(physics, "generate_report", generate_checked)
     monkeypatch.setattr(physics, "render_report", render_checked)
     result = await server.capstone_generate_lab_report(
-        "photoelectric_effect_sample", experiment_id="photoelectric_effect",
+        "sample", experiment_id="photoelectric_effect",
     )
     assert result.report_markdown
     assert len(threads) == 2

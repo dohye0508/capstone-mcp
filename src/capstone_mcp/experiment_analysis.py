@@ -169,13 +169,14 @@ def _finite_numeric_values(dataset: CapDataSet, *, index: int) -> list[float]:
     return values
 
 
-def _validate_paired_coordinates(
+def validate_paired_coordinates(
     x_dataset: CapDataSet,
     y_dataset: CapDataSet,
     *,
     x_index: int,
     y_index: int,
 ) -> None:
+    """Require matching saved coordinates before pairing samples by position."""
     if len(x_dataset.independent_values) != len(y_dataset.independent_values):
         msg = "Selected fit datasets have different independent-coordinate lengths."
         raise ExperimentAnalysisError(msg)
@@ -225,7 +226,7 @@ def fit_cap_datasets(
     if len(x_values) != len(y_values):
         msg = "Selected fit datasets contain different numbers of samples."
         raise ExperimentAnalysisError(msg)
-    _validate_paired_coordinates(
+    validate_paired_coordinates(
         x_dataset,
         y_dataset,
         x_index=x_index,

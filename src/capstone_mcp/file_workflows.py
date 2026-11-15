@@ -17,6 +17,7 @@ from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.file_events import FileEvents
 from capstone_mcp.models import Action, Control, Model, Snapshot
 from capstone_mcp.ui_events import WindowEvents
+from capstone_mcp.ui_strings import label_matches
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -77,10 +78,10 @@ def _new_snapshot(
     return None
 
 
-def _named_button(app: Capstone, handle: int, name: str) -> Control:
+def _named_button(app: Capstone, handle: int, resource_key: str) -> Control:
     return _one(
         app.snapshot(handle, 1, 200),
-        lambda c: c.control_type == "Button" and c.name == name,
+        lambda c: c.control_type == "Button" and label_matches(c.name, resource_key),
     )
 
 
@@ -90,7 +91,8 @@ def _open_command(
     before = {w.handle for w in app.windows()}
     file_menu = _one(
         app.snapshot(handle, 2, 300),
-        lambda c: c.control_type == "MenuItem" and c.name == "File",
+        lambda c: c.control_type == "MenuItem"
+        and label_matches(c.name, "STR_MENU_FILE"),
     )
     _ = app.act(file_menu.ref, Action.INVOKE)
     try:
@@ -120,13 +122,14 @@ def _choose_export_option(
         lambda: _new_snapshot(
             app, before,
             lambda s: any(
-                c.control_type == "MenuItem" and c.name == option for c in s.controls
+                c.control_type == "MenuItem" and label_matches(c.name, option)
+                for c in s.controls
             ),
         ),
         TRANSITION_SECONDS,
     )
     control = _one(
-        menu, lambda c: c.control_type == "MenuItem" and c.name == option,
+        menu, lambda c: c.control_type == "MenuItem" and label_matches(c.name, option),
     )
     menu_handle = menu.window.handle
     _ = app.act(control.ref, Action.INVOKE)
@@ -286,14 +289,21 @@ def export_data(
         export_handle = dialog.window.handle
         try:
             _choose_export_option(
-                app, events, export_handle, "Export Format", "Comma separated values",
+                app, events, export_handle,
+                "STR_EXPORT_DATA_EXPORT_FORMAT_BUTTON_LABEL",
+                "STR_EXPORT_DATA_EXPORT_FORMAT_CSV_MENU_ITEM",
             )
             _choose_export_option(
-                app, events, export_handle, "Alignment Options", "Align by Index",
+                app, events, export_handle,
+                "STR_EXPORT_DATA_DIALOG_OPTIONS", "STR_TABLE_DATA_ALIGNMENT_MODE_INDEX",
             )
-            select = _named_button(app, export_handle, "Select All")
+            select = _named_button(
+                app, export_handle, "STR_EXPORT_DATA_DIALOG_SELECT_ALL",
+            )
             _ = app.act(select.ref, Action.INVOKE)
-            export = _named_button(app, export_handle, "Export to file...")
+            export = _named_button(
+                app, export_handle, "STR_EXPORT_DATA_DIALOG_EXPORT",
+            )
             previous = {w.handle for w in app.windows()}
             _ = app.act(export.ref, Action.INVOKE)
             file_dialog = _file_dialog(app, events, previous)
@@ -314,7 +324,7 @@ def _close_export_dialog(
     try:
         if not any(window.handle == handle for window in app.windows()):
             return
-        close = _named_button(app, handle, "Close")
+        close = _named_button(app, handle, "STR_CLOSE")
         _ = app.act(close.ref, Action.INVOKE)
         _ = events.changes.until(
             lambda: True if all(w.handle != handle for w in app.windows()) else None,

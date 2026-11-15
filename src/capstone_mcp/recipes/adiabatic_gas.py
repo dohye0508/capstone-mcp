@@ -61,6 +61,10 @@ def _fit_adiabatic_index(
     ln_v = [math.log(v) for _, v in compression_pairs]
     ln_p = [math.log(p) for p, _ in compression_pairs]
 
+    if len(set(ln_v)) < 2:  # noqa: PLR2004
+        msg = "Adiabatic fitting requires positive data at distinct volumes."
+        raise ValueError(msg)
+
     n = len(ln_v)
     mean_x = math.fsum(ln_v) / n
     mean_y = math.fsum(ln_p) / n

@@ -14,6 +14,7 @@ from capstone_mcp.capfiles.archive import (
     read_cap_configuration,
     read_cap_dataset_page,
     read_cap_file,
+    read_cap_workspace,
     select_configuration,
 )
 from capstone_mcp.capfiles.records import (
@@ -60,5 +61,6 @@ __all__ = [
     "read_cap_configuration",
     "read_cap_dataset_page",
     "read_cap_file",
+    "read_cap_workspace",
     "select_configuration",
 ]

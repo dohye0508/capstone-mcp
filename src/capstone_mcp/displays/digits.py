@@ -7,13 +7,14 @@ import contextlib
 import re
 from typing import TYPE_CHECKING
 
+from pywinauto.uia_defines import NoPatternInterfaceError
+
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import (
     click_control,
     find_display_container,
     find_palette_item,
     is_within_bounds,
-    set_control_value,
 )
 from capstone_mcp.displays.models import (
     DIGITS_PALETTE_NAME,
@@ -131,6 +132,7 @@ def create_digits(
     # 1. Locate and activate Digits palette item
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     palette_item = _find_digits_palette_item(snapshot.controls)
+    before = snapshot
 
     click_control(
         app,
@@ -142,35 +144,55 @@ def create_digits(
 
     # 2. Take fresh snapshot to locate the inserted Digits display
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
+    try:
+        digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
+    except AutomationError as exc:
+        return CreateDigitsResult(
+            created=False,
+            verified=False,
+            detail=f"Digits insertion requested. Inspect before retrying. {exc}",
+        )
+    if before.truncated or snapshot.truncated or any(
+        (c.automation_id, c.name, c.control_type)
+        == (digits_ctrl.automation_id, digits_ctrl.name, digits_ctrl.control_type)
+        for c in before.controls
+    ):
+        return CreateDigitsResult(
+            created=False,
+            verified=False,
+            detail="Could not identify a new Digits widget. Inspect before retrying.",
+        )
 
     # 3. Bind measurement if requested
+    measurement = None
     if request.measurement:
         selector = _find_measurement_selector(snapshot.controls, digits_ctrl)
-        if selector is None:
-            msg = "Digits measurement selector is unavailable."
-            raise AutomationError(msg)
-        # Do not open a popup and then type into its stale source control.
-        set_control_value(app, request.handle, selector, request.measurement)
-        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-        digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
+        if selector and selector.enabled:
+            with contextlib.suppress(NoPatternInterfaceError):
+                _ = app.set_value(selector.ref, request.measurement)
+            snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+            digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
+            selected = _find_measurement_selector(snapshot.controls, digits_ctrl)
+            if selected and selected.name.strip() == request.measurement.strip():
+                measurement = selected.name.strip()
 
     # 4. Read bound numerical value and unit
     val, unit = _extract_digits_value_and_unit(snapshot.controls, digits_ctrl)
 
     d_name = request.digits_name or digits_ctrl.name or "Digits"
-    meas_info = (
-        f" binding requested for '{request.measurement}'" if request.measurement else ""
-    )
+    verified = request.measurement is None or measurement is not None
+    meas_info = f" bound to '{measurement}'" if measurement else ""
     val_info = f" with value {val} {unit or ''}".rstrip() if val is not None else ""
     detail = f"Digits display '{d_name}' created{meas_info}{val_info}."
+    if not verified:
+        detail += f" Could not verify measurement {request.measurement!r}."
 
     return CreateDigitsResult(
         created=True,
         digits_name=d_name,
-        measurement=request.measurement,
-        current_value=val,
-        unit=unit,
-        verified=request.measurement is None,
+        measurement=measurement,
+        current_value=val if verified else None,
+        unit=unit if verified else None,
+        verified=verified,
         detail=detail,
     )

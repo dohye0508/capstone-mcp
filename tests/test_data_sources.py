@@ -19,15 +19,19 @@ from capstone_mcp.data_sources import (
 )
 from capstone_mcp.data_sources.adapters.csv_file import read_csv_all_columns
 from capstone_mcp.displays import ReadTableResult
+from capstone_mcp.session import UnifiedSessionManager
+from tests.golden_samples import GOLDEN_MASTER_DIR
 from tests.test_capfiles import _payload, _write_cap, _xml
 
 
 def test_data_series_creation() -> None:
     """Ensure DataSeries model validates and stores values cleanly."""
-    series = DataSeries(name="Time", units="s", values=[0.0, 1.0, 2.0, None])
+    series = DataSeries(
+        name="Time", units="s", values=[0.0, 1.0, 2.0, None, float("nan"), float("inf")],
+    )
     assert series.name == "Time"
     assert series.units == "s"
-    assert len(series.values) == 4
+    assert len(series.values) == 6
     assert series.clean_floats() == [0.0, 1.0, 2.0]
 
 
@@ -95,6 +99,20 @@ def test_read_csv_all_columns(tmp_path: Path) -> None:
     assert cols["colB"] == [20.5, 40.5]
 
 
+def test_csv_adapters_accept_semicolon_decimal_comma(tmp_path: Path) -> None:
+    path = tmp_path / "localized.csv"
+    _ = path.write_text("Time (s);Force (N)\n0,125;2,5\n0,250;3,5\n", encoding="utf-8")
+
+    metadata = list_source_datasets(path)
+    assert [(c.name, c.units) for c in metadata] == [("Time", "s"), ("Force", "N")]
+    series = get_experiment_series(path, "Time", "Force")
+    assert series.x.clean_floats() == [0.125, 0.25]
+    assert series.y.clean_floats() == [2.5, 3.5]
+    assert read_csv_all_columns(path)["Force (N)"] == [2.5, 3.5]
+    with pytest.raises(ValueError, match=r"CSV column.*Displacement"):
+        get_experiment_series(path, "Time", "Displacement")
+
+
 def test_live_session_adapter() -> None:
     """Verify LiveSessionAdapter reads from ReadTableResult."""
     result = ReadTableResult(
@@ -115,6 +133,13 @@ def test_live_session_adapter() -> None:
     assert series.x.clean_floats() == [0.0, 0.5]
     assert series.y.clean_floats() == [10.0, 15.0]
 
+    assert list_source_datasets("live://table", table_result=result) == metadata
+    assert get_experiment_series(
+        "live://table", "Time", "Force", table_result=result,
+    ) == series
+    with pytest.raises(ValueError, match="Cannot find columns"):
+        get_experiment_series("live://table", "Time", "Speed", table_result=result)
+
 
 def test_cap_file_adapter_reads_saved_samples(tmp_path: Path) -> None:
     """Exercise archive adapter unconditionally; private corpus has separate tests."""
@@ -123,9 +148,22 @@ def test_cap_file_adapter_reads_saved_samples(tmp_path: Path) -> None:
     adapter = CapArchiveAdapter(sample_cap)
     datasets = adapter.list_datasets()
     assert len(datasets) == 1
-    series = adapter.get_series("Observed Value", "Observed Value")
-    assert series.x.values == [1.25, 2.5]
+    series = adapter.get_series("sample_index", "Observed Value")
+    assert series.x.values == [0, 1]
     assert series.y.values == [1.25, 2.5]
+def test_cap_file_adapter_real_download_if_present() -> None:
+    """Test reading series from a real .cap file if available."""
+    sample_cap = GOLDEN_MASTER_DIR / "[열역학]단열 기체 법칙(TD-8565, 850)[13].cap"
+    if not sample_cap.is_file():
+        pytest.skip(f"Golden Capstone archive not found at {sample_cap}")
+    adapter = CapArchiveAdapter(sample_cap)
+    datasets = adapter.list_datasets()
+    assert len(datasets) > 0
+    with pytest.raises(ValueError, match="must match one saved series"):
+        adapter.get_series("부피", "압력")
+    series = adapter.get_series("sample_index", "h cal")
+    assert series.x.values == [float(i) for i in range(10)]
+    assert series.y.name == "h cal"
 
 
 def test_live_measurement_adapter_class() -> None:
@@ -141,8 +179,10 @@ def test_live_measurement_adapter_class() -> None:
     datasets = adapter.list_datasets()
     assert len(datasets) == 1
     assert datasets[0].name == "Voltage"
-    series = adapter.get_series("index", "Voltage")
-    assert series.y.clean_floats() == [3.3]
+    session.telemetry.get_samples.return_value = []
+    with pytest.raises(ValueError, match="at least two"):
+        adapter.get_series("time", "Voltage")
+    session.read_live_measurement.assert_not_called()
 
 
 def test_list_source_datasets_live_measurements_mocked() -> None:
@@ -168,29 +208,31 @@ def test_list_source_datasets_live_measurements_mocked() -> None:
         assert "Position" in names
 
 
-def test_get_experiment_series_live_measurements_mocked() -> None:
-    """Verify get_experiment_series reads paired live telemetry."""
+def test_get_experiment_series_uses_captured_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     mock_inv = NativeInventory(
         measurements=[
-            {"name": "Force", "units": "N", "euid": "euid_force"},
+            {"MeasurementName": "Force", "Unit": "N", "MeasurementEUID": "euid_force"},
         ],
         sensors=[],
     )
-    with patch(
-        "capstone_mcp.data_sources.adapters.live_telemetry.UnifiedSessionManager",
-    ) as mock_cls:
-        session_inst = MagicMock()
-        session_inst.read_live_inventory.return_value = mock_inv
-        session_inst.read_live_measurement.return_value = 9.81
-        mock_cls.return_value = session_inst
+    session = UnifiedSessionManager(debug_port=9234)
+    inventory = MagicMock(return_value=mock_inv)
+    monkeypatch.setattr(session, "read_live_inventory", inventory)
+    session.telemetry.push_sample("euid_force", 4.0, timestamp=100.0)
+    session.telemetry.push_sample("euid_force", 9.81, timestamp=100.25)
 
-        series = get_experiment_series("live://measurements", "index", "force")
-        assert isinstance(series, ExperimentSeries)
-        assert series.x.name == "index"
-        assert series.x.clean_floats() == [0.0]
-        assert series.y.name == "force"
-        assert series.y.clean_floats() == [9.81]
-        assert series.metadata["uri"] == "live://measurements"
+    series = get_experiment_series(
+        "live://measurements", "time", "force", live_session=session,
+    )
+    assert isinstance(series, ExperimentSeries)
+    assert series.x.clean_floats() == [0.0, 0.25]
+    assert series.x.units == "s"
+    assert series.y.clean_floats() == [4.0, 9.81]
+    assert series.y.units == "N"
+    assert series.metadata["uri"] == "live://measurements"
+    inventory.assert_called_once_with(port=9234)
 
 
 def test_live_measurements_unattached_raises_clean_error() -> None:

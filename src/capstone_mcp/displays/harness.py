@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from capstone_mcp.desktop import AutomationError, Capstone
-from capstone_mcp.models import Action, Bounds, Control
+
+if TYPE_CHECKING:
+    from capstone_mcp.models import Bounds, Control
 
 DEFAULT_DISPLAY_KEYWORDS: Final[tuple[str, ...]] = (
     "graph",
@@ -46,28 +48,11 @@ def click_control(
     double: bool = False,
     allow_foreground: bool = True,
 ) -> None:
-    """Deliver a click or double-click compatible with both real Capstone and mocks."""
-    if hasattr(app, "click"):
-        with contextlib.suppress(Exception):
-            app.click(handle, ctrl.ref, allow_foreground=allow_foreground)
-            return
-
-    with contextlib.suppress(Exception):
-        node = app.control(ctrl.ref)
-        if double:
-            coords = center_coords(ctrl.bounds)
-            node.click_input(button="left", double=True, coords=coords, absolute=True)
-            return
-        if hasattr(node, "invoke") and callable(node.invoke):
-            node.invoke()
-            return
-
-    with contextlib.suppress(Exception):
-        app_act: Any = getattr(app, "act")  # noqa: B009
-        app_act(handle, Action.INVOKE, ref=ctrl.ref, allow_foreground=allow_foreground)
-        return
-
-    app.act(ctrl.ref, Action.INVOKE, allow_foreground=allow_foreground)
+    """Deliver one click request through the guarded desktop path."""
+    if double:
+        _ = app.click(handle, ctrl.ref, double=True, allow_foreground=allow_foreground)
+    else:
+        _ = app.click(handle, ctrl.ref, allow_foreground=allow_foreground)
 
 
 def double_click_control(
@@ -78,21 +63,6 @@ def double_click_control(
     allow_foreground: bool = True,
 ) -> None:
     """Deliver an explicit double-click to insert palette items onto the page."""
-    with contextlib.suppress(Exception):
-        app.focus_window(handle)
-
-    with contextlib.suppress(Exception):
-        node = app.control(ctrl.ref)
-        if hasattr(node, "click_input"):
-            coords = center_coords(ctrl.bounds)
-            node.click_input(
-                button="left",
-                double=True,
-                coords=coords,
-                absolute=True,
-            )
-            return
-
     click_control(app, handle, ctrl, double=True, allow_foreground=allow_foreground)
 
 
@@ -201,12 +171,27 @@ def _match_custom_name(controls: list[Control], custom_name: str) -> Control | N
     return matches[0] if matches else None
 
 
+def _workbook_controls(controls: list[Control]) -> list[Control]:
+    page_refs = {
+        c.ref for c in controls if c.visible and c.automation_id.endswith(".PageView")
+    }
+    if not page_refs:
+        return controls
+    page_controls = []
+    for ctrl in controls:
+        if ctrl.visible and ctrl.parent in page_refs:
+            page_controls.append(ctrl)
+            page_refs.add(ctrl.ref)
+    return page_controls
+
+
 def find_display_container(
     controls: list[Control],
     widget_type: str,
     custom_name: str | None = None,
 ) -> Control:
     """Locate one explicitly identified display; never choose an unrelated pane."""
+    controls = _workbook_controls(controls)
     if custom_name:
         matched = _match_custom_name(controls, custom_name)
         if matched is not None:

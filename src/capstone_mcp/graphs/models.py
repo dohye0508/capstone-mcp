@@ -408,10 +408,22 @@ class CreateGraphResult(Model):
 
 
 class ReadGraphRequest(Model):
-    """Specification for reading graph state via native clipboard."""
+    """Read live graph state or a saved graph in a Capstone archive."""
 
     handle: int = 0
     allow_foreground: bool = True
+    cap_file: str | None = Field(default=None, min_length=1)
+    graph_index: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> Self:
+        if self.cap_file is None and self.graph_index is not None:
+            msg = "graph_index requires cap_file."
+            raise ValueError(msg)
+        if self.cap_file is not None and self.handle:
+            msg = "Choose either cap_file or a live window handle."
+            raise ValueError(msg)
+        return self
 
 
 class ReadGraphResult(Model):
@@ -419,6 +431,9 @@ class ReadGraphResult(Model):
 
     state: GraphState
     verified: bool = True
+    cap_file: str | None = None
+    graph_index: int | None = None
+    graph_count: int | None = None
 
 
 class FitGraphRequest(Model):
@@ -624,6 +639,17 @@ class GraphRequest(Model):
     toolbox_area: MeasureGraphAreaRequest | None = None
     toolbox_statistics: ToggleGraphStatisticsRequest | None = None
     analyze: AnalyzeGraphRequest | None = None
+
+    @model_validator(mode="after")
+    def _validate_saved_read(self) -> Self:
+        if (
+            self.read is not None
+            and self.read.cap_file is not None
+            and self.action != GraphAction.READ
+        ):
+            msg = "cap_file is only supported for the read action."
+            raise ValueError(msg)
+        return self
 
 
 class GraphResult(Model):

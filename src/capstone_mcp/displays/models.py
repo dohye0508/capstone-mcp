@@ -7,7 +7,7 @@ import re
 from enum import StrEnum
 from typing import Any, Final, Literal
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, FiniteFloat, computed_field, model_validator
 
 from capstone_mcp.models import Model
 
@@ -188,7 +188,7 @@ class CreateScopeRequest(Model):
 class CreateScopeResult(Model):
     """Outcome of oscilloscope display creation."""
 
-    display_id: str
+    display_id: str | None
     display_type: str = "Scope"
     timebase: str | None = None
     channel: str | None = None
@@ -200,7 +200,7 @@ class SetScopeTriggerRequest(Model):
     """Specification for oscilloscope trigger settings."""
 
     scope_id: str | None = None
-    trigger_level: float = 0.0
+    trigger_level: FiniteFloat = 0.0
     trigger_slope: str = "rising"
     trigger_mode: str = "auto"
     trigger_source: str | None = None
@@ -232,7 +232,7 @@ class CreateFftRequest(Model):
 class CreateFftResult(Model):
     """Outcome of FFT frequency spectrum display creation."""
 
-    display_id: str
+    display_id: str | None
     display_type: str = "FFT"
     measurement: str | None = None
     frequency_range: str | None = None
@@ -246,6 +246,7 @@ class FftPeak(Model):
     frequency_hz: float
     amplitude: float
     unit: str = "Hz"
+    amplitude_unit: Literal["V", "dB"] | None = None
 
 
 FftPeakInfo = FftPeak
@@ -256,7 +257,7 @@ class ReadFftPeaksRequest(Model):
 
     fft_id: str | None = None
     top_k: int = 5
-    min_amplitude: float | None = None
+    min_amplitude: FiniteFloat | None = None
     handle: int = 0
     allow_foreground: bool = True
 

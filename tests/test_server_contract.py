@@ -236,6 +236,32 @@ async def test_dynamic_resources_contract(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.anyio
+async def test_interact_ui_omission_never_moves_foreground() -> None:
+    with patch.object(server, "_native", new_callable=AsyncMock) as native:
+        native.return_value = {"detail": "unexpected input"}
+        with pytest.raises(ValueError, match="allow_foreground=true"):
+            await server.capstone_interact_ui(
+                "click", handle=10, point=Point(x=5, y=5),
+            )
+        with pytest.raises(ValueError, match="allow_foreground=true"):
+            await server.capstone_interact_ui("keys", handle=10, keys="{ENTER}")
+        with pytest.raises(ValueError, match="allow_foreground=true"):
+            await server.capstone_interact_ui(
+                "action", ref="target", ui_action=Action.FOCUS,
+            )
+        native.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["click", "double_click", "scroll"])
+async def test_interact_ui_requires_point_before_sending_mouse_input(action: str) -> None:
+    with patch.object(server, "_native", new_callable=AsyncMock) as native:
+        with pytest.raises(ValueError, match="explicit point"):
+            await server.capstone_interact_ui(action, handle=10, allow_foreground=True)
+        native.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_capstone_interact_ui_dispatch() -> None:
     """Verify capstone_interact_ui correctly dispatches all UI action types."""
     with patch.object(server, "_native", new_callable=AsyncMock) as mock_native:
@@ -244,6 +270,7 @@ async def test_capstone_interact_ui_dispatch() -> None:
         # 1. Click
         res_click = await server.capstone_interact_ui(
             "click", handle=10, point=Point(x=100, y=200), button=Button.LEFT,
+            allow_foreground=True,
         )
         assert res_click.delivered is True
         mock_native.assert_called_with(
@@ -261,30 +288,35 @@ async def test_capstone_interact_ui_dispatch() -> None:
         # 2. Double Click
         await server.capstone_interact_ui(
             "double_click", handle=10, point=Point(x=50, y=60),
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].double is True
 
         # 3. Drag
         await server.capstone_interact_ui(
             "drag", handle=10, start=Point(x=10, y=20), end=Point(x=30, y=40),
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].operation == "drag"
 
         # 4. Scroll
         await server.capstone_interact_ui(
             "scroll", handle=10, point=Point(x=10, y=10), notches=5,
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].operation == "scroll"
 
         # 5. Keys
         await server.capstone_interact_ui(
             "keys", handle=10, keys="{ENTER}",
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].operation == "keys"
 
         # 6. Type
         await server.capstone_interact_ui(
             "type", handle=10, text="sample",
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].operation == "keys"
         assert mock_native.call_args[0][0].unicode_input is True
@@ -292,6 +324,7 @@ async def test_capstone_interact_ui_dispatch() -> None:
         # 7. Action
         await server.capstone_interact_ui(
             "action", ref="ctrl_1", ui_action=Action.INVOKE,
+            allow_foreground=True,
         )
         assert mock_native.call_args[0][0].operation == "action"
 

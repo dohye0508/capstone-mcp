@@ -102,13 +102,15 @@ def _is_calculator_open(app: Capstone, toggle_ctrl: Control) -> bool:
 
 def _find_editor_controls(
     controls: list[Control],
-) -> tuple[Control | None, Control | None]:
+    *,
+    require_unit: bool,
+) -> tuple[Control, Control | None]:
     """Find the formula editor and unit editor controls in the calculator drawer."""
     formula_ctrl: Control | None = None
     unit_ctrl: Control | None = None
 
     for ctrl in controls:
-        if not ctrl.visible or ctrl.control_type != "Edit":
+        if not ctrl.visible or not ctrl.enabled or ctrl.control_type != "Edit":
             continue
         aid_lower = ctrl.automation_id.lower()
         name_lower = ctrl.name.lower()
@@ -121,13 +123,12 @@ def _find_editor_controls(
         elif "unit" in aid_lower or "unit" in name_lower:
             unit_ctrl = ctrl
 
-    if not formula_ctrl:
-        edits = [c for c in controls if c.visible and c.control_type == "Edit"]
-        if edits:
-            formula_ctrl = edits[0]
-            if len(edits) > 1:
-                unit_ctrl = edits[1]
-
+    if formula_ctrl is None:
+        msg = "Could not locate the Calculator formula editor in the active drawer."
+        raise AutomationError(msg)
+    if require_unit and unit_ctrl is None:
+        msg = "Could not locate the Calculator unit editor in the active drawer."
+        raise AutomationError(msg)
     return formula_ctrl, unit_ctrl
 
 
@@ -153,7 +154,7 @@ def _restore_calculator(app: Capstone, handle: int, *, failing: bool) -> None:
 
 def _write_unit(app: Capstone, handle: int, unit: str) -> None:
     snapshot = app.snapshot(handle, depth=16, limit=10_000)
-    _, unit_control = _find_editor_controls(snapshot.controls)
+    _, unit_control = _find_editor_controls(snapshot.controls, require_unit=True)
     if unit_control is None:
         msg = "Calculator unit editor disappeared after formula entry."
         raise AutomationError(msg)
@@ -196,7 +197,9 @@ def create_calculation(
         if opened_by_tool:
             snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
         # 2. Locate formula editor and unit editor controls
-        formula_ctrl, unit_ctrl = _find_editor_controls(snapshot.controls)
+        formula_ctrl, unit_ctrl = _find_editor_controls(
+            snapshot.controls, require_unit=bool(request.unit),
+        )
         if not formula_ctrl:
             msg = "Could not locate the Calculator formula editor in the active drawer."
             raise AutomationError(msg)

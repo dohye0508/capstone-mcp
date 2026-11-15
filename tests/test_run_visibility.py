@@ -83,7 +83,8 @@ def test_set_run_visibility_raises_when_run_control_not_found() -> None:
         _ = set_run_visibility(app, req)
 
 
-def test_set_run_visibility_success_toggle_pattern() -> None:
+@pytest.mark.parametrize("toggle_applied", [True, False])
+def test_set_run_visibility_success_toggle_pattern(*, toggle_applied: bool) -> None:
     app = Capstone()
     mock_win = _make_window()
 
@@ -108,14 +109,15 @@ def test_set_run_visibility_success_toggle_pattern() -> None:
 
     node_run1 = MagicMock()
     node_run1.iface_toggle.ToggleState = 0  # initially hidden
-    node_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
-        node_run1.iface_toggle, "ToggleState", 1 - node_run1.iface_toggle.ToggleState,
-    )
+    if toggle_applied:
+        node_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
+            node_run1.iface_toggle, "ToggleState", 1,
+        )
 
     node_run2 = MagicMock()
     node_run2.iface_toggle.ToggleState = 0  # initially hidden
     node_run2.iface_toggle.Toggle.side_effect = lambda: setattr(
-        node_run2.iface_toggle, "ToggleState", 1 - node_run2.iface_toggle.ToggleState,
+        node_run2.iface_toggle, "ToggleState", 1,
     )
 
     def mock_control(ref: str) -> MagicMock:
@@ -131,9 +133,9 @@ def test_set_run_visibility_success_toggle_pattern() -> None:
     result = set_run_visibility(app, req)
 
     assert isinstance(result, SetRunVisibilityResult)
-    assert result.verified is True
-    assert "Run #1" in result.visible_runs
-    assert "Run #2" in result.visible_runs
+    assert result.verified is toggle_applied
+    expected = ["Run #1", "Run #2"] if toggle_applied else ["Run #2"]
+    assert result.visible_runs == expected
     assert node_run1.iface_toggle.Toggle.call_count == 1
     assert node_run2.iface_toggle.Toggle.call_count == 1
 
@@ -164,7 +166,7 @@ def test_set_run_visibility_hide_run_success() -> None:
     node_run1 = MagicMock()
     node_run1.iface_toggle.ToggleState = 1  # visible
     node_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
-        node_run1.iface_toggle, "ToggleState", 1 - node_run1.iface_toggle.ToggleState,
+        node_run1.iface_toggle, "ToggleState", 0,
     )
 
     node_run2 = MagicMock()

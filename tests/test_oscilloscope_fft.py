@@ -32,12 +32,24 @@ def _create_mock_window(handle: int = 100) -> Window:
     )
 
 
-def _container(name: str) -> Control:
-    return Control(
-        ref=f"ref:{name}", parent=None, name=f"{name} 1", control_type="Pane",
-        automation_id=name, enabled=True, visible=True,
-        bounds=Bounds(left=100, top=50, right=1000, bottom=850),
+def _page_widget(title: str) -> tuple[Control, Control]:
+    page = Control(
+        ref="page", parent=None, name="", control_type="Group",
+        automation_id="Workbook.PageView", enabled=True, visible=True,
+        bounds=_create_mock_window().bounds,
     )
+    widget = page.model_copy(update={
+        "ref": "widget", "parent": "page", "name": title,
+        "automation_id": title.replace(" ", ""),
+    })
+    return page, widget
+
+
+def _value_node(expected: str) -> MagicMock:
+    node = MagicMock()
+    node.iface_value.CurrentIsReadOnly = False
+    node.iface_value.CurrentValue = expected
+    return node
 
 
 def test_create_scope_requires_foreground() -> None:
@@ -77,9 +89,43 @@ def test_create_scope_raises_when_palette_not_found() -> None:
         )
 
 
+def test_scope_creation_never_writes_to_unrelated_time_control() -> None:
+    app = Capstone()
+    window = _create_mock_window()
+    palette = Control(
+        ref="palette", parent=None, name="Scope", control_type="Text",
+        automation_id="Palette.ObjNameScope", enabled=True, visible=True,
+        bounds=window.bounds,
+    )
+    timer = palette.model_copy(update={
+        "ref": "timer", "name": "Recording Time", "control_type": "Edit",
+        "automation_id": "Workbook.ControlBar.TimeLimit",
+    })
+    app.snapshot = MagicMock(return_value=Snapshot(
+        window=window, controls=[palette, timer], truncated=False,
+    ))
+    app.click = MagicMock()
+    app.control = MagicMock()
+
+    result = manage_display(app, DisplayRequest(
+        action=DisplayAction.CREATE_SCOPE,
+        create_scope=CreateScopeRequest(handle=100, timebase="2 ms/div"),
+    )).create_scope
+
+    assert result is not None
+    assert result.display_id is None
+    assert not result.verified
+    app.click.assert_called_once()
+    app.control.assert_not_called()
+
+
 def test_create_scope_success() -> None:
     app = Capstone()
     mock_win = _create_mock_window()
+    page, widget = _page_widget("Scope 2")
+    old_widget = widget.model_copy(update={
+        "ref": "prior", "name": "Scope 1", "automation_id": "Scope1",
+    })
 
     palette_scope = Control(
         ref="ref:palette_scope", parent=None, name="Scope",
@@ -88,13 +134,13 @@ def test_create_scope_success() -> None:
         bounds=Bounds(left=1100, top=100, right=1180, bottom=140),
     )
     timebase_edit = Control(
-        ref="ref:timebase", parent=None, name="Timebase",
+        ref="ref:timebase", parent=widget.ref, name="Timebase",
         control_type="Edit", automation_id="Scope.TimebaseEdit",
         enabled=True, visible=True,
         bounds=Bounds(left=200, top=100, right=280, bottom=130),
     )
     channel_edit = Control(
-        ref="ref:channel", parent=None, name="Channel A",
+        ref="ref:channel", parent=widget.ref, name="Channel A",
         control_type="Edit", automation_id="Scope.ChannelSelector",
         enabled=True, visible=True,
         bounds=Bounds(left=200, top=140, right=280, bottom=170),
@@ -105,19 +151,18 @@ def test_create_scope_success() -> None:
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
         nonlocal step
         step += 1
-        controls = [palette_scope]
+        controls = [palette_scope, page, old_widget]
         if step > 1:
-            controls.extend([_container("Scope"), timebase_edit, channel_edit])
+            controls.extend([widget, timebase_edit, channel_edit])
         return Snapshot(window=mock_win, controls=controls, truncated=False)
 
     app.snapshot = mock_snapshot
     app.focus_window = MagicMock()
     app.click = MagicMock()
+    app.require_input_ready = MagicMock()
 
-    timebase_node = MagicMock()
-    timebase_node.iface_value.SetValue = MagicMock()
-    channel_node = MagicMock()
-    channel_node.iface_value.SetValue = MagicMock()
+    timebase_node = _value_node("2 ms/div")
+    channel_node = _value_node("Voltage (V)")
 
     def mock_control(ref: str) -> MagicMock:
         if ref == "ref:timebase":
@@ -142,9 +187,10 @@ def test_create_scope_success() -> None:
     res = display_res.create_scope
 
     assert res.display_type == "Scope"
+    assert res.display_id == "Scope2"
     assert res.timebase == "2 ms/div"
     assert res.channel == "Voltage (V)"
-    assert res.verified is False
+    assert res.verified is True
     timebase_node.iface_value.SetValue.assert_called_once_with("2 ms/div")
     channel_node.iface_value.SetValue.assert_called_once_with("Voltage (V)")
 
@@ -188,21 +234,25 @@ def test_set_scope_trigger_rejects_invalid_inputs() -> None:
 def test_set_scope_trigger_success() -> None:
     app = Capstone()
     mock_win = _create_mock_window()
+    page, widget = _page_widget("Scope 2")
+    other = widget.model_copy(update={
+        "ref": "other", "name": "Scope 1", "automation_id": "Scope1",
+    })
 
     level_ctrl = Control(
-        ref="ref:lvl", parent=None, name="Trigger Level",
+        ref="ref:lvl", parent=widget.ref, name="Trigger Level",
         control_type="Edit", automation_id="Scope.TriggerLevel",
         enabled=True, visible=True,
         bounds=Bounds(left=300, top=100, right=380, bottom=130),
     )
     slope_ctrl = Control(
-        ref="ref:slope", parent=None, name="Rising Edge",
-        control_type="ComboBox", automation_id="Scope.TriggerSlope",
+        ref="ref:slope", parent=widget.ref, name="Rising Edge",
+        control_type="Button", automation_id="Scope.TriggerSlope",
         enabled=True, visible=True,
         bounds=Bounds(left=390, top=100, right=450, bottom=130),
     )
     mode_ctrl = Control(
-        ref="ref:mode", parent=None, name="Auto",
+        ref="ref:mode", parent=widget.ref, name="Auto",
         control_type="ComboBox", automation_id="Scope.TriggerMode",
         enabled=True, visible=True,
         bounds=Bounds(left=460, top=100, right=520, bottom=130),
@@ -210,16 +260,13 @@ def test_set_scope_trigger_success() -> None:
 
     app.snapshot = MagicMock(return_value=Snapshot(
         window=mock_win,
-        controls=[_container("Scope"), level_ctrl, slope_ctrl, mode_ctrl],
+        controls=[page, other, widget, level_ctrl, slope_ctrl, mode_ctrl],
         truncated=False,
     ))
 
-    lvl_node = MagicMock()
-    lvl_node.iface_value.SetValue = MagicMock()
-    slope_node = MagicMock()
-    slope_node.iface_value.SetValue = MagicMock()
-    mode_node = MagicMock()
-    mode_node.iface_value.SetValue = MagicMock()
+    lvl_node = _value_node("1.25 V")
+    slope_node = _value_node("falling")
+    mode_node = _value_node("single")
 
     def mock_ctrl(ref: str) -> MagicMock:
         mapping = {
@@ -230,12 +277,22 @@ def test_set_scope_trigger_success() -> None:
         return mapping.get(ref, MagicMock())
 
     app.control = mock_ctrl
+    app.require_input_ready = MagicMock()
 
     req = SetScopeTriggerRequest(
+        scope_id="Scope2",
         trigger_level=1.25,
         trigger_slope="falling",
         trigger_mode="single",
     )
+    with pytest.raises(AutomationError, match="triggersource"):
+        manage_display(app, DisplayRequest(
+            action=DisplayAction.SET_SCOPE_TRIGGER,
+            set_scope_trigger=req.model_copy(update={"trigger_source": "Channel A"}),
+        ))
+    lvl_node.iface_value.SetValue.assert_not_called()
+    slope_node.iface_value.SetValue.assert_not_called()
+    mode_node.iface_value.SetValue.assert_not_called()
     display_res = manage_display(
         app,
         DisplayRequest(
@@ -247,11 +304,12 @@ def test_set_scope_trigger_success() -> None:
     assert isinstance(display_res.set_scope_trigger, ScopeTriggerResult)
     res = display_res.set_scope_trigger
 
+    assert res.scope_id == "Scope2"
     assert res.trigger_level == 1.25
     assert res.trigger_slope == "falling"
     assert res.trigger_mode == "single"
-    assert res.verified is False
-    lvl_node.iface_value.SetValue.assert_called_once_with("1.25")
+    assert res.verified is True
+    lvl_node.iface_value.SetValue.assert_called_once_with("1.25 V")
     slope_node.iface_value.SetValue.assert_called_once_with("falling")
     mode_node.iface_value.SetValue.assert_called_once_with("single")
 
@@ -259,6 +317,7 @@ def test_set_scope_trigger_success() -> None:
 def test_create_fft_success() -> None:
     app = Capstone()
     mock_win = _create_mock_window()
+    page, widget = _page_widget("FFT 3")
 
     palette_fft = Control(
         ref="ref:palette_fft", parent=None, name="FFT",
@@ -267,13 +326,13 @@ def test_create_fft_success() -> None:
         bounds=Bounds(left=1100, top=200, right=1180, bottom=240),
     )
     meas_ctrl = Control(
-        ref="ref:fft_meas", parent=None, name="Measurement",
+        ref="ref:fft_meas", parent=widget.ref, name="Measurement",
         control_type="Edit", automation_id="FFT.MeasurementSelector",
         enabled=True, visible=True,
         bounds=Bounds(left=200, top=200, right=300, bottom=230),
     )
     range_ctrl = Control(
-        ref="ref:fft_range", parent=None, name="Span",
+        ref="ref:fft_range", parent=widget.ref, name="Span",
         control_type="Edit", automation_id="FFT.FreqRangeEdit",
         enabled=True, visible=True,
         bounds=Bounds(left=310, top=200, right=400, bottom=230),
@@ -284,19 +343,18 @@ def test_create_fft_success() -> None:
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
         nonlocal step
         step += 1
-        controls = [palette_fft]
+        controls = [palette_fft, page]
         if step > 1:
-            controls.extend([_container("FFT"), meas_ctrl, range_ctrl])
+            controls.extend([widget, meas_ctrl, range_ctrl])
         return Snapshot(window=mock_win, controls=controls, truncated=False)
 
     app.snapshot = mock_snapshot
     app.focus_window = MagicMock()
     app.click = MagicMock()
+    app.require_input_ready = MagicMock()
 
-    meas_node = MagicMock()
-    meas_node.iface_value.SetValue = MagicMock()
-    range_node = MagicMock()
-    range_node.iface_value.SetValue = MagicMock()
+    meas_node = _value_node("Sound Sensor")
+    range_node = _value_node("0 - 5000 Hz")
 
     def mock_ctrl(ref: str) -> MagicMock:
         if ref == "ref:fft_meas":
@@ -321,9 +379,10 @@ def test_create_fft_success() -> None:
     res = display_res.create_fft
 
     assert res.display_type == "FFT"
+    assert res.display_id == "FFT3"
     assert res.measurement == "Sound Sensor"
     assert res.frequency_range == "0 - 5000 Hz"
-    assert res.verified is False
+    assert res.verified is True
     meas_node.iface_value.SetValue.assert_called_once_with("Sound Sensor")
     range_node.iface_value.SetValue.assert_called_once_with("0 - 5000 Hz")
 
@@ -331,33 +390,40 @@ def test_create_fft_success() -> None:
 def test_read_fft_peaks_success() -> None:
     app = Capstone()
     mock_win = _create_mock_window()
+    page, widget = _page_widget("FFT 2")
+    other = widget.model_copy(update={
+        "ref": "other", "name": "FFT 1", "automation_id": "FFT1",
+    })
 
     coord_peak1 = Control(
-        ref="ref:p1", parent=None, name="(440 Hz, 5.2 V)",
+        ref="ref:p1", parent=widget.ref, name="(440 Hz, 5.2 V)",
         control_type="Text", automation_id="FFT.Coordinate1",
         enabled=True, visible=True,
         bounds=Bounds(left=200, top=200, right=300, bottom=220),
     )
     coord_peak2 = Control(
-        ref="ref:p2", parent=None, name="(880 Hz, 2.1 V)",
+        ref="ref:p2", parent=widget.ref, name="(8.8e-1 kHz, +2.1e+3 mV)",
         control_type="Text", automation_id="FFT.Coordinate2",
         enabled=True, visible=True,
         bounds=Bounds(left=350, top=200, right=450, bottom=220),
     )
     coord_peak3 = Control(
-        ref="ref:p3", parent=None, name="f = 1320 Hz, amp = 0.8 V",
+        ref="ref:p3", parent=widget.ref, name="f = 1320 Hz, amp = 0.8 V",
         control_type="Text", automation_id="FFT.Coordinate3",
         enabled=True, visible=True,
         bounds=Bounds(left=500, top=200, right=600, bottom=220),
     )
+    unrelated = coord_peak1.model_copy(update={
+        "ref": "unrelated", "parent": other.ref, "name": "(100 Hz, 100 V)",
+    })
 
     app.snapshot = MagicMock(return_value=Snapshot(
         window=mock_win,
-        controls=[coord_peak1, coord_peak2, coord_peak3],
+        controls=[page, other, unrelated, widget, coord_peak1, coord_peak2, coord_peak3],
         truncated=False,
     ))
 
-    req = ReadFftPeaksRequest(top_k=2)
+    req = ReadFftPeaksRequest(top_k=2, fft_id="FFT2")
     display_res = manage_display(
         app,
         DisplayRequest(action=DisplayAction.READ_FFT_PEAKS, read_fft_peaks=req),
@@ -373,4 +439,21 @@ def test_read_fft_peaks_success() -> None:
     assert res.peaks[0].amplitude == 5.2
     assert res.peaks[1].frequency_hz == 880.0
     assert res.peaks[1].amplitude == 2.1
-    assert res.verified is False
+    assert res.peaks[1].amplitude_unit == "V"
+    assert res.verified is True
+
+    db_peak = coord_peak3.model_copy(update={
+        "name": "f = 1.32e+3 Hz, amp = -2.4e1 dB",
+    })
+    app.snapshot.return_value = Snapshot(
+        window=mock_win, controls=[page, widget, db_peak], truncated=False,
+    )
+    db_res = manage_display(
+        app,
+        DisplayRequest(action=DisplayAction.READ_FFT_PEAKS, read_fft_peaks=req),
+    ).read_fft_peaks
+    assert db_res is not None
+    assert len(db_res.peaks) == 1
+    assert db_res.peaks[0].frequency_hz == 1320.0
+    assert db_res.peaks[0].amplitude == -24.0
+    assert db_res.peaks[0].amplitude_unit == "dB"

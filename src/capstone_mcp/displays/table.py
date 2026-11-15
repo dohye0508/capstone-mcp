@@ -7,14 +7,16 @@ import math
 import re
 from typing import TYPE_CHECKING, Any
 
+from pywinauto.uia_defines import NoPatternInterfaceError
+
 from capstone_mcp.csv_data import CsvDataError, parse_csv_number
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import (
+    center_coords,
     click_control,
     find_display_container,
     find_palette_item,
     is_within_bounds,
-    set_control_value,
 )
 from capstone_mcp.displays.models import (
     MAX_HEADER_HEIGHT_PX,
@@ -140,34 +142,42 @@ def set_table_columns(
         msg = "Setting table columns requires allow_foreground=true."
         raise AutomationError(msg)
 
-    for index, col_name in enumerate(request.columns):
-        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-        table_ctrl = _find_table_control(snapshot.controls, request.table_name)
-        headers = _find_column_headers(snapshot.controls, table_ctrl)
-        if index >= len(headers):
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    table_ctrl = _find_table_control(snapshot.controls, request.table_name)
+    headers = _find_column_headers(snapshot.controls, table_ctrl)
+    for i, col_name in enumerate(request.columns):
+        if i >= len(headers):
             add_btn = _find_add_column_button(snapshot.controls, table_ctrl)
             if add_btn is None:
-                msg = "A unique Add Column button is unavailable."
-                raise AutomationError(msg)
+                break
             click_control(app, request.handle, add_btn, allow_foreground=True)
             snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
             table_ctrl = _find_table_control(snapshot.controls, request.table_name)
             headers = _find_column_headers(snapshot.controls, table_ctrl)
-        if index >= len(headers):
-            msg = "Added column was not observed; refusing to reuse stale headers."
-            raise AutomationError(msg)
-        set_control_value(app, request.handle, headers[index], col_name)
 
-    t_name = request.table_name or "Table"
-    detail = (
-        f"Configured {len(request.columns)} column(s) in Table '{t_name}': "
-        f"{', '.join(request.columns)}."
-    )
+        if i >= len(headers) or not headers[i].enabled:
+            break
+        if headers[i].name.strip() == col_name.strip():
+            continue
+        try:
+            _ = app.set_value(headers[i].ref, col_name)
+        except NoPatternInterfaceError:
+            break
+        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+        table_ctrl = _find_table_control(snapshot.controls, request.table_name)
+        headers = _find_column_headers(snapshot.controls, table_ctrl)
+        if i >= len(headers) or headers[i].name.strip() != col_name.strip():
+            break
+
+    t_name = request.table_name or table_ctrl.name or "Table"
+    observed = [header.name.strip() for header in headers[:len(request.columns)]]
+    verified = observed == [name.strip() for name in request.columns]
+    detail = f"Observed {len(observed)} column headers in Table '{t_name}'."
     return SetTableColumnsResult(
         table_name=t_name,
-        columns=request.columns,
-        column_count=len(request.columns),
-        verified=False,
+        columns=observed,
+        column_count=len(observed),
+        verified=verified,
         detail=detail,
     )
 
@@ -192,16 +202,16 @@ def _parse_cell_value(text: str) -> float | str | None:
 def _extract_cells_and_statistics(
     controls: list[Control],
     table_ctrl: Control,
-    column_names: list[str],
-) -> tuple[list[tuple[int, int, str]], dict[str, dict[str, Any]]]:
+    headers: list[Control],
+) -> tuple[list[tuple[int, str, str]], dict[str, dict[str, Any]]]:
     """Separate raw data cell coordinates and statistical summary values."""
-    cells_by_pos: list[tuple[int, int, str]] = []
+    cells_by_pos: list[tuple[int, str, str]] = []
     stat_rows: dict[str, dict[str, Any]] = {}
     table_b = table_ctrl.bounds
-    headers = _find_column_headers(controls, table_ctrl)
+    header_refs = {h.ref for h in headers}
 
     for c in controls:
-        if not c.visible or c.ref == table_ctrl.ref:
+        if not c.visible or c.ref == table_ctrl.ref or c.ref in header_refs:
             continue
         if not (
             c.bounds.top >= table_b.top
@@ -214,6 +224,15 @@ def _extract_cells_and_statistics(
         if c.control_type in ("DataItem", "Text", "Edit", "Custom"):
             text = c.name.strip()
             if not text:
+                continue
+
+            x, _y = center_coords(c.bounds)
+            column = next(
+                (h.name.strip() for h in headers
+                 if h.bounds.left <= x < h.bounds.right),
+                "",
+            )
+            if not column or "select measurement" in column.lower():
                 continue
 
             lower = text.lower()
@@ -229,63 +248,29 @@ def _extract_cells_and_statistics(
                 stat_key = matched_stat.title()
                 m = re.search(r"[:=]\s*([+-]?\d+(?:\.\d+)?)", text)
                 parsed_val = float(m.group(1)) if m else _parse_cell_value(text)
-                columns = [h.name.strip() for h in headers
-                           if h.name.strip() in column_names
-                           and h.bounds.left <= c.bounds.left
-                           and c.bounds.right <= h.bounds.right]
-                if len(columns) != 1:
-                    msg = "Cannot attribute a table statistic to a unique column."
-                    raise AutomationError(msg)
-                target_col = columns[0]
-                row = stat_rows.setdefault(stat_key, {})
-                if target_col in row:
-                    msg = "Duplicate table statistic for the same column."
-                    raise AutomationError(msg)
-                row[target_col] = parsed_val
+                stat_rows.setdefault(stat_key, {})[column] = parsed_val
             else:
-                cells_by_pos.append((c.bounds.top, c.bounds.left, text))
+                cells_by_pos.append((c.bounds.top, column, text))
 
     return cells_by_pos, stat_rows
 
 
 def _group_cells_into_rows(
-    cells_by_pos: list[tuple[int, int, str]],
+    cells_by_pos: list[tuple[int, str, str]],
     column_names: list[str],
 ) -> list[dict[str, Any]]:
     """Group spatial cell coordinates into structured rows."""
-    cells_by_pos.sort(key=lambda x: (x[0], x[1]))
-
-    row_clusters: list[list[tuple[int, str]]] = []
-    current_cluster: list[tuple[int, str]] = []
+    cells_by_pos.sort(key=lambda cell: cell[0])
+    rows: list[dict[str, Any]] = []
     current_top: int | None = None
 
-    for top, left, text in cells_by_pos:
-        if text in column_names:
-            continue
-        if current_top is None or abs(top - current_top) <= ROW_Y_TOLERANCE_PX:
-            current_cluster.append((left, text))
+    for top, column, text in cells_by_pos:
+        if current_top is None or top - current_top > ROW_Y_TOLERANCE_PX:
+            rows.append(dict.fromkeys(column_names))
             current_top = top
-        else:
-            current_cluster.sort(key=lambda x: x[0])
-            row_clusters.append(current_cluster)
-            current_cluster = [(left, text)]
-            current_top = top
+        rows[-1][column] = _parse_cell_value(text)
 
-    if current_cluster:
-        current_cluster.sort(key=lambda x: x[0])
-        row_clusters.append(current_cluster)
-
-    formatted_rows: list[dict[str, Any]] = []
-    for cluster in row_clusters:
-        row_dict: dict[str, Any] = {}
-        for col_idx, col_name in enumerate(column_names):
-            if col_idx < len(cluster):
-                row_dict[col_name] = _parse_cell_value(cluster[col_idx][1])
-            else:
-                row_dict[col_name] = None
-        formatted_rows.append(row_dict)
-
-    return formatted_rows
+    return rows
 
 
 def read_table(
@@ -311,7 +296,7 @@ def read_table(
     column_names = [
         h.name.strip()
         for h in headers
-        if h.name.strip() and "select" not in h.name.lower()
+        if h.name.strip() and "select measurement" not in h.name.lower()
     ]
     if not column_names:
         column_names = ["Column 1", "Column 2"]
@@ -319,7 +304,7 @@ def read_table(
     cells_by_pos, stat_rows = _extract_cells_and_statistics(
         snapshot.controls,
         table_ctrl,
-        column_names,
+        headers,
     )
     formatted_rows = _group_cells_into_rows(cells_by_pos, column_names)
 

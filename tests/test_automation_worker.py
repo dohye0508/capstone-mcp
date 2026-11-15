@@ -82,12 +82,15 @@ def test_timeout_retires_worker_without_replaying_delivered_input(
         worker = FixtureWorker()
         try:
             # When
-            with pytest.raises(NativeSessionError):
+            with pytest.raises(NativeSessionError) as failure:
                 _ = worker.call(NativeRequest(
                     operation="snapshot", ref=str(delivered),
                     value=response, limit=port,
                 ))
             # Then: one input, dead worker, and no implicit restart on another call.
+            assert failure.value.error_code == "TIMEOUT_ERROR"
+            assert failure.value.remediation is not None
+            assert "capstone_attach" in failure.value.remediation
             assert delivered.read_text(encoding="utf-8") == "delivered\n"
             assert worker.process is not None
             process = worker.process
@@ -98,6 +101,12 @@ def test_timeout_retires_worker_without_replaying_delivered_input(
             with pytest.raises(NativeSessionError):
                 _ = worker.call(NativeRequest(operation="windows"))
             assert worker.process is process
+            monkeypatch.setattr(automation_worker, "Future", Future)
+            assert worker.call(NativeRequest(operation="attach")) == "한글 1"
+            assert worker.process is not process
+            assert not worker.retired
+            assert not worker.uncertain
+            assert delivered.read_text(encoding="utf-8") == "delivered\n"
         finally:
             try:
                 worker.close()

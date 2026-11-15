@@ -1,5 +1,5 @@
 # Copyright 2026 Capstone MCP contributors.
-"""Read-only integration: requires a running Capstone in the current desktop."""
+"""Stdio protocol integration, with a separate live desktop case."""
 
 import base64
 import os
@@ -15,6 +15,7 @@ from mcp.types import ImageContent
 from pydantic import BaseModel
 
 from capstone_mcp.agent_instructions import INSTRUCTIONS
+from capstone_mcp.analysis import LinearFit
 from capstone_mcp.models import Snapshot, Window
 
 ROOT: Final = str(Path(__file__).resolve().parents[1])
@@ -40,12 +41,12 @@ class ForegroundSchema(BaseModel):
     properties: InputProperties
 
 
-async def exercise_protocol() -> None:
-    # Given: a real MCP subprocess and the installed, running Capstone.
+async def exercise_protocol(*, check_desktop: bool) -> None:
     parameters = StdioServerParameters(
         command=sys.executable,
         args=["-m", "capstone_mcp.server"],
         cwd=ROOT,
+        env={"PYTHONPATH": str(Path(ROOT) / "src")},
     )
     with anyio.fail_after(60):
         async with (
@@ -70,7 +71,20 @@ async def exercise_protocol() -> None:
             assert expected_core.issubset({tool.name for tool in tools.tools})
             interact_tool = next(t for t in tools.tools if t.name == "capstone_interact_ui")
             schema = ForegroundSchema.model_validate(interact_tool.inputSchema)
-            assert schema.properties.allow_foreground.default is True
+            assert schema.properties.allow_foreground.default is False
+            if not check_desktop:
+                invalid_fit = await session.call_tool(
+                    "capstone_linear_fit", {"samples": {"x": [0, 1, 2], "y": [1, 3]}},
+                )
+                assert invalid_fit.isError
+                fit = await session.call_tool(
+                    "capstone_linear_fit",
+                    {"samples": {"x": [0, 1, 2], "y": [1, 3, 5]}},
+                )
+                assert not fit.isError, fit.content
+                assert LinearFit.model_validate(fit.structuredContent).slope == 2.0
+                return
+
             attached = await session.call_tool("capstone_attach")
             if attached.isError:
                 pytest.skip("Could not attach to Capstone (not installed or running)")
@@ -92,6 +106,7 @@ async def exercise_protocol() -> None:
                     "action": "action",
                     "ref": "stale:0",
                     "ui_action": "invoke",
+                    "allow_foreground": True,
                 },
             )
             # Then: real controls, actual PNG data, and stale-ref rejection.
@@ -103,5 +118,11 @@ async def exercise_protocol() -> None:
             assert invalid.isError
 
 
-def test_real_capstone_observation_over_stdio() -> None:
-    anyio.run(exercise_protocol)
+@pytest.mark.anyio
+async def test_headless_calls_over_stdio() -> None:
+    await exercise_protocol(check_desktop=False)
+
+
+@pytest.mark.anyio
+async def test_real_capstone_observation_over_stdio() -> None:
+    await exercise_protocol(check_desktop=True)

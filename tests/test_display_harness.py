@@ -1,7 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Unit tests for the consolidated DisplayHarness module."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,7 +17,7 @@ from capstone_mcp.displays import (
     is_within_bounds,
     set_control_value,
 )
-from capstone_mcp.models import Action, Bounds, Control
+from capstone_mcp.models import Bounds, Control
 
 
 def _make_control(
@@ -54,30 +54,26 @@ def test_click_via_app_click() -> None:
     app.click.assert_called_once_with(100, "ref:1", allow_foreground=True)
 
 
-def test_click_fallback_to_node_invoke(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delattr(Capstone, "click", raising=False)
+def test_double_click_reaches_guarded_desktop_input() -> None:
     app = Capstone()
     mock_node = MagicMock()
+    mock_node.rectangle.return_value = Bounds(left=0, top=0, right=100, bottom=100)
     app.control = MagicMock(return_value=mock_node)
-    ctrl = _make_control("ref:1", "Button 1")
-
-    click_control(app, 100, ctrl)
-
-    mock_node.invoke.assert_called_once()
-
-
-def test_click_double_fallback_to_click_input() -> None:
-    app = Capstone()
-    mock_node = MagicMock()
-    app.control = MagicMock(return_value=mock_node)
+    app.require_foreground = MagicMock()
     ctrl = _make_control(
         "ref:1",
         "Palette Item",
         bounds=Bounds(left=0, top=0, right=100, bottom=100),
     )
 
-    double_click_control(app, 100, ctrl)
+    with (
+        patch("capstone_mcp.desktop.win32gui.IsWindowEnabled", return_value=True),
+        patch("capstone_mcp.desktop.HwndWrapper") as hwnd,
+    ):
+        double_click_control(app, 100, ctrl)
 
+    hwnd.return_value.set_focus.assert_called_once()
+    app.require_foreground.assert_called_once()
     mock_node.click_input.assert_called_once_with(
         button="left",
         double=True,
@@ -86,18 +82,15 @@ def test_click_double_fallback_to_click_input() -> None:
     )
 
 
-def test_click_fallback_to_app_act(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delattr(Capstone, "click", raising=False)
+def test_click_failure_does_not_retry() -> None:
     app = Capstone()
-    app.control = MagicMock(side_effect=RuntimeError("no control"))
-    app.act = MagicMock()
+    app.click = MagicMock(side_effect=AutomationError("input failed"))
     ctrl = _make_control("ref:1", "Button 1")
 
-    click_control(app, 100, ctrl)
+    with pytest.raises(AutomationError, match="input failed"):
+        click_control(app, 100, ctrl)
 
-    app.act.assert_called_once_with(
-        100, Action.INVOKE, ref="ref:1", allow_foreground=True,
-    )
+    app.click.assert_called_once_with(100, "ref:1", allow_foreground=True)
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 
 import math
 from itertools import pairwise
+from statistics import median
 from typing import Any, Final
 
 from capstone_mcp.desktop import Capstone
@@ -87,15 +88,31 @@ def _derive_slit_separation(
     if len(side_maxima) < MIN_SIDE_MAXIMA_COUNT:
         return None
 
-    spacings = [
-        abs(side_maxima[i + 1] - side_maxima[i]) for i in range(len(side_maxima) - 1)
-    ]
-    fringe_spacing_mm = math.fsum(spacings) / len(spacings)
+    peak_positions = sorted([*side_maxima, x_center_mm])
+    spacings = [right - left for left, right in pairwise(peak_positions)]
+    fringe_spacing_mm = median(spacings)
     if fringe_spacing_mm <= 0:
         return None
 
     delta_d_m = fringe_spacing_mm * 1e-3
     return (1.0 * wl * l_dist) / delta_d_m
+
+
+def _analyze_double_slit(
+    maxima: list[tuple[float, float]],
+    center: float,
+    wavelength: float,
+    distance: float,
+) -> RecipePhaseResult:
+    separation = _derive_slit_separation(maxima, center, wavelength, distance)
+    if separation is None or not math.isfinite(separation * 1000.0):
+        msg = "Need resolved side fringes to estimate finite slit separation."
+        raise ValueError(msg)
+    return RecipePhaseResult(
+        phase="analyze", status="completed",
+        message="Estimated slit separation from interference fringe spacing.",
+        details={"derived_slit_separation_mm": separation * 1000.0},
+    )
 
 
 def _verify_peak_symmetry(
@@ -270,29 +287,24 @@ class SlitDiffractionRecipe(ExperimentRecipe):
                 message="Need 5 matching finite position/intensity samples.",
             )
 
-        if slit_type != "single_slit":
+        if slit_type not in {"single_slit", "double_slit"} or any(
+            not math.isfinite(value) or value <= 0 for value in (wl, l_dist)
+        ):
             return RecipePhaseResult(
-                phase="analyze",
-                status="failed",
-                message="Double-slit envelope fitting is not implemented; "
-                "interference minima cannot determine slit width.",
+                phase="analyze", status="failed",
+                message="Use a supported slit type and positive finite optics values.",
             )
 
         try:
             x_center_mm, max_i = _central_peak(positions_mm, intensities)
-        except ValueError as exc:
-            return RecipePhaseResult(phase="analyze", status="failed", message=str(exc))
-
-        # 2. Local extrema detection
-        maxima_pts, minima_pts = _find_local_extrema(positions_mm, intensities)
-
-        left_minima = sorted(
-            [p for p, _ in minima_pts if p < x_center_mm],
-            reverse=True,
-        )
-        right_minima = sorted([p for p, _ in minima_pts if p > x_center_mm])
-
-        try:
+            maxima_pts, minima_pts = _find_local_extrema(positions_mm, intensities)
+            if slit_type == "double_slit":
+                return _analyze_double_slit(maxima_pts, x_center_mm, wl, l_dist)
+            left_minima = sorted(
+                [p for p, _ in minima_pts if p < x_center_mm],
+                reverse=True,
+            )
+            right_minima = sorted([p for p, _ in minima_pts if p > x_center_mm])
             _verify_peak_symmetry(positions_mm, x_center_mm, left_minima, right_minima)
             first_min_delta_mm, slit_width_a_m = _derive_slit_width(
                 left_minima,

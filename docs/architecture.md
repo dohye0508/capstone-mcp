@@ -85,7 +85,7 @@ flowchart TD
 - **`ExperimentSeries`**: Paired independent ($x$) and dependent ($y$) variables, run metadata, and provenance tags.
 - **`DataSourceAdapter` Protocol**: Common interface implemented by `CapArchiveAdapter`, `CsvTableAdapter`, `LiveMeasurementAdapter`, and `LiveSessionAdapter`.
 - **Polymorphic `live://` URIs**:
-  - `live://measurements`: High-speed CDP WebSocket queries against live hardware inventory and sensor channels (`LiveMeasurementAdapter`).
+  - `live://measurements`: CDP inventory query. Time series require a `live_session` that has already collected at least two values for one measurement via `read_live_measurement` using its default port and unit. The x-axis is elapsed host time or a sample index; it is not a Capstone run clock. Use a recorded source for synchronized measurements.
   - `live://table`: Screen-reader extraction of paired series from active table display UI components (`LiveSessionAdapter`).
 
 ---
