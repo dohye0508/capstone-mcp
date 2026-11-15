@@ -145,7 +145,7 @@ def test_dispatch_graph_toolbox_and_visibility() -> None:
             visible_runs=["Run #1"], target_displays=[], detail="",
         )
         res = desktop.dispatch(NativeRequest(
-            operation="set_run_visibility", runs=["Run #1"],
+            operation="set_run_visibility", handle=1234, runs=["Run #1"],
         ))
         assert res["visible_runs"] == ["Run #1"]
         mock_srv.assert_called_once()
