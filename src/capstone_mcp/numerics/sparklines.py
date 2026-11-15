@@ -4,8 +4,24 @@
 import math
 from collections.abc import Sequence
 from typing import Final
+from xml.sax.saxutils import escape
 
 MIN_FIT_POINTS: Final[int] = 2
+
+
+def _validate_plot_values(x: Sequence[float], y: Sequence[float]) -> None:
+    if len(x) != len(y):
+        msg = "Plot coordinates must have matching lengths."
+        raise ValueError(msg)
+    if not all(math.isfinite(value) for values in (x, y) for value in values):
+        msg = "Plot coordinates must be finite."
+        raise ValueError(msg)
+
+
+def _validate_plot_spans(span_x: float, span_y: float) -> None:
+    if not math.isfinite(span_x) or not math.isfinite(span_y):
+        msg = "Plot coordinate span exceeds the finite floating-point range."
+        raise ValueError(msg)
 
 
 def render_ascii_sparkline(
@@ -27,6 +43,7 @@ def render_ascii_sparkline(
     Returns:
         Formatted ASCII plot string.
     """
+    _validate_plot_values(x, y)
     pairs = [
         (float(xi), float(yi))
         for xi, yi in zip(x, y, strict=False)
@@ -42,6 +59,11 @@ def render_ascii_sparkline(
 
     span_x = max_x - min_x if max_x > min_x else 1.0
     span_y = max_y - min_y if max_y > min_y else 1.0
+
+    _validate_plot_spans(span_x, span_y)
+    if width < 1 or height < 1:
+        msg = "ASCII plot dimensions must be positive."
+        raise ValueError(msg)
 
     # Grid init
     grid = [[" " for _ in range(width)] for _ in range(height)]
@@ -90,6 +112,7 @@ def render_svg_sparkline(
     Returns:
         Valid SVG XML markup string.
     """
+    _validate_plot_values(x, y)
     pairs = [
         (float(xi), float(yi))
         for xi, yi in zip(x, y, strict=False)
@@ -106,6 +129,12 @@ def render_svg_sparkline(
     plot_w = width - pad_left - pad_right
     plot_h = height - pad_top - pad_bottom
 
+    if (fit_x is None) != (fit_y is None):
+        msg = "Both fitted coordinate arrays must be supplied."
+        raise ValueError(msg)
+    if fit_x is not None and fit_y is not None:
+        _validate_plot_values(fit_x, fit_y)
+
     all_x = [p[0] for p in pairs] + (list(fit_x) if fit_x else [])
     all_y = [p[1] for p in pairs] + (list(fit_y) if fit_y else [])
 
@@ -114,6 +143,8 @@ def render_svg_sparkline(
 
     span_x = max_x - min_x if max_x > min_x else 1.0
     span_y = max_y - min_y if max_y > min_y else 1.0
+
+    _validate_plot_spans(span_x, span_y)
 
     def to_svg(px: float, py: float) -> tuple[float, float]:
         sx = pad_left + ((px - min_x) / span_x) * plot_w
@@ -126,7 +157,7 @@ def render_svg_sparkline(
 
     if title:
         elements.append(
-            f'<text x="{pad_left}" y="25" font-family="sans-serif" font-size="14" font-weight="bold" fill="#1e293b">{title}</text>',
+            f'<text x="{pad_left}" y="25" font-family="sans-serif" font-size="14" font-weight="bold" fill="#1e293b">{escape(title)}</text>',
         )
 
     # Axes
@@ -138,12 +169,7 @@ def render_svg_sparkline(
     )
 
     # Fitted line if present
-    if (
-        fit_x
-        and fit_y
-        and len(fit_x) == len(fit_y)
-        and len(fit_x) >= MIN_FIT_POINTS
-    ):
+    if fit_x and fit_y and len(fit_x) == len(fit_y) and len(fit_x) >= MIN_FIT_POINTS:
         path_data: list[str] = []
         for i, (fx, fy) in enumerate(zip(fit_x, fit_y, strict=True)):
             sx, sy = to_svg(fx, fy)

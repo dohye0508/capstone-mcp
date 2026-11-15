@@ -359,3 +359,22 @@ def test_resonance_analysis_rejects_incomplete_or_nonfinite_data(
     })
     assert result.status == "failed"
     assert "matching finite" in result.message
+
+
+def test_diffraction_flat_maximum_uses_plateau_midpoint() -> None:
+    result = SlitDiffractionRecipe().analyze({
+        "positions_mm": [-4, -3, -2, -1, 0, 1, 2, 3, 4],
+        "intensities": [0.2, 0, 2, 5, 5, 5, 2, 0, 0.2],
+    })
+    assert result.status == "completed"
+    assert result.details["central_maximum"]["position_mm"] == 0
+
+
+def test_diffraction_isolated_outer_spike_is_rejected() -> None:
+    result = SlitDiffractionRecipe().analyze({
+        "positions_mm": list(range(-6, 7)),
+        "intensities": [0.1, 20, 0.1, 0, 2, 4, 5, 4, 2, 0, 0.1, 0.2, 0.1],
+    })
+    assert result.status == "failed"
+    assert "spike" in result.message
+    assert not result.details

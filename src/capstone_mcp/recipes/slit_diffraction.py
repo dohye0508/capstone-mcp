@@ -2,6 +2,7 @@
 """Light Interference and Slit Diffraction experiment automation recipe."""
 
 import math
+from itertools import pairwise
 from typing import Any, Final
 
 from capstone_mcp.desktop import Capstone
@@ -95,6 +96,42 @@ def _derive_slit_separation(
 
     delta_d_m = fringe_spacing_mm * 1e-3
     return (1.0 * wl * l_dist) / delta_d_m
+
+
+def _verify_peak_symmetry(
+    positions: list[float],
+    center: float,
+    left: list[float],
+    right: list[float],
+) -> None:
+    """Require bracketing minima consistent with the measured spatial resolution."""
+    if not left or not right:
+        msg = "A minimum on each side is required to verify the central peak."
+        raise ValueError(msg)
+    resolution = max(b - a for a, b in pairwise(positions))
+    if abs((center - left[0]) - (right[0] - center)) > resolution:
+        msg = "Central peak and minima are asymmetric beyond sampling resolution."
+        raise ValueError(msg)
+
+
+def _central_peak(positions: list[float], values: list[float]) -> tuple[float, float]:
+    """Locate a contiguous maximum plateau and reject unresolved isolated spikes."""
+    if any(b <= a for a, b in pairwise(positions)):
+        msg = "Diffraction positions must be strictly increasing."
+        raise ValueError(msg)
+    peak = max(values)
+    indices = [i for i, value in enumerate(values) if value == peak]
+    first, last = indices[0], indices[-1]
+    if peak <= 0 or first == 0 or last == len(values) - 1:
+        msg = "Central peak is not resolved inside the diffraction scan."
+        raise ValueError(msg)
+    if last - first + 1 != len(indices):
+        msg = "Several disconnected maxima make the central peak ambiguous."
+        raise ValueError(msg)
+    if first == last and max(values[first - 1], values[last + 1]) <= peak * 0.1:
+        msg = "Isolated intensity spike is not a resolved diffraction peak."
+        raise ValueError(msg)
+    return (positions[first] + positions[last]) / 2.0, peak
 
 
 class SlitDiffractionRecipe(ExperimentRecipe):
@@ -222,32 +259,29 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         ):
             positions_mm = [p * 1000.0 for p in positions_mm]
         intensities = [float(i) for i in int_raw]
-        if len(positions_mm) != len(intensities) or not all(
-            math.isfinite(v) for v in (*positions_mm, *intensities)
+        if (
+            len(positions_mm) < MIN_DIFFRACTION_POINTS
+            or len(positions_mm) != len(intensities)
+            or not all(math.isfinite(v) for v in (*positions_mm, *intensities))
         ):
             return RecipePhaseResult(
                 phase="analyze",
                 status="failed",
-                message="Position and intensity require matching finite samples.",
+                message="Need 5 matching finite position/intensity samples.",
             )
 
-        if len(positions_mm) < MIN_DIFFRACTION_POINTS:
+        if slit_type != "single_slit":
             return RecipePhaseResult(
                 phase="analyze",
                 status="failed",
-                message="At least 5 points required for diffraction profile analysis.",
-                details={"points_count": len(positions_mm)},
+                message="Double-slit envelope fitting is not implemented; "
+                "interference minima cannot determine slit width.",
             )
 
-        # 1. Central peak
-        max_idx = 0
-        max_i = intensities[0]
-        for i, val in enumerate(intensities):
-            if val > max_i:
-                max_i = val
-                max_idx = i
-
-        x_center_mm = positions_mm[max_idx]
+        try:
+            x_center_mm, max_i = _central_peak(positions_mm, intensities)
+        except ValueError as exc:
+            return RecipePhaseResult(phase="analyze", status="failed", message=str(exc))
 
         # 2. Local extrema detection
         maxima_pts, minima_pts = _find_local_extrema(positions_mm, intensities)
@@ -258,14 +292,8 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         )
         right_minima = sorted([p for p, _ in minima_pts if p > x_center_mm])
 
-        if slit_type != "single_slit":
-            return RecipePhaseResult(
-                phase="analyze",
-                status="failed",
-                message="Double-slit envelope fitting is not implemented; "
-                "interference minima cannot determine slit width.",
-            )
         try:
+            _verify_peak_symmetry(positions_mm, x_center_mm, left_minima, right_minima)
             first_min_delta_mm, slit_width_a_m = _derive_slit_width(
                 left_minima,
                 right_minima,

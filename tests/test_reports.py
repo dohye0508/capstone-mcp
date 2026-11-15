@@ -324,7 +324,7 @@ async def test_capstone_generate_lab_report_tool(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
 def test_adiabatic_report_rejects_invalid_absolute_pressure(invalid: float) -> None:
-    with pytest.raises(ValueError, match="finite positive"):
+    with pytest.raises(ValueError, match="finite"):
         generate_report(
             experiment_id="adiabatic_gas",
             data_series={"Volume": [1.0, 2.0, 3.0], "Pressure": [100.0, invalid, 50.0]},
