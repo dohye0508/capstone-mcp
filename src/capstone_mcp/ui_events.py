@@ -101,6 +101,10 @@ class WindowEvents:
         _error: BaseException | None, _traceback: TracebackType | None,
     ) -> None:
         """Stop the message loop; the registering thread removes its own hook."""
+        if not self.thread.is_alive():
+            if self.error is not None and _error is None:
+                raise AutomationError(self.error)
+            return
         user32 = _User32()
         user32.PostThreadMessageW.argtypes = (
             wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
@@ -133,10 +137,6 @@ class WindowEvents:
         callback = callback_type(changed)
         user32.UnhookWinEvent.argtypes = (wintypes.HANDLE,)
         user32.UnhookWinEvent.restype = wintypes.BOOL
-        user32.GetMessageW.argtypes = (
-            ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT,
-        )
-        user32.GetMessageW.restype = wintypes.BOOL
         user32.PeekMessageW.argtypes = (
             ctypes.POINTER(wintypes.MSG), wintypes.HWND,
             wintypes.UINT, wintypes.UINT, wintypes.UINT,
@@ -166,9 +166,7 @@ class WindowEvents:
                     self.error = str(ctypes.WinError(ctypes.get_last_error()))
                     return
             self.ready.set()
-            while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
-                if message.message == WM_CLIPBOARDUPDATE:
-                    self.changes.notify()
+            self._dispatch_messages(user32)
         except Exception as error:  # noqa: BLE001
             self.error = str(error)
         finally:
@@ -182,3 +180,24 @@ class WindowEvents:
             finally:
                 user32.UnhookWinEvent(hook)
                 self.ready.set()
+
+    def _dispatch_messages(self, user32: _User32) -> None:
+        user32.GetMessageW.argtypes = (
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT,
+        )
+        user32.GetMessageW.restype = wintypes.BOOL
+        user32.TranslateMessage.argtypes = (ctypes.POINTER(wintypes.MSG),)
+        user32.TranslateMessage.restype = wintypes.BOOL
+        user32.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
+        user32.DispatchMessageW.restype = ctypes.c_ssize_t
+        message = wintypes.MSG()
+        while True:
+            status = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
+            if status <= 0:
+                if status < 0:
+                    self.error = str(ctypes.WinError(ctypes.get_last_error()))
+                break
+            if message.message == WM_CLIPBOARDUPDATE:
+                self.changes.notify()
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))

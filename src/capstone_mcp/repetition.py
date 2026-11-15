@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import contextmanager
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from typing import Annotated, Final, Literal, Protocol
 from uuid import uuid4
 
@@ -158,9 +158,11 @@ class RemoteRecordingBackend:
         """Initialize and validate readiness in the same worker used for acquisition."""
         self.worker: AutomationWorker = AutomationWorker()
         self.handle: int = plan.window_handle
+        self.command_lock: Lock = Lock()
+        self.closed: bool = False
         try:
             self.initial: RecordingStatus = RecordingStatus.model_validate(
-                self.worker.call(NativeRequest(
+                self._call(NativeRequest(
                     operation="recording_initialize",
                     plan=JSON_VALUE.validate_json(plan.model_dump_json()),
                 )),
@@ -172,7 +174,7 @@ class RemoteRecordingBackend:
     def observe(self) -> RecordingStatus:
         """Read only through the owning process."""
         return RecordingStatus.model_validate(
-            self.worker.call(NativeRequest(operation="recording_observe")),
+            self._call(NativeRequest(operation="recording_observe")),
         )
 
     @property
@@ -182,17 +184,40 @@ class RemoteRecordingBackend:
 
     def change(self, *, recording: bool) -> RecordingStatus:
         """Confirm native events without replay after an uncertain result."""
-        return RecordingStatus.model_validate(self.worker.call(NativeRequest(
+        return RecordingStatus.model_validate(self._call(NativeRequest(
             operation="recording_change", recording=recording,
         )))
 
     def close(self) -> None:
         """Retire this job's worker without terminating Capstone."""
-        self.worker.close()
+        with self._command():
+            self.closed = True
+            self.worker.close()
+
+    @contextmanager
+    def _command(self) -> Generator[None, None, None]:
+        if not self.command_lock.acquire(timeout=60):
+            msg = "Recording command is still active; no input was queued."
+            raise AutomationError(msg)
+        try:
+            yield
+        finally:
+            self.command_lock.release()
+
+    def _call(self, request: NativeRequest) -> JsonValue:
+        with self._command():
+            if self.closed:
+                msg = "Recording session has closed; no input was sent."
+                raise AutomationError(msg)
+            return self.worker.call(request)
+
+    def keep_sample(self, request: NativeRequest) -> JsonValue:
+        """Serialize a validated manual sample with this job's stop/save commands."""
+        return self._call(request)
 
     def save(self, path: str) -> FileArtifact:
         """Save this same native session to a new path after a confirmed stop."""
-        return FileArtifact.model_validate(self.worker.call(NativeRequest(
+        return FileArtifact.model_validate(self._call(NativeRequest(
             operation="save_experiment", handle=self.handle, value=path,
         )))
 
@@ -314,6 +339,25 @@ class AcquisitionJobs:
             ):
                 msg = "An acquisition or another input is active; no input was queued."
                 raise AutomationError(msg)
+
+    @contextmanager
+    def manual_sample(self) -> Generator[RemoteRecordingBackend | None, None, None]:
+        """Reserve one manual input while borrowing the active recording owner."""
+        with self.lock:
+            active = [job for job in self.jobs.values() if not job.result.done()]
+            if self.input_reserved or len(active) > 1:
+                msg = "Another input is active; no input was queued."
+                raise AutomationError(msg)
+            backend = active[0].backend if active else None
+            if backend is not None and not isinstance(backend, RemoteRecordingBackend):
+                msg = "Active recording backend does not support manual sampling."
+                raise AutomationError(msg)
+            self.input_reserved = True
+        try:
+            yield backend
+        finally:
+            with self.lock:
+                self.input_reserved = False
 
     @contextmanager
     def interaction(self) -> Generator[None, None, None]:

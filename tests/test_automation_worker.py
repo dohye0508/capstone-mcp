@@ -9,6 +9,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import override
 
+import psutil
 import pytest
 from pydantic import TypeAdapter
 
@@ -45,7 +46,16 @@ def test_worker_preserves_state_and_unicode_between_calls() -> None:
     assert worker.process.poll() is not None
 
 
-@pytest.mark.parametrize("response", ["none", "partial"])
+def test_request_and_reply_larger_than_pipe_capacity_complete_without_deadlock() -> None:
+    worker = FixtureWorker(timeout=10)
+    payload = "한글 data " * 100000
+    try:
+        assert worker.call(NativeRequest(operation="keys", value=payload)) == payload
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("response", ["none", "partial", "inherited"])
 def test_timeout_retires_worker_without_replaying_delivered_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, response: str,
 ) -> None:
@@ -89,4 +99,12 @@ def test_timeout_retires_worker_without_replaying_delivered_input(
                 _ = worker.call(NativeRequest(operation="windows"))
             assert worker.process is process
         finally:
-            worker.close()
+            try:
+                worker.close()
+            finally:
+                child_path = Path(str(delivered) + ".child")
+                if child_path.exists():
+                    child = psutil.Process(int(child_path.read_text(encoding="utf-8")))
+                    assert child.cmdline()[-2:] == ["-c", "import time; time.sleep(60)"]
+                    child.kill()
+                    child.wait(timeout=5)
