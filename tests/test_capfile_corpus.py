@@ -12,7 +12,12 @@ from zipfile import ZipFile
 import pytest
 from defusedxml.ElementTree import fromstring
 
-from capstone_mcp.capfiles import read_cap_configuration, read_cap_file
+from capstone_mcp.capfiles import (
+    list_cap_datasets,
+    read_cap_configuration,
+    read_cap_dataset_page,
+    read_cap_file,
+)
 
 if TYPE_CHECKING:
     from xml.etree.ElementTree import Element
@@ -54,10 +59,22 @@ def test_real_archive_arrays_match_native_metadata_without_modification(
     assert len(cap.datasets) == len(native_datasets)
     assert cap.data_sources == configuration.data_sources
     assert cap.experiment_settings == configuration.experiment_settings
-    for dataset, native in zip(cap.datasets, native_datasets, strict=True):
+    summaries = list_cap_datasets(path)
+    assert len(summaries) == len(cap.datasets)
+    for index, (dataset, native) in enumerate(zip(cap.datasets, native_datasets, strict=True)):
         storage = native.find("./DataSegmentElement/DependentStorageElement")
         assert storage is not None
         count = int(storage.attrib["DataCacheDataSize"])
+        assert summaries[index].count == count
+        offset = max(0, count - 3)
+        page = read_cap_dataset_page(path, index, offset, 3)
+        assert page.raw_values == dataset.raw_values[offset:offset + 3]
+        assert page.independent_values == dataset.independent_values[offset:offset + 3]
+        assert page.sample_indices == dataset.sample_indices[offset:offset + 3]
+        assert page.numeric_values == (
+            dataset.numeric_values[offset:offset + 3]
+            if dataset.numeric_values is not None else None
+        )
         assert dataset.data_set_id == native.get("DataSetID")
         assert len(dataset.raw_values) == count
         assert dataset.sample_indices == list(range(count))

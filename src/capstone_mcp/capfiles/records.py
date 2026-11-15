@@ -33,6 +33,9 @@ def decode_numeric_payload(
     payload: bytes,
     count: int,
     offset: Decimal = Decimal(0),
+    *,
+    start_index: int = 0,
+    limit: int | None = None,
 ) -> DecodedScalars:
     """Decode raw little-endian attribute/double scalar records."""
     if count < 0 or count > MAX_RECORDS:
@@ -45,7 +48,13 @@ def decode_numeric_payload(
         )
         raise CapFileError(msg)
     try:
-        return decode_numeric_records(payload, count, offset)
+        return decode_numeric_records(
+            payload,
+            count,
+            offset,
+            start_index=start_index,
+            limit=limit,
+        )
     except NumericStorageError as exc:
         raise CapFileError(str(exc)) from exc
 
@@ -76,13 +85,18 @@ def _decode_single_text_value(
     return value, end
 
 
-def decode_text_records(
+def decode_text_records(  # noqa: C901
     payload: bytes,
     count: int,
     *,
     member_name: str = "record_stream",
+    start_index: int = 0,
+    limit: int | None = None,
 ) -> list[str]:
     """Decode UTF-16 LE text records with 8-byte length/type headers."""
+    if start_index < 0 or (limit is not None and limit < 0):
+        msg = "Invalid text record page bounds."
+        raise CapFileError(msg)
     if count < 0 or count > MAX_RECORDS:
         msg = f"Record count {count} is outside the valid range (0-{MAX_RECORDS})."
         raise CapFileError(msg)
@@ -94,13 +108,11 @@ def decode_text_records(
         raise CapFileError(msg)
 
     values: list[str] = []
+    end_index = count if limit is None else min(count, start_index + limit)
     offset = 0
     for record_index in range(count):
         if len(payload) - offset < RECORD_HEADER_SIZE:
-            msg = (
-                f"Truncated record header {record_index} in "
-                f"{member_name!r}."
-            )
+            msg = f"Truncated record header {record_index} in {member_name!r}."
             raise CapFileError(msg)
 
         record_type = int.from_bytes(payload[offset : offset + 4], "little")
@@ -114,20 +126,23 @@ def decode_text_records(
                     f"type 0 in {member_name!r}."
                 )
                 raise CapFileError(msg)
-            values.append("")
+            if start_index <= record_index < end_index:
+                values.append("")
             continue
 
         if record_type != TEXT_RECORD_TYPE:
-            msg = (
-                f"Unsupported record type {record_type} in "
-                f"{member_name!r}."
-            )
+            msg = f"Unsupported record type {record_type} in {member_name!r}."
             raise CapFileError(msg)
 
         value, offset = _decode_single_text_value(
-            payload, offset, value_size, record_index, member_name,
+            payload,
+            offset,
+            value_size,
+            record_index,
+            member_name,
         )
-        values.append(value)
+        if start_index <= record_index < end_index:
+            values.append(value)
 
     return values
 
@@ -136,12 +151,21 @@ def decode_interval_coordinates(
     start: Decimal,
     interval: Decimal,
     count: int,
+    *,
+    start_index: int = 0,
+    limit: int | None = None,
 ) -> list[Decimal]:
     """Reproduce ZIntervalCache start + index * interval coordinates."""
     if count < 0 or count > MAX_RECORDS:
         msg = f"Record count {count} is outside the valid range (0-{MAX_RECORDS})."
         raise CapFileError(msg)
     try:
-        return interval_values(start, interval, count)
+        return interval_values(
+            start,
+            interval,
+            count,
+            start_index=start_index,
+            limit=limit,
+        )
     except NumericStorageError as exc:
         raise CapFileError(str(exc)) from exc
