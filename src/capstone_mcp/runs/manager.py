@@ -64,40 +64,45 @@ def _rename_via_inline_editor(
     new_name: str,
 ) -> None:
     """Fallback inline renaming via F2 keystrokes."""
-    with contextlib.suppress(AttributeError, RuntimeError):
-        if hasattr(node, "iface_selection_item") and node.iface_selection_item:
-            node.iface_selection_item.Select()
-    if hasattr(node, "set_focus"):
-        with contextlib.suppress(Exception):
-            _ = node.set_focus()
-    if hasattr(app, "keys"):
-        _ = app.keys(handle, "{F2}", allow_foreground=True)
-        _ = app.keys(
-            handle, f"^a{new_name}{{ENTER}}",
-            allow_foreground=True, unicode_input=True,
-        )
+    node.set_focus()
+    app.keys(handle, "{F2}", allow_foreground=True)
+    app.keys(handle, "^a", allow_foreground=True)
+    app.type_text(new_name)
+    app.keys(handle, "{ENTER}", allow_foreground=True)
 
 
 def rename_run(app: Capstone, request: RenameRunRequest) -> RenameRunResult:
     """Find the target run in Data Summary and rename it reliably."""
-    if not request.new_name.strip():
+    if not request.new_name.strip() or any(c in request.new_name for c in "\r\n"):
         msg = "new_name must not be empty."
         raise AutomationError(msg)
 
     # 1. Take snapshot to locate the target run item
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    target_control: Control | None = None
-    for control in snapshot.controls:
-        if (
-            control.visible
-            and control.control_type == "TreeItem"
-            and control.name.strip() == request.old_name.strip()
-        ):
-            target_control = control
-            break
-
-    if target_control is None:
+    if snapshot.truncated:
+        msg = "Run mutation requires a complete snapshot."
+        raise AutomationError(msg)
+    matches = [
+        control
+        for control in snapshot.controls
+        if control.visible
+        and control.control_type == "TreeItem"
+        and control.name.strip() == request.old_name.strip()
+    ]
+    if not matches:
         msg = f"Run item with name '{request.old_name}' not found in Data Summary."
+        raise AutomationError(msg)
+    if len(matches) != 1:
+        msg = "Run name is ambiguous; refusing to rename multiple matching items."
+        raise AutomationError(msg)
+    target_control = matches[0]
+    if request.new_name != request.old_name and any(
+        c.visible
+        and c.control_type == "TreeItem"
+        and c.name.strip() == request.new_name.strip()
+        for c in snapshot.controls
+    ):
+        msg = "The requested new run name already exists."
         raise AutomationError(msg)
 
     node = app.control(target_control.ref)
@@ -156,77 +161,53 @@ def _find_run_items(controls: list[Control]) -> list[Control]:
     ]
 
 
-def _dismiss_confirmation_dialog(app: Capstone, main_handle: int) -> None:
-    """Detect and auto-confirm any deletion confirmation modal dialog."""
-    all_windows = app.windows()
-    for win in all_windows:
-        if win.handle == main_handle:
-            continue
-        with contextlib.suppress(Exception):
-            dialog_snap = app.snapshot(win.handle, depth=6, limit=100)
-            for ctrl in dialog_snap.controls:
-                if not ctrl.visible or ctrl.control_type != "Button":
-                    continue
-                name_lower = ctrl.name.strip().lower()
-                modal_names = ("yes", "ok", "delete", "confirm", "예", "확인", "삭제")
-                if name_lower in modal_names:
-                    click_control(app, win.handle, ctrl, allow_foreground=True)
-                    return
-
-
 def delete_run(app: Capstone, request: DeleteRunRequest) -> DeleteRunResult:
-    """Find target run in Data Summary and delete it, auto-confirming modals."""
+    """Delete a unique named run and report only observed removal."""
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    run_items = _find_run_items(snapshot.controls)
-
-    if not run_items:
-        msg = "No runs found to delete in Data Summary."
+    if snapshot.truncated:
+        msg = "Run mutation requires a complete snapshot."
         raise AutomationError(msg)
-
-    target_control: Control | None = None
-    target_name = request.run_name.strip()
-
-    if target_name.lower() in ("last_run", "last", "latest"):
-        target_control = run_items[-1]
-    else:
-        for ctrl in run_items:
-            if ctrl.name.strip().lower() == target_name.lower():
-                target_control = ctrl
-                break
-
-    if target_control is None:
-        msg = f"Run '{request.run_name}' not found in Data Summary."
+    name = request.run_name.strip()
+    if name.casefold() in ("last_run", "last", "latest"):
+        run_items = _find_run_items(snapshot.controls)
+        if not run_items:
+            msg = "No runs found to delete in Data Summary."
+            raise AutomationError(msg)
+        msg = "Latest run identity is unverified; provide an explicit run name."
         raise AutomationError(msg)
-
-    actual_deleted_name = target_control.name
-
-    with contextlib.suppress(Exception):
-        node = app.control(target_control.ref)
-        if hasattr(node, "select"):
-            select_fn: Any = getattr(node, "select")  # noqa: B009
-            select_fn()
-
+    matches = [
+        c
+        for c in snapshot.controls
+        if c.visible
+        and c.control_type == "TreeItem"
+        and c.name.strip().casefold() == name.casefold()
+    ]
+    if len(matches) != 1:
+        msg = f"Run '{name}' not found uniquely in Data Summary."
+        raise AutomationError(msg)
+    target = matches[0]
     click_control(
-        app,
-        request.handle,
-        target_control,
-        allow_foreground=request.allow_foreground,
+        app, request.handle, target, allow_foreground=request.allow_foreground,
     )
-
-    with contextlib.suppress(Exception):
-        if hasattr(app, "keys"):
-            app.keys(
-                request.handle,
-                "{DELETE}",
-                allow_foreground=request.allow_foreground,
-            )
-
-    _dismiss_confirmation_dialog(app, request.handle)
-
+    app.keys(request.handle, "{DELETE}", allow_foreground=request.allow_foreground)
+    fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+    removed = not fresh.truncated and not any(
+        c.control_type == "TreeItem" and c.name.strip().casefold() == name.casefold()
+        for c in fresh.controls
+    )
+    if removed:
+        try:
+            app.require_input_ready(request.handle)
+        except AutomationError:
+            removed = False
     return DeleteRunResult(
-        deleted_run=actual_deleted_name,
-        verified=True,
-        detail=f"Run '{actual_deleted_name}' deleted.",
+        deleted_run=target.name,
+        verified=removed,
+        detail=(
+            f"Run '{target.name}' removal observed."
+            if removed
+            else "Deletion requested but not verified; inspect any confirmation dialog."
+        ),
     )
 
 
@@ -236,15 +217,13 @@ def delete_run(app: Capstone, request: DeleteRunRequest) -> DeleteRunResult:
 
 
 def _match_display_control(controls: list[Control], display_name: str) -> Control:
-    """Find a display control matching an explicit display name."""
-    disp_lower = display_name.strip().lower()
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        cname_lower = ctrl.name.strip().lower()
-        if cname_lower == disp_lower or disp_lower in cname_lower:
-            return ctrl
-    msg = f"Target display '{display_name}' not found in active window."
+    """Resolve an exact container name; never choose an overlapping label."""
+    matches = [c for c in controls if c.visible
+               and c.control_type in ("Custom", "Pane", "Group", "Table", "DataGrid")
+               and c.name.strip().casefold() == display_name.strip().casefold()]
+    if len(matches) == 1:
+        return matches[0]
+    msg = f"Target display '{display_name}' not found uniquely in active window."
     raise AutomationError(msg)
 
 
@@ -261,6 +240,7 @@ def _is_within_bounds(inner: Control, outer: Control) -> bool:
 def _find_run_controls(
     controls: list[Control],
     target_containers: list[Control] | None = None,
+    requested_runs: list[str] | None = None,
 ) -> list[Control]:
     """Find controls representing runs (checkboxes, tree items, list items)."""
     candidates: list[Control] = []
@@ -268,12 +248,20 @@ def _find_run_controls(
         if not ctrl.visible:
             continue
         if ctrl.control_type not in (
-            "CheckBox", "TreeItem", "ListItem", "MenuItem", "Button", "RadioButton",
+            "CheckBox",
+            "TreeItem",
+            "ListItem",
+            "MenuItem",
+            "Button",
+            "RadioButton",
         ):
             continue
         if not (
-            RUN_NAME_PATTERN.search(ctrl.name)
-            or "run" in ctrl.automation_id.lower()
+            RUN_NAME_PATTERN.fullmatch(ctrl.name.strip())
+            or any(
+                ctrl.name.strip().casefold() == name.strip().casefold()
+                for name in (requested_runs or [])
+            )
         ):
             continue
 
@@ -290,60 +278,23 @@ def _matches_run_name(ctrl: Control, target_run: str) -> bool:
     tname = target_run.strip().lower()
     if cname == tname:
         return True
-    c_num = re.findall(r"\d+", cname)
-    t_num = re.findall(r"\d+", tname)
-    return bool(c_num and t_num and c_num == t_num)
-
-
-def _get_control_visibility_state(app: Capstone, ctrl: Control) -> bool:
-    """Query current checked or selected state of a run visibility control."""
-    try:
-        node = app.control(ctrl.ref)
-    except (AttributeError, RuntimeError):
+    if not RUN_NAME_PATTERN.fullmatch(cname):
         return False
+    if not (RUN_NAME_PATTERN.fullmatch(tname) or tname.isdecimal()):
+        return False
+    return re.findall(r"\d+", cname) == re.findall(r"\d+", tname)
 
+
+def _get_control_visibility_state(app: Capstone, ctrl: Control) -> bool | None:
+    """Read an explicit binary Toggle state; absence is unknown."""
     with contextlib.suppress(AttributeError, RuntimeError):
-        if hasattr(node, "iface_toggle") and node.iface_toggle:
-            toggle = node.iface_toggle
-            v = getattr(toggle, "ToggleState", None)
-            if isinstance(v, int):
-                return bool(v == 1)
-            v_curr = getattr(toggle, "CurrentToggleState", None)
-            if isinstance(v_curr, int):
-                return bool(v_curr == 1)
-
-    with contextlib.suppress(AttributeError, RuntimeError):
-        if hasattr(node, "iface_selection_item") and node.iface_selection_item:
-            sel = node.iface_selection_item
-            v_sel = getattr(sel, "IsSelected", None)
-            if isinstance(v_sel, bool):
-                return v_sel
-            v_curr_sel = getattr(sel, "CurrentIsSelected", None)
-            if isinstance(v_curr_sel, bool):
-                return v_curr_sel
-
-    return False
-
-
-def _try_toggle_or_select(node: Any, visible: bool) -> bool:  # noqa: ANN401, FBT001
-    """Attempt pattern-based state changes; return True on success."""
-    if hasattr(node, "iface_toggle") and node.iface_toggle:
-        with contextlib.suppress(AttributeError, RuntimeError):
-            node.iface_toggle.Toggle()
-            return True
-
-    if hasattr(node, "iface_selection_item") and node.iface_selection_item:
-        with contextlib.suppress(AttributeError, RuntimeError):
-            if visible:
-                if hasattr(node.iface_selection_item, "AddToSelection"):
-                    node.iface_selection_item.AddToSelection()
-                else:
-                    node.iface_selection_item.Select()
-            else:
-                node.iface_selection_item.RemoveFromSelection()
-            return True
-
-    return False
+        node = app.control(ctrl.ref)
+        toggle = node.iface_toggle
+        for attribute in ("CurrentToggleState", "ToggleState"):
+            value = getattr(toggle, attribute, None)
+            if type(value) is int and value in (0, 1):
+                return value == 1
+    return None
 
 
 def _set_control_visibility_state(
@@ -352,14 +303,14 @@ def _set_control_visibility_state(
     ctrl: Control,
     visible: bool,  # noqa: FBT001
 ) -> None:
-    """Set the visibility state on a run control."""
-    node = app.control(ctrl.ref)
-    current_state = _get_control_visibility_state(app, ctrl)
-    if current_state == visible:
-        return
-
-    if not _try_toggle_or_select(node, visible):
-        click_control(app, handle, ctrl, allow_foreground=True)
+    """Change only controls with an observed binary toggle state."""
+    del handle
+    current = _get_control_visibility_state(app, ctrl)
+    if current is None:
+        msg = f"Run visibility state is unknown for '{ctrl.name}'."
+        raise AutomationError(msg)
+    if current != visible:
+        app.control(ctrl.ref).iface_toggle.Toggle()
 
 
 def _resolve_targets(
@@ -382,89 +333,70 @@ def _resolve_targets(
     return None, ["All Displays"]
 
 
-def _apply_run_visibility(
+def _visibility_controls(
     app: Capstone,
-    handle: int,
-    target_runs: list[str],
-    run_controls: list[Control],
-    visible: bool,  # noqa: FBT001
-) -> None:
-    """Find and apply visibility updates to each requested run."""
-    for run_name in target_runs:
-        matching = [c for c in run_controls if _matches_run_name(c, run_name)]
-        if not matching:
-            msg = f"Run visibility control for '{run_name}' not found."
-            raise AutomationError(msg)
-        for ctrl in matching:
-            _set_control_visibility_state(app, handle, ctrl, visible)
-
-
-def _collect_visible_runs(
-    app: Capstone,
-    controls: list[Control],
-    requested_runs: list[str],
-    visible: bool,  # noqa: FBT001
-) -> list[str]:
-    """Collect final set of visible runs."""
-    visible_names: set[str] = set()
-    for ctrl in controls:
-        if _get_control_visibility_state(app, ctrl):
-            visible_names.add(ctrl.name.strip())
-
-    if visible:
-        visible_names.update(requested_runs)
-    else:
-        for r in requested_runs:
-            visible_names.discard(r)
-
-    return sorted(visible_names)
+    request: SetRunVisibilityRequest,
+) -> tuple[list[Control], list[str]]:
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Run visibility requires a complete snapshot."
+        raise AutomationError(msg)
+    containers, names = _resolve_targets(snapshot.controls, request.target_displays)
+    return _find_run_controls(snapshot.controls, containers, request.runs), names
 
 
 def set_run_visibility(
     app: Capstone,
     request: SetRunVisibilityRequest,
 ) -> SetRunVisibilityResult:
-    """Control display visibility for specific runs on graphs or tables."""
+    """Set run toggles using fresh references and observed postconditions."""
     if not request.runs:
         msg = "runs must not be empty."
         raise AutomationError(msg)
-
     if not request.allow_foreground:
         msg = "Run visibility operation requires allow_foreground=true."
         raise AutomationError(msg)
-
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    containers, display_names = _resolve_targets(
-        snapshot.controls,
-        request.target_displays,
+    controls, display_names = _visibility_controls(app, request)
+    for name in request.runs:
+        matches = [c for c in controls if _matches_run_name(c, name)]
+        if len(matches) != 1:
+            msg = f"Unique run visibility control for '{name}' not found."
+            raise AutomationError(msg)
+        # Check every requested state before mutating any of them.
+        if any(_get_control_visibility_state(app, c) is None for c in matches):
+            msg = f"Run visibility state is unknown for '{name}'."
+            raise AutomationError(msg)
+    for name in request.runs:
+        current, _ = _visibility_controls(app, request)
+        matches = [c for c in current if _matches_run_name(c, name)]
+        if len(matches) != 1:
+            msg = f"Run '{name}' is ambiguous; target one display explicitly."
+            raise AutomationError(msg)
+        _set_control_visibility_state(app, request.handle, matches[0], request.visible)
+    current, display_names = _visibility_controls(app, request)
+    verified = all(
+        bool(matches := [c for c in current if _matches_run_name(c, name)])
+        and all(
+            _get_control_visibility_state(app, c) == request.visible for c in matches
+        )
+        for name in request.runs
     )
-
-    run_ctrls = _find_run_controls(snapshot.controls, containers)
-    _apply_run_visibility(
-        app,
-        request.handle,
-        request.runs,
-        run_ctrls,
-        request.visible,
+    visible_names = sorted(
+        {
+            c.name.strip()
+            for c in current
+            if _get_control_visibility_state(app, c) is True
+        },
     )
-
-    fresh_snap = app.snapshot(request.handle, depth=16, limit=10_000)
-    post_run_ctrls = _find_run_controls(fresh_snap.controls, containers)
-    sorted_visible = _collect_visible_runs(
-        app,
-        post_run_ctrls,
-        request.runs,
-        request.visible,
-    )
-
-    mode_str = "visible" if request.visible else "hidden"
-    detail = f"Runs {request.runs} set to {mode_str} on {display_names}."
-
     return SetRunVisibilityResult(
-        visible_runs=sorted_visible,
+        visible_runs=visible_names,
         target_displays=display_names,
-        detail=detail,
-        verified=True,
+        verified=verified,
+        detail=(
+            "Requested run visibility observed."
+            if verified
+            else "Run visibility request was not confirmed by the current controls."
+        ),
     )
 
 
@@ -492,7 +424,8 @@ def _indexed(parsed: CapFile) -> dict[tuple[str, str], CapDataSet]:
 
 
 def _deltas(
-    before: CapFile, after: CapFile,
+    before: CapFile,
+    after: CapFile,
 ) -> tuple[list[_Delta], list[DatasetIdentity]]:
     old = _indexed(before)
     current = _indexed(after)
@@ -515,20 +448,24 @@ def _deltas(
             )
             old_values = (
                 previous.numeric_values
-                if previous.numeric_values is not None else previous.raw_values
+                if previous.numeric_values is not None
+                else previous.raw_values
             )
             values = (
                 dataset.numeric_values
-                if dataset.numeric_values is not None else dataset.raw_values
+                if dataset.numeric_values is not None
+                else dataset.raw_values
             )
             if (
-                same_metadata and values == old_values
+                same_metadata
+                and values == old_values
                 and dataset.independent_values == previous.independent_values
             ):
                 continue
             old_count = len(previous.raw_values)
             appended = (
-                same_metadata and count > old_count
+                same_metadata
+                and count > old_count
                 and values[:old_count] == old_values
                 and dataset.independent_values[:old_count]
                 == previous.independent_values
@@ -536,9 +473,13 @@ def _deltas(
             start = old_count if appended else None
             kind = "appended" if appended else "replaced"
         provenance = DatasetChange(
-            dataset_index=index, dataset_id=identifier,
-            source_euid=dataset.source_euid, source_name=dataset.source_name,
-            unit_id=dataset.unit_id, kind=kind, sample_start=start,
+            dataset_index=index,
+            dataset_id=identifier,
+            source_euid=dataset.source_euid,
+            source_name=dataset.source_name,
+            unit_id=dataset.unit_id,
+            kind=kind,
+            sample_start=start,
             sample_count=count,
             new_sample_count=None if start is None else count - start,
         )
@@ -552,7 +493,8 @@ def _deltas(
 
 def _select(changes: list[_Delta], source: str) -> _Delta:
     matches = [
-        change for change in changes
+        change
+        for change in changes
         if change.provenance.source_euid == source
         and change.provenance.new_sample_count
     ]
@@ -572,18 +514,22 @@ def _values(change: _Delta) -> list[float]:
 
 
 def _fit(
-    changes: list[_Delta], sources: SourceFit, ordinal: int,
+    changes: list[_Delta],
+    sources: SourceFit,
+    ordinal: int,
 ) -> tuple[CapturedFit, RunSamples]:
     x = _select(changes, sources.x_source_euid)
     y = _select(changes, sources.y_source_euid)
     start_x = 0 if x.provenance.sample_start is None else x.provenance.sample_start
     start_y = 0 if y.provenance.sample_start is None else y.provenance.sample_start
     x_coords = (
-        [] if x.dataset.independent_values is None
+        []
+        if x.dataset.independent_values is None
         else x.dataset.independent_values[start_x:]
     )
     y_coords = (
-        [] if y.dataset.independent_values is None
+        []
+        if y.dataset.independent_values is None
         else y.dataset.independent_values[start_y:]
     )
     if (
@@ -595,7 +541,9 @@ def _fit(
         raise CaptureError(msg)
     samples = FitInput(x=_values(x), y=_values(y))
     fit = CapturedFit(
-        x=x.provenance, y=y.provenance, result=linear_fit(samples),
+        x=x.provenance,
+        y=y.provenance,
+        result=linear_fit(samples),
     )
     return fit, RunSamples(name=f"run {ordinal}", values=samples.y)
 
@@ -604,7 +552,9 @@ class CaptureSession:
     """Save snapshots and analyze each cycle after its confirmed stop."""
 
     def __init__(
-        self, plan: CapturePlan, save: Callable[[str], FileArtifact],
+        self,
+        plan: CapturePlan,
+        save: Callable[[str], FileArtifact],
     ) -> None:
         """Initialize capture session with output directory plan and saver."""
         self.plan: CapturePlan = plan
@@ -646,9 +596,11 @@ class CaptureSession:
         removed: list[DatasetIdentity] = []
         fit: CapturedFit | None = None
         error: str | None = None
+        validated_snapshot = False
         try:
             parsed = read_cap_file(artifact.path)
             changes, removed = _deltas(self.previous, parsed)
+            validated_snapshot = True
             if self.plan.fit is not None and not interrupted:
                 fit, samples = _fit(changes, self.plan.fit, ordinal)
                 unit = fit.y.unit_id
@@ -663,16 +615,18 @@ class CaptureSession:
             error = str(failure)
             raise
         finally:
-            self.runs.append(CapturedRun(
-                ordinal=ordinal,
-                interrupted=interrupted,
-                artifact=artifact,
-                datasets=[change.provenance for change in changes],
-                removed_datasets=removed,
-                fit=fit,
-                analysis_error=error,
-            ))
-            if parsed is not None:
+            self.runs.append(
+                CapturedRun(
+                    ordinal=ordinal,
+                    interrupted=interrupted,
+                    artifact=artifact,
+                    datasets=[change.provenance for change in changes],
+                    removed_datasets=removed,
+                    fit=fit,
+                    analysis_error=error,
+                ),
+            )
+            if validated_snapshot:
                 self.previous = parsed
 
     record_cycle = record
@@ -714,11 +668,12 @@ class RunManager:
         return rename_run(self.app, request)
 
     def delete(self, request: DeleteRunRequest) -> DeleteRunResult:
-        """Delete an experimental run with automatic modal confirmation."""
+        """Delete a named run and verify its observed removal."""
         return delete_run(self.app, request)
 
     def set_visibility(
-        self, request: SetRunVisibilityRequest,
+        self,
+        request: SetRunVisibilityRequest,
     ) -> SetRunVisibilityResult:
         """Toggle or assign visibility for runs across displays."""
         return set_run_visibility(self.app, request)

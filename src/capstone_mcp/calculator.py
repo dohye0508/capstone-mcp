@@ -3,6 +3,7 @@
 
 import contextlib
 import re
+import sys
 from typing import Final, Literal
 
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -40,10 +41,32 @@ class CreateCalculationResult(Model):
 
 def _parse_calculation_name(expression: str) -> str:
     """Extract defined variable name from expression (e.g. 'p = m*v' -> 'p')."""
-    match = re.match(r"^\s*([A-Za-z0-9_가-힣\s]+?)\s*=", expression)
+    match = re.match(r"^\s*([\w\s]+?)\s*=(?!=)", expression)
     if match:
         return match.group(1).strip()
     return expression.strip()
+
+
+def _validate_delimiters(expression: str) -> None:
+    """Reject unbalanced grouping without pretending to parse Capstone's language."""
+    tokens = re.findall(
+        r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[[^\]]*\]|[()\[\]"']""",
+        expression,
+    )
+    depth = 0
+    for fragment in tokens:
+        if len(fragment) > 1:
+            continue
+        if fragment == "(":
+            depth += 1
+        elif fragment == ")" and depth:
+            depth -= 1
+        else:
+            msg = "Calculator expression has unbalanced parentheses or brackets."
+            raise AutomationError(msg)
+    if depth:
+        msg = "Calculator expression has unbalanced parentheses, brackets, or quotes."
+        raise AutomationError(msg)
 
 
 def _find_calculator_toggle(controls: list[Control]) -> Control:
@@ -108,6 +131,35 @@ def _find_editor_controls(
     return formula_ctrl, unit_ctrl
 
 
+def _set_editor_value(app: Capstone, handle: int, control: Control, value: str) -> None:
+    node = app.control(control.ref)
+    try:
+        node.iface_value.SetValue(value)
+    except (AttributeError, RuntimeError):
+        app.click(handle, control.ref, allow_foreground=True)
+        app.keys(handle, "^a{BACKSPACE}")
+        app.type_text(value)
+
+
+def _restore_calculator(app: Capstone, handle: int, *, failing: bool) -> None:
+    try:
+        fresh = app.snapshot(handle, depth=16, limit=10_000)
+        toggle = _find_calculator_toggle(fresh.controls)
+        app.click(handle, toggle.ref, allow_foreground=True)
+    except Exception:
+        if not failing:
+            raise
+
+
+def _write_unit(app: Capstone, handle: int, unit: str) -> None:
+    snapshot = app.snapshot(handle, depth=16, limit=10_000)
+    _, unit_control = _find_editor_controls(snapshot.controls)
+    if unit_control is None:
+        msg = "Calculator unit editor disappeared after formula entry."
+        raise AutomationError(msg)
+    _set_editor_value(app, handle, unit_control, unit.strip())
+
+
 def create_calculation(
     app: Capstone,
     request: CreateCalculationRequest,
@@ -122,6 +174,11 @@ def create_calculation(
         msg = "Calculator operation requires allow_foreground=true."
         raise AutomationError(msg)
 
+    _validate_delimiters(raw_expr)
+    if request.variables:
+        msg = "Calculator variable bindings are not implemented; no input was sent."
+        raise AutomationError(msg)
+
     calc_name = _parse_calculation_name(raw_expr)
 
     # 1. Inspect window and locate Calculator toggle
@@ -134,34 +191,25 @@ def create_calculation(
         # Open Calculator panel
         app.click(request.handle, toggle_ctrl.ref, allow_foreground=True)
         opened_by_tool = True
-        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
 
     try:
+        if opened_by_tool:
+            snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
         # 2. Locate formula editor and unit editor controls
         formula_ctrl, unit_ctrl = _find_editor_controls(snapshot.controls)
         if not formula_ctrl:
             msg = "Could not locate the Calculator formula editor in the active drawer."
             raise AutomationError(msg)
+        if request.unit and unit_ctrl is None:
+            msg = "Could not locate the requested Calculator unit editor."
+            raise AutomationError(msg)
 
         # 3. Enter formula
-        formula_node = app.control(formula_ctrl.ref)
-        try:
-            formula_node.iface_value.SetValue(raw_expr)
-        except (AttributeError, RuntimeError):
-            # Fallback to typing
-            app.click(request.handle, formula_ctrl.ref, allow_foreground=True)
-            app.keys(request.handle, "^a{BACKSPACE}")
-            app.type_text(raw_expr)
+        _set_editor_value(app, request.handle, formula_ctrl, raw_expr)
 
         # 4. Enter unit if specified
         if request.unit and unit_ctrl:
-            unit_node = app.control(unit_ctrl.ref)
-            try:
-                unit_node.iface_value.SetValue(request.unit.strip())
-            except (AttributeError, RuntimeError):
-                app.click(request.handle, unit_ctrl.ref, allow_foreground=True)
-                app.keys(request.handle, "^a{BACKSPACE}")
-                app.type_text(request.unit.strip())
+            _write_unit(app, request.handle, request.unit)
 
         # Commit formula
         app.keys(request.handle, "{ENTER}")
@@ -187,4 +235,6 @@ def create_calculation(
     finally:
         # 6. Lifecycle restore: close panel if we opened it and keep_open is False
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle_ctrl.ref, allow_foreground=True)
+            _restore_calculator(
+                app, request.handle, failing=sys.exception() is not None,
+            )

@@ -3,20 +3,20 @@
 
 from __future__ import annotations
 
-import contextlib
 import math
 import re
 from typing import TYPE_CHECKING, Any
 
+from capstone_mcp.csv_data import CsvDataError, parse_csv_number
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import (
     click_control,
     find_display_container,
     find_palette_item,
+    is_within_bounds,
+    set_control_value,
 )
 from capstone_mcp.displays.models import (
-    EXPAND_RIGHT_PX,
-    MARGIN_EXPAND_PX,
     MAX_HEADER_HEIGHT_PX,
     ROW_Y_TOLERANCE_PX,
     STATISTICS_KEYWORDS,
@@ -63,12 +63,6 @@ def _find_column_headers(controls: list[Control], table_ctrl: Control) -> list[C
         )
         and (
             c.control_type in ("HeaderItem", "Header")
-            or (
-                c.control_type == "Button"
-                and c.name.strip().lower() not in ("add column", "+")
-                and "addcolumn" not in c.automation_id.lower()
-                and "add_column" not in c.automation_id.lower()
-            )
             or "header" in c.automation_id.lower()
             or "select measurement" in c.name.lower()
         )
@@ -82,27 +76,23 @@ def _find_add_column_button(
     table_ctrl: Control,
 ) -> Control | None:
     """Find '+' or 'Add Column' button in the table."""
-    for c in controls:
-        if not c.visible or not c.enabled:
-            continue
-        name_lower = c.name.strip().lower()
-        aid_lower = c.automation_id.lower()
-        if (
-            "add column" in name_lower
-            or name_lower == "+"
-            or "addcolumn" in aid_lower
-            or "add_column" in aid_lower
-        ) and (
-            c.parent == table_ctrl.ref
-            or (
-                c.bounds.top >= table_ctrl.bounds.top - MARGIN_EXPAND_PX
-                and c.bounds.bottom <= table_ctrl.bounds.bottom + MARGIN_EXPAND_PX
-                and c.bounds.left >= table_ctrl.bounds.left
-                and c.bounds.right <= table_ctrl.bounds.right + EXPAND_RIGHT_PX
-            )
-        ):
-            return c
-    return None
+    matches = [
+        c
+        for c in controls
+        if c.visible
+        and c.enabled
+        and c.control_type == "Button"
+        and (
+            c.name.strip().lower() == "add column"
+            or "addcolumn" in c.automation_id.lower()
+            or "add_column" in c.automation_id.lower()
+        )
+        and is_within_bounds(c, table_ctrl)
+    ]
+    if len(matches) > 1:
+        msg = "Ambiguous Add Column controls in the selected table."
+        raise AutomationError(msg)
+    return matches[0] if matches else None
 
 
 def create_table(
@@ -150,32 +140,25 @@ def set_table_columns(
         msg = "Setting table columns requires allow_foreground=true."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    table_ctrl = _find_table_control(snapshot.controls, request.table_name)
-    headers = _find_column_headers(snapshot.controls, table_ctrl)
-    add_btn = _find_add_column_button(snapshot.controls, table_ctrl)
-
-    for i, col_name in enumerate(request.columns):
-        if i >= len(headers) and add_btn:
+    for index, col_name in enumerate(request.columns):
+        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+        table_ctrl = _find_table_control(snapshot.controls, request.table_name)
+        headers = _find_column_headers(snapshot.controls, table_ctrl)
+        if index >= len(headers):
+            add_btn = _find_add_column_button(snapshot.controls, table_ctrl)
+            if add_btn is None:
+                msg = "A unique Add Column button is unavailable."
+                raise AutomationError(msg)
             click_control(app, request.handle, add_btn, allow_foreground=True)
             snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+            table_ctrl = _find_table_control(snapshot.controls, request.table_name)
             headers = _find_column_headers(snapshot.controls, table_ctrl)
+        if index >= len(headers):
+            msg = "Added column was not observed; refusing to reuse stale headers."
+            raise AutomationError(msg)
+        set_control_value(app, request.handle, headers[index], col_name)
 
-        header_ctrl = headers[i] if i < len(headers) else None
-        if header_ctrl:
-            click_control(app, request.handle, header_ctrl, allow_foreground=True)
-            applied = False
-            with contextlib.suppress(Exception):
-                node = app.control(header_ctrl.ref)
-                if hasattr(node, "iface_value") and node.iface_value:
-                    node.iface_value.SetValue(col_name)
-                    applied = True
-
-            if not applied and hasattr(app, "keys"):
-                with contextlib.suppress(Exception):
-                    app.keys(request.handle, col_name + "{ENTER}")
-
-    t_name = request.table_name or table_ctrl.name or "Table"
+    t_name = request.table_name or "Table"
     detail = (
         f"Configured {len(request.columns)} column(s) in Table '{t_name}': "
         f"{', '.join(request.columns)}."
@@ -184,7 +167,7 @@ def set_table_columns(
         table_name=t_name,
         columns=request.columns,
         column_count=len(request.columns),
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
@@ -195,9 +178,15 @@ def _parse_cell_value(text: str) -> float | str | None:
     if not val or val == "-":
         return None
     try:
-        return float(val)
-    except ValueError:
+        number = parse_csv_number(val)
+    except CsvDataError:
         return val
+    if number is None:
+        return None
+    converted = float(number)
+    if not math.isfinite(converted) or (converted == 0 and number != 0):
+        return val
+    return converted
 
 
 def _extract_cells_and_statistics(
@@ -209,6 +198,7 @@ def _extract_cells_and_statistics(
     cells_by_pos: list[tuple[int, int, str]] = []
     stat_rows: dict[str, dict[str, Any]] = {}
     table_b = table_ctrl.bounds
+    headers = _find_column_headers(controls, table_ctrl)
 
     for c in controls:
         if not c.visible or c.ref == table_ctrl.ref:
@@ -239,8 +229,19 @@ def _extract_cells_and_statistics(
                 stat_key = matched_stat.title()
                 m = re.search(r"[:=]\s*([+-]?\d+(?:\.\d+)?)", text)
                 parsed_val = float(m.group(1)) if m else _parse_cell_value(text)
-                target_col = column_names[0] if column_names else "Value"
-                stat_rows.setdefault(stat_key, {})[target_col] = parsed_val
+                columns = [h.name.strip() for h in headers
+                           if h.name.strip() in column_names
+                           and h.bounds.left <= c.bounds.left
+                           and c.bounds.right <= h.bounds.right]
+                if len(columns) != 1:
+                    msg = "Cannot attribute a table statistic to a unique column."
+                    raise AutomationError(msg)
+                target_col = columns[0]
+                row = stat_rows.setdefault(stat_key, {})
+                if target_col in row:
+                    msg = "Duplicate table statistic for the same column."
+                    raise AutomationError(msg)
+                row[target_col] = parsed_val
             else:
                 cells_by_pos.append((c.bounds.top, c.bounds.left, text))
 
@@ -316,7 +317,9 @@ def read_table(
         column_names = ["Column 1", "Column 2"]
 
     cells_by_pos, stat_rows = _extract_cells_and_statistics(
-        snapshot.controls, table_ctrl, column_names,
+        snapshot.controls,
+        table_ctrl,
+        column_names,
     )
     formatted_rows = _group_cells_into_rows(cells_by_pos, column_names)
 

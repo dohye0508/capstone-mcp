@@ -60,7 +60,7 @@ def test_delete_run_raises_when_named_run_not_found() -> None:
         _ = delete_run(app, req)
 
 
-def test_delete_run_last_run_success_with_modal_auto_dismiss() -> None:
+def test_delete_run_never_confirms_unverified_modal() -> None:
     app = Capstone()
     main_window = Window(
         handle=100, title="Capstone", process_id=1,
@@ -128,11 +128,11 @@ def test_delete_run_last_run_success_with_modal_auto_dismiss() -> None:
     mock_run2_node.set_focus = MagicMock()
     app.control = MagicMock(return_value=mock_run2_node)
 
-    req = DeleteRunRequest(handle=100, run_name="last_run")
+    req = DeleteRunRequest(handle=100, run_name="Run #2")
     res = delete_run(app, req)
 
     assert isinstance(res, DeleteRunResult)
     assert res.deleted_run == "Run #2"
-    assert res.verified is True
+    assert res.verified is False
     assert delete_triggered is True
-    assert confirmed is True
+    assert confirmed is False

@@ -3,6 +3,7 @@
 
 import ctypes
 import os
+from _ctypes import COMError
 from collections.abc import Collection
 from io import BytesIO
 from itertools import islice
@@ -32,15 +33,17 @@ def find_capstone_executable() -> Path:
     """Resolve Capstone executable from environment, standard paths, or fallback."""
     if env_path := os.environ.get("CAPSTONE_EXECUTABLE"):
         p = Path(env_path)
-        if p.exists():
-            return p
+        if not p.is_absolute() or p.suffix.casefold() != ".exe" or not p.is_file():
+            msg = "CAPSTONE_EXECUTABLE must name an existing absolute .exe file."
+            raise ValueError(msg)
+        return p.resolve()
     candidates = [
         Path("C:/Program Files/PASCO scientific/Capstone/Capstone.exe"),
         Path("C:/Program Files (x86)/PASCO scientific/Capstone/Capstone.exe"),
         Path("D:/Program Files/PASCO scientific/Capstone/Capstone.exe"),
     ]
     for c in candidates:
-        if c.exists():
+        if c.is_file():
             return c
     return candidates[0]
 
@@ -119,7 +122,6 @@ class Capstone:
         self.session_id: str = uuid4().hex
         self.generation: int = 0
         self.refs: dict[str, UIAWrapper] = {}
-        self.window_cache: dict[int, UIAWrapper] = {}
 
     def attach(
         self, *, launch: bool = False, process_id: int | None = None,
@@ -162,7 +164,6 @@ class Capstone:
                 )
         self.pid = app.process
         self.refs.clear()
-        self.window_cache.clear()
         return self.windows()
 
     def windows(self) -> list[Window]:
@@ -194,11 +195,9 @@ class Capstone:
         if not any(w.handle == handle for w in self.windows()):
             msg = "Window is not a visible window of the attached Capstone process."
             raise AutomationError(msg)
-        if handle not in self.window_cache:
-            self.window_cache[handle] = (
-                Desktop(backend="uia").window(handle=handle).wrapper_object()
-            )
-        return self.window_cache[handle]
+        # HWNDs can be recycled; a wrapper from an earlier call may refer to a
+        # destroyed Qt window even when the numeric handle still belongs here.
+        return Desktop(backend="uia").window(handle=handle).wrapper_object()
 
     def snapshot(self, handle: int, depth: int, limit: int) -> Snapshot:
         """Traverse a bounded tree and invalidate previous control references."""
@@ -212,6 +211,22 @@ class Capstone:
 
         depth and limit still bound the visit, not the number of matches.
         """
+        try:
+            return self._matching_snapshot(
+                handle, depth, limit, query=query, control_types=control_types,
+            )
+        except COMError as exc:
+            self.refs.clear()
+            msg = (
+                "Capstone controls became inaccessible during inspection. "
+                "Check the application state and permissions, then take a new snapshot."
+            )
+            raise AutomationError(msg) from exc
+
+    def _matching_snapshot(
+        self, handle: int, depth: int, limit: int,
+        *, query: str, control_types: Collection[str],
+    ) -> Snapshot:
         root = self.window(handle)
         self.generation += 1
         self.refs.clear()

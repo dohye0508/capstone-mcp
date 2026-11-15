@@ -138,14 +138,15 @@ def set_control_value(
             node.iface_value.SetValue(text)
             return
 
+    if ctrl.control_type != "Edit" or any(c in text for c in "\r\n"):
+        msg = (
+            "Control has no writable Value pattern; refusing unverified keyboard input."
+        )
+        raise AutomationError(msg)
     click_control(app, handle, ctrl, allow_foreground=True)
-    if hasattr(app, "keys"):
-        app.keys(handle, "^a{BACKSPACE}")
-        if hasattr(app, "type_text"):
-            app.type_text(text)
-        else:
-            app.keys(handle, text)
-        app.keys(handle, "{ENTER}")
+    app.keys(handle, "^a{BACKSPACE}", allow_foreground=True)
+    app.type_text(text)
+    app.keys(handle, "{ENTER}", allow_foreground=True)
 
 
 def is_within_bounds(inner: Control, outer: Control) -> bool:
@@ -186,16 +187,18 @@ def find_palette_item(
 
 
 def _match_custom_name(controls: list[Control], custom_name: str) -> Control | None:
-    c_lower = custom_name.strip().lower()
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        if (
-            c_lower == ctrl.name.strip().lower()
-            or c_lower in ctrl.automation_id.lower()
-        ):
-            return ctrl
-    return None
+    c_lower = custom_name.strip().casefold()
+    matches = [
+        c
+        for c in controls
+        if c.visible
+        and c.control_type in CONTAINER_CONTROL_TYPES
+        and c_lower in (c.name.strip().casefold(), c.automation_id.casefold())
+    ]
+    if len(matches) > 1:
+        msg = f"Display name '{custom_name}' is ambiguous."
+        raise AutomationError(msg)
+    return matches[0] if matches else None
 
 
 def find_display_container(
@@ -203,41 +206,30 @@ def find_display_container(
     widget_type: str,
     custom_name: str | None = None,
 ) -> Control:
-    """Locate a display widget container in the active window."""
-    w_lower = widget_type.strip().lower()
-
+    """Locate one explicitly identified display; never choose an unrelated pane."""
     if custom_name:
         matched = _match_custom_name(controls, custom_name)
         if matched is not None:
             return matched
-        msg = f"{widget_type} control matching '{custom_name}' not found."
-        raise AutomationError(msg)
-
-    # Special-case direct Table or DataGrid control types
-    if w_lower == "table":
-        for ctrl in controls:
-            if ctrl.visible and ctrl.control_type in ("Table", "DataGrid"):
-                return ctrl
-
-    # Standard keyword search
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        if ctrl.control_type in CONTAINER_CONTROL_TYPES and (
-            w_lower in ctrl.name.lower() or w_lower in ctrl.automation_id.lower()
-        ):
-            return ctrl
-
-    # Fallback to the largest Custom/Pane that isn't the root window
-    candidates = [
-        c
-        for c in controls
-        if c.visible and c.control_type in ("Custom", "Pane") and c.parent is not None
-    ]
-    if candidates:
-        return candidates[0]
-
-    msg = f"No {widget_type} display found in active window."
+    else:
+        keyword = widget_type.casefold()
+        matches = [
+            c
+            for c in controls
+            if c.visible
+            and c.control_type in CONTAINER_CONTROL_TYPES
+            and (
+                keyword in c.name.casefold()
+                or keyword in c.automation_id.casefold()
+                or (keyword == "table" and c.control_type in ("Table", "DataGrid"))
+            )
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            msg = f"Multiple {widget_type} displays found; specify an exact name."
+            raise AutomationError(msg)
+    msg = f"No uniquely identified {widget_type} display found: {custom_name!r}."
     raise AutomationError(msg)
 
 

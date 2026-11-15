@@ -37,7 +37,7 @@ def test_fit_graph_raises_when_graph_not_found() -> None:
     ))
 
     req = FitGraphRequest(handle=100, mode="scale_to_fit", graph_name="Missing Graph")
-    with pytest.raises(AutomationError, match="Target graph control not found"):
+    with pytest.raises(AutomationError, match="No Graph display found"):
         _ = fit_graph(app, req)
 
 

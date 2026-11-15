@@ -13,6 +13,7 @@ from capstone_mcp.displays.harness import (
     find_display_container,
     find_palette_item,
     is_within_bounds,
+    set_control_value,
 )
 from capstone_mcp.displays.models import (
     DIGITS_PALETTE_NAME,
@@ -56,7 +57,6 @@ def _find_measurement_selector(
             "select measurement" in name_lower
             or "measurement" in aid_lower
             or "datasource" in aid_lower
-            or c.control_type in ("Button", "ComboBox")
         ):
             return c
     return None
@@ -82,7 +82,7 @@ def _extract_digits_value_and_unit(
         ):
             continue
 
-        text = c.name.strip()
+        text = c.name.strip().replace("\u2212", "-")
         if not text:
             continue
 
@@ -147,28 +147,21 @@ def create_digits(
     # 3. Bind measurement if requested
     if request.measurement:
         selector = _find_measurement_selector(snapshot.controls, digits_ctrl)
-        if selector:
-            click_control(app, request.handle, selector, allow_foreground=True)
-            applied = False
-            with contextlib.suppress(Exception):
-                node = app.control(selector.ref)
-                if hasattr(node, "iface_value") and node.iface_value:
-                    node.iface_value.SetValue(request.measurement)
-                    applied = True
-
-            if not applied and hasattr(app, "keys"):
-                with contextlib.suppress(Exception):
-                    app.keys(request.handle, request.measurement + "{ENTER}")
-
-            # Re-snapshot to reflect updated binding
-            snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-            digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
+        if selector is None:
+            msg = "Digits measurement selector is unavailable."
+            raise AutomationError(msg)
+        # Do not open a popup and then type into its stale source control.
+        set_control_value(app, request.handle, selector, request.measurement)
+        snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+        digits_ctrl = _find_digits_control(snapshot.controls, request.digits_name)
 
     # 4. Read bound numerical value and unit
     val, unit = _extract_digits_value_and_unit(snapshot.controls, digits_ctrl)
 
     d_name = request.digits_name or digits_ctrl.name or "Digits"
-    meas_info = f" bound to '{request.measurement}'" if request.measurement else ""
+    meas_info = (
+        f" binding requested for '{request.measurement}'" if request.measurement else ""
+    )
     val_info = f" with value {val} {unit or ''}".rstrip() if val is not None else ""
     detail = f"Digits display '{d_name}' created{meas_info}{val_info}."
 
@@ -178,6 +171,6 @@ def create_digits(
         measurement=request.measurement,
         current_value=val,
         unit=unit,
-        verified=True,
+        verified=request.measurement is None,
         detail=detail,
     )

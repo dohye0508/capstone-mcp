@@ -8,6 +8,7 @@ import pytest
 from capstone_mcp.calculator import (
     CreateCalculationRequest,
     CreateCalculationResult,
+    _parse_calculation_name,
     create_calculation,
 )
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -19,6 +20,26 @@ def test_create_calculation_rejects_empty_expression() -> None:
     req = CreateCalculationRequest(handle=100, expression="")
     with pytest.raises(AutomationError, match="expression"):
         _ = create_calculation(app, req)
+
+
+@pytest.mark.parametrize("name", ["θ", "λ", "ω", "v₀", "速度"])
+def test_calculation_name_preserves_unicode_identifiers(name: str) -> None:
+    assert _parse_calculation_name(f"{name} = 2 * [Time]") == name
+
+
+@pytest.mark.parametrize("expression", ["a = (1 + 2", "a = 1 + 2)", "a = [Force", 'a = "open'])
+def test_unbalanced_formula_is_rejected_before_ui_input(expression: str) -> None:
+    app = MagicMock(spec=Capstone)
+    with pytest.raises(AutomationError, match="unbalanced"):
+        _ = create_calculation(app, CreateCalculationRequest(expression=expression))
+    app.snapshot.assert_not_called()
+
+
+def test_unimplemented_variable_bindings_are_rejected_before_ui_input() -> None:
+    app = MagicMock(spec=Capstone)
+    with pytest.raises(AutomationError, match="variable bindings"):
+        _ = create_calculation(app, CreateCalculationRequest(expression="p = m*v", variables={"m": "Mass"}))
+    app.snapshot.assert_not_called()
 
 
 def test_create_calculation_raises_when_calculator_toggle_not_found() -> None:
@@ -79,7 +100,7 @@ def test_create_calculation_submission_is_not_verified_success() -> None:
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
         nonlocal step
         step += 1
-        controls = [calc_toggle]
+        controls = [calc_toggle.model_copy(update={"ref": f"ref:calc_btn:{step}"})]
         if step > 1:
             controls.extend([formula_edit, unit_edit])
         return Snapshot(window=mock_window, controls=controls, truncated=False)
@@ -99,7 +120,7 @@ def test_create_calculation_submission_is_not_verified_success() -> None:
     mock_unit_node.iface_value.SetValue = MagicMock()
 
     def mock_control(ref: str) -> MagicMock:
-        if ref == "ref:calc_btn":
+        if ref.startswith("ref:calc_btn:"):
             return mock_toggle_node
         if ref == "ref:edit_formula":
             return mock_formula_node
@@ -126,6 +147,7 @@ def test_create_calculation_submission_is_not_verified_success() -> None:
 
     # Check that calculator toggle was clicked to open and close/restore
     assert app.click.call_count == 2
+    app.click.assert_called_with(100, "ref:calc_btn:4", allow_foreground=True)
     mock_formula_node.iface_value.SetValue.assert_called_once_with(
         "KE = 0.5 * [m] * [v]^2",
     )

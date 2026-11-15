@@ -30,7 +30,7 @@ def register_run_tools(
         annotations=ToolAnnotations(
             title="Manage experimental runs",
             readOnlyHint=False,
-            destructiveHint=False,
+            destructiveHint=True,
             idempotentHint=False,
             openWorldHint=False,
         ),
@@ -42,7 +42,7 @@ def register_run_tools(
 
         Supported actions (request.action):
         - rename: Rename a specific Run in the Data Summary tree (request.rename)
-        - delete: Delete a run from Data Summary, auto-confirming modals
+        - delete: Request deletion of a named run and report observed removal
           (request.delete)
         - set_visibility: Control visibility (show/hide) of specific runs
           (request.visibility)

@@ -32,6 +32,14 @@ def _create_mock_window(handle: int = 100) -> Window:
     )
 
 
+def _container(name: str) -> Control:
+    return Control(
+        ref=f"ref:{name}", parent=None, name=f"{name} 1", control_type="Pane",
+        automation_id=name, enabled=True, visible=True,
+        bounds=Bounds(left=100, top=50, right=1000, bottom=850),
+    )
+
+
 def test_create_scope_requires_foreground() -> None:
     app = Capstone()
     req = CreateScopeRequest(allow_foreground=False)
@@ -99,7 +107,7 @@ def test_create_scope_success() -> None:
         step += 1
         controls = [palette_scope]
         if step > 1:
-            controls.extend([timebase_edit, channel_edit])
+            controls.extend([_container("Scope"), timebase_edit, channel_edit])
         return Snapshot(window=mock_win, controls=controls, truncated=False)
 
     app.snapshot = mock_snapshot
@@ -136,7 +144,7 @@ def test_create_scope_success() -> None:
     assert res.display_type == "Scope"
     assert res.timebase == "2 ms/div"
     assert res.channel == "Voltage (V)"
-    assert res.verified is True
+    assert res.verified is False
     timebase_node.iface_value.SetValue.assert_called_once_with("2 ms/div")
     channel_node.iface_value.SetValue.assert_called_once_with("Voltage (V)")
 
@@ -189,7 +197,7 @@ def test_set_scope_trigger_success() -> None:
     )
     slope_ctrl = Control(
         ref="ref:slope", parent=None, name="Rising Edge",
-        control_type="Button", automation_id="Scope.TriggerSlope",
+        control_type="ComboBox", automation_id="Scope.TriggerSlope",
         enabled=True, visible=True,
         bounds=Bounds(left=390, top=100, right=450, bottom=130),
     )
@@ -202,7 +210,7 @@ def test_set_scope_trigger_success() -> None:
 
     app.snapshot = MagicMock(return_value=Snapshot(
         window=mock_win,
-        controls=[level_ctrl, slope_ctrl, mode_ctrl],
+        controls=[_container("Scope"), level_ctrl, slope_ctrl, mode_ctrl],
         truncated=False,
     ))
 
@@ -242,8 +250,8 @@ def test_set_scope_trigger_success() -> None:
     assert res.trigger_level == 1.25
     assert res.trigger_slope == "falling"
     assert res.trigger_mode == "single"
-    assert res.verified is True
-    lvl_node.iface_value.SetValue.assert_called_once_with("1.25 V")
+    assert res.verified is False
+    lvl_node.iface_value.SetValue.assert_called_once_with("1.25")
     slope_node.iface_value.SetValue.assert_called_once_with("falling")
     mode_node.iface_value.SetValue.assert_called_once_with("single")
 
@@ -278,7 +286,7 @@ def test_create_fft_success() -> None:
         step += 1
         controls = [palette_fft]
         if step > 1:
-            controls.extend([meas_ctrl, range_ctrl])
+            controls.extend([_container("FFT"), meas_ctrl, range_ctrl])
         return Snapshot(window=mock_win, controls=controls, truncated=False)
 
     app.snapshot = mock_snapshot
@@ -315,7 +323,7 @@ def test_create_fft_success() -> None:
     assert res.display_type == "FFT"
     assert res.measurement == "Sound Sensor"
     assert res.frequency_range == "0 - 5000 Hz"
-    assert res.verified is True
+    assert res.verified is False
     meas_node.iface_value.SetValue.assert_called_once_with("Sound Sensor")
     range_node.iface_value.SetValue.assert_called_once_with("0 - 5000 Hz")
 
@@ -365,4 +373,4 @@ def test_read_fft_peaks_success() -> None:
     assert res.peaks[0].amplitude == 5.2
     assert res.peaks[1].frequency_hz == 880.0
     assert res.peaks[1].amplitude == 2.1
-    assert res.verified is True
+    assert res.verified is False

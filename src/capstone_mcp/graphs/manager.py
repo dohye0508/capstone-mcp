@@ -108,14 +108,13 @@ def ready_graph_menu(app: Capstone, before: set[int], name: str) -> Snapshot | N
             snapshot = app.snapshot(window.handle, 5, 500)
         except Exception as e:  # noqa: BLE001
             logger.debug(
-                "Failed to snapshot window %s: %s", window.handle, e,
+                "Failed to snapshot window %s: %s",
+                window.handle,
+                e,
             )
             continue
         if any(
-            c.name == name
-            and c.control_type == "MenuItem"
-            and c.enabled
-            and c.visible
+            c.name == name and c.control_type == "MenuItem" and c.enabled and c.visible
             for c in snapshot.controls
         ):
             return snapshot
@@ -130,7 +129,9 @@ def _fit_menu(app: Capstone, before: set[int]) -> Snapshot | None:
             snapshot = app.snapshot(window.handle, 3, 100)
         except Exception as e:  # noqa: BLE001
             logger.debug(
-                "Failed to snapshot fit menu window %s: %s", window.handle, e,
+                "Failed to snapshot fit menu window %s: %s",
+                window.handle,
+                e,
             )
             continue
         items = [c for c in snapshot.controls if c.control_type == "MenuItem"]
@@ -158,15 +159,12 @@ def _toggle_fit(
     window = app.window(handle)
     rect = window.rectangle()
     if not (
-        0 <= point.x < rect.right - rect.left
-        and 0 <= point.y < rect.bottom - rect.top
+        0 <= point.x < rect.right - rect.left and 0 <= point.y < rect.bottom - rect.top
     ):
         msg = "Fit-menu anchor must be inside the current window."
         raise AutomationError(msg)
     before = {w.handle for w in app.windows()}
-    if before != {handle}:
-        msg = "Close existing dialogs and menus before toggling a graph fit."
-        raise AutomationError(msg)
+    app.require_input_ready(handle)
     if WindowEvents is None:
         msg = "WindowEvents requires Windows environment."
         raise AutomationError(msg)
@@ -189,9 +187,7 @@ def _toggle_fit(
             screen_point=Point(
                 x=(bounds.left + bounds.right) // 2,
                 y=bounds.top
-                + (bounds.bottom - bounds.top)
-                * (2 * FIT_ROWS[native_type] + 1)
-                // 48,
+                + (bounds.bottom - bounds.top) * (2 * FIT_ROWS[native_type] + 1) // 48,
             ),
         )
         _ = app.keys(handle, "{ESC}")
@@ -215,8 +211,7 @@ def _enable_fitting(
     window = app.window(handle)
     rect = window.rectangle()
     if not (
-        0 <= point.x < rect.right - rect.left
-        and 0 <= point.y < rect.bottom - rect.top
+        0 <= point.x < rect.right - rect.left and 0 <= point.y < rect.bottom - rect.top
     ):
         msg = "Fit icon anchor must be inside the current window."
         raise AutomationError(msg)
@@ -292,8 +287,7 @@ def fit_graph(
         request = FitGraphRequest()
     if request.mode not in SUPPORTED_FIT_MODES:
         msg = (
-            f"Unsupported mode '{request.mode}'. "
-            f"Supported modes: {SUPPORTED_FIT_MODES}"
+            f"Unsupported mode '{request.mode}'. Supported modes: {SUPPORTED_FIT_MODES}"
         )
         raise AutomationError(msg)
     if not request.allow_foreground:
@@ -346,16 +340,13 @@ def select_graph_measurement(
     window = app.window(handle)
     rect = window.rectangle()
     if not (
-        0 <= point.x < rect.right - rect.left
-        and 0 <= point.y < rect.bottom - rect.top
+        0 <= point.x < rect.right - rect.left and 0 <= point.y < rect.bottom - rect.top
     ):
         msg = "Axis anchor must be inside the current window."
         raise AutomationError(msg)
 
     before = {w.handle for w in app.windows()}
-    if before != {handle}:
-        msg = "Close existing dialogs and menus before selecting a graph axis."
-        raise AutomationError(msg)
+    app.require_input_ready(handle)
 
     if WindowEvents is None:
         msg = "WindowEvents requires Windows pywin32 environment."
@@ -430,9 +421,9 @@ def set_graph_fits(
                 f"observed {observed.selected_types}. Inspect before retrying."
             )
             raise AutomationError(msg)
-        if [
-            (s.renderer_id, s.inputs) for s in observed.series
-        ] != [(s.renderer_id, s.inputs) for s in before.series]:
+        if [(s.renderer_id, s.inputs) for s in observed.series] != [
+            (s.renderer_id, s.inputs) for s in before.series
+        ]:
             msg = "Graph data changed during fitting; inspect before retrying."
             raise AutomationError(msg)
         state = observed
@@ -682,4 +673,3 @@ __all__ = [
     "select_graph_measurement",
     "set_graph_fits",
 ]
-

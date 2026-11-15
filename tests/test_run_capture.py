@@ -166,6 +166,33 @@ def test_replaced_samples_fail_analysis_but_preserve_saved_artifact(
     assert saved.analysis_error
     assert saved.datasets[0].kind == "replaced"
     assert saved.datasets[0].new_sample_count is None
+    # A valid saved snapshot remains the next baseline even if its fit fails.
+    assert capture.previous is not None
+    assert capture.previous.file_name == "run-001.cap"
+
+
+def test_invalid_duplicate_identity_does_not_replace_capture_baseline(tmp_path: Path) -> None:
+    old = [Series("old", "X", [1, 2])]
+    duplicate = [Series("bad", "X", [3]), Series("bad", "X", [4])]
+    capture = CaptureSession(
+        CapturePlan(directory=str(tmp_path / "capture")), ArchiveSaver([old, duplicate]),
+    )
+    capture.begin()
+    baseline = capture.previous
+    with pytest.raises(CaptureError, match="ambiguous"):
+        capture.record(1)
+    assert capture.previous is baseline
+    assert capture.runs[0].analysis_error
+
+
+def test_repeated_sparse_native_values_do_not_create_false_deltas(tmp_path: Path) -> None:
+    values = [Series("run", "X", [0.1, float("nan"), 0.2])]
+    capture = CaptureSession(
+        CapturePlan(directory=str(tmp_path / "capture")), ArchiveSaver([values, values]),
+    )
+    capture.begin()
+    capture.record(1)
+    assert capture.runs[0].datasets == []
 
 
 def test_nonempty_capture_directory_is_preserved(tmp_path: Path) -> None:
