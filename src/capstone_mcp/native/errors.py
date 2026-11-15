@@ -15,7 +15,10 @@ _ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
         "Initialize recording session before invoking recording operations.",
     ),
     (
-        ("attach to capstone", "not attached", "no running capstone"),
+        (
+            "capstone_attach", "attach to capstone", "not attached",
+            "no running capstone",
+        ),
         "SESSION_NOT_ATTACHED",
         "Call capstone_attach(launch=True) to attach to or launch PASCO Capstone.",
     ),

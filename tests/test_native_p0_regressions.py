@@ -10,6 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from capstone_mcp import server, ui_events
 from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.automation_worker import NativeSessionError
+from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.native.errors import classify_native_error
 
 
@@ -29,6 +30,15 @@ def test_native_error_does_not_infer_state_from_substrings(
     message: str, expected: str,
 ) -> None:
     assert classify_native_error(RuntimeError(message))[0] == expected
+
+
+def test_real_unattached_precondition_preserves_session_error_code() -> None:
+    # windows() rejects an unset PID before querying any OS window or process.
+    with pytest.raises(AutomationError, match="Call capstone_attach first") as caught:
+        Capstone().windows()
+    code, remediation = classify_native_error(caught.value)
+    assert code == "SESSION_NOT_ATTACHED"
+    assert "capstone_attach" in remediation
 
 
 @pytest.mark.anyio
