@@ -23,6 +23,7 @@ from capstone_mcp.capfiles import (
     select_configuration,
 )
 from capstone_mcp.csv_data import CsvPage, read_csv_page
+from capstone_mcp.file_workflow_models import FileWorkflowLabels
 from capstone_mcp.file_workflows import FileArtifact, OpenedExperiment
 from capstone_mcp.models import Model
 
@@ -53,6 +54,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
         path: str,
         *,
         allow_foreground: bool = True,
+        workflow_labels: FileWorkflowLabels | None = None,
     ) -> FileArtifact:
         """Save As to a new .cap path and verify the completed archive.
 
@@ -66,6 +68,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
                     handle=handle,
                     value=path,
                     allow_foreground=allow_foreground,
+                    workflow_labels=workflow_labels,
                 ),
                 mutates=True,
             ),
@@ -86,6 +89,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
         *,
         discard_unsaved: bool = False,
         allow_foreground: bool = True,
+        workflow_labels: FileWorkflowLabels | None = None,
     ) -> OpenedExperiment:
         """Open an existing .cap in the attached Capstone, replacing its document.
 
@@ -103,6 +107,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
                     value=path,
                     discard_unsaved=discard_unsaved,
                     allow_foreground=allow_foreground,
+                    workflow_labels=workflow_labels,
                 ),
                 mutates=True,
             ),
@@ -117,13 +122,14 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
             openWorldHint=False,
         ),
     )
-    async def capstone_export_data(
+    async def capstone_export_data(  # noqa: PLR0913
         handle: int,
         path: str,
         offset: Annotated[int, Field(ge=0)] = 0,
         limit: Annotated[int, Field(ge=1, le=10_000)] = 1000,
         *,
         allow_foreground: bool = True,
+        workflow_labels: FileWorkflowLabels | None = None,
     ) -> ExportedData:
         """Read unsaved data by native CSV export to a new path, without saving .cap.
 
@@ -138,6 +144,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
                     handle=handle,
                     value=path,
                     allow_foreground=allow_foreground,
+                    workflow_labels=workflow_labels,
                 ),
                 mutates=True,
             ),

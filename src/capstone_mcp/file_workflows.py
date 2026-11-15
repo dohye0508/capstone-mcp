@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from capstone_mcp.capfiles import read_cap_configuration
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.file_events import FileEvents
+from capstone_mcp.file_workflow_models import FileWorkflowLabels
 from capstone_mcp.models import Action, Control, Model, Snapshot
 from capstone_mcp.ui_events import WindowEvents
 
@@ -54,6 +55,9 @@ class OpenedExperiment(Model):
 
 
 def _one(snapshot: Snapshot, predicate: Callable[[Control], bool]) -> Control:
+    if snapshot.truncated:
+        msg = "Native dialog snapshot is truncated; target uniqueness is unknown."
+        raise AutomationError(msg)
     matches = [c for c in snapshot.controls if c.visible and predicate(c)]
     if len(matches) != 1 or not matches[0].enabled:
         msg = "Expected one enabled native control; inspect the current dialog."
@@ -63,34 +67,46 @@ def _one(snapshot: Snapshot, predicate: Callable[[Control], bool]) -> Control:
 
 def _new_snapshot(
     app: Capstone, before: set[int], predicate: Callable[[Snapshot], bool],
-    *, depth: int = 2,
+    *, depth: int = 16,
 ) -> Snapshot | None:
+    matches: list[int] = []
     for window in app.windows():
         if window.handle in before:
             continue
         try:
-            snapshot = app.snapshot(window.handle, depth, 1500)
+            snapshot = app.snapshot(window.handle, depth, 10_000)
         except (COMError, AutomationError):
             continue
-        if predicate(snapshot):
-            return snapshot
-    return None
+        if not snapshot.truncated and predicate(snapshot):
+            matches.append(window.handle)
+    if len(matches) > 1:
+        msg = "Multiple new native dialogs match; no dialog target was selected."
+        raise AutomationError(msg)
+    if not matches:
+        return None
+    # Inspecting another window replaces snapshot-scoped control references.
+    try:
+        fresh = app.snapshot(matches[0], depth, 10_000)
+    except (COMError, AutomationError):
+        return None
+    return fresh if not fresh.truncated and predicate(fresh) else None
 
 
 def _named_button(app: Capstone, handle: int, name: str) -> Control:
     return _one(
-        app.snapshot(handle, 1, 200),
+        app.snapshot(handle, 16, 10_000),
         lambda c: c.control_type == "Button" and c.name == name,
     )
 
 
 def _open_command(
     app: Capstone, events: WindowEvents, handle: int, command_id: str,
+    *, file_menu_label: str = "File",
 ) -> set[int]:
     before = {w.handle for w in app.windows()}
     file_menu = _one(
-        app.snapshot(handle, 2, 300),
-        lambda c: c.control_type == "MenuItem" and c.name == "File",
+        app.snapshot(handle, 16, 10_000),
+        lambda c: c.control_type == "MenuItem" and c.name == file_menu_label,
     )
     _ = app.act(file_menu.ref, Action.INVOKE)
     try:
@@ -140,29 +156,31 @@ def _choose_export_option(
 
 def _file_dialog(
     app: Capstone, events: WindowEvents, before: set[int],
+    *, filename_id: str = "1001",
 ) -> Snapshot:
     return events.changes.until(
         lambda: _new_snapshot(
             app, before,
             lambda s: any(
-                c.control_type == "Edit" and c.automation_id == "1001"
+                c.control_type == "Edit" and c.automation_id == filename_id
                 for c in s.controls
             ),
-            depth=12,
+            depth=16,
         ),
         TRANSITION_SECONDS,
     )
 
 
-def _save_dialog(
+def _save_dialog(  # noqa: PLR0913
     app: Capstone, files: FileEvents,
     dialog: Snapshot, path: Path, allowed_windows: set[int],
+    *, filename_id: str = "1001",
 ) -> None:
     field = _one(
-        dialog, lambda c: c.control_type == "Edit" and c.automation_id == "1001",
+        dialog, lambda c: c.control_type == "Edit" and c.automation_id == filename_id,
     )
     _ = app.set_value(field.ref, str(path))
-    snapshot = app.snapshot(dialog.window.handle, 12, 1500)
+    snapshot = app.snapshot(dialog.window.handle, 16, 10_000)
     save = _one(
         snapshot, lambda c: c.control_type == "Button" and c.automation_id == "1",
     )
@@ -252,85 +270,111 @@ def _artifact(
 
 def save_experiment(
     app: Capstone, handle: int, destination: str, *, allow_foreground: bool = True,
+    workflow_labels: FileWorkflowLabels | None = None,
 ) -> FileArtifact:
     """Save As to a new explicit path and verify the resulting Capstone archive."""
+    labels = workflow_labels or FileWorkflowLabels()
     path, before, pid = _prepare(
         app, handle, destination, ".cap", allow_foreground=allow_foreground,
     )
     with WindowEvents(pid) as events, FileEvents(path.parent, events.changes) as files:
-        previous = _open_command(app, events, handle, "mActionSaveAs")
-        dialog = _file_dialog(app, events, previous)
-        _save_dialog(app, files, dialog, path, previous)
+        previous = _open_command(
+            app, events, handle, "mActionSaveAs", file_menu_label=labels.file_menu,
+        )
+        dialog = _file_dialog(app, events, previous, filename_id=labels.filename_id)
+        _save_dialog(
+            app, files, dialog, path, previous, filename_id=labels.filename_id,
+        )
     _ = read_cap_configuration(path)
     return _artifact(app, handle, path, before, "cap")
 
 
 def export_data(
     app: Capstone, handle: int, destination: str, *, allow_foreground: bool = True,
+    workflow_labels: FileWorkflowLabels | None = None,
 ) -> FileArtifact:
     """Select all data and export by index as CSV without saving the .cap document."""
+    labels = workflow_labels or FileWorkflowLabels()
     path, before, pid = _prepare(
         app, handle, destination, ".csv", allow_foreground=allow_foreground,
     )
     with WindowEvents(pid) as events, FileEvents(path.parent, events.changes) as files:
-        previous = _open_command(app, events, handle, "mActionExportData")
+        previous = _open_command(
+            app, events, handle, "mActionExportData", file_menu_label=labels.file_menu,
+        )
         baseline_windows = previous.copy()
         dialog = events.changes.until(
             lambda: _new_snapshot(
                 app, previous,
-                lambda s: s.controls[0].automation_id == "DataExportDialog",
-                depth=1,
+                lambda s: bool(s.controls)
+                and s.controls[0].automation_id == "DataExportDialog",
+                depth=16,
             ),
             TRANSITION_SECONDS,
         )
         export_handle = dialog.window.handle
         try:
             _choose_export_option(
-                app, events, export_handle, "Export Format", "Comma separated values",
+                app, events, export_handle, labels.export_format, labels.csv_format,
             )
             _choose_export_option(
-                app, events, export_handle, "Alignment Options", "Align by Index",
+                app, events, export_handle,
+                labels.alignment_options, labels.align_by_index,
             )
-            select = _named_button(app, export_handle, "Select All")
+            select = _named_button(app, export_handle, labels.select_all)
             _ = app.act(select.ref, Action.INVOKE)
-            export = _named_button(app, export_handle, "Export to file...")
+            export = _named_button(app, export_handle, labels.export_to_file)
             previous = {w.handle for w in app.windows()}
             _ = app.act(export.ref, Action.INVOKE)
-            file_dialog = _file_dialog(app, events, previous)
+            file_dialog = _file_dialog(
+                app, events, previous, filename_id=labels.filename_id,
+            )
             _save_dialog(
                 app, files, file_dialog, path, baseline_windows | {export_handle},
+                filename_id=labels.filename_id,
             )
         finally:
             _close_export_dialog(
                 app, events, export_handle, failing=sys.exception() is not None,
+                close_label=labels.close,
             )
     return _artifact(app, handle, path, before, "csv")
 
 
 def _close_export_dialog(
     app: Capstone, events: WindowEvents, handle: int, *, failing: bool,
+    close_label: str = "Close",
 ) -> None:
     """Close only the export dialog observed by this workflow, if still present."""
+    original = sys.exception()
     try:
         if not any(window.handle == handle for window in app.windows()):
             return
-        close = _named_button(app, handle, "Close")
+        close = _named_button(app, handle, close_label)
         _ = app.act(close.ref, Action.INVOKE)
         _ = events.changes.until(
             lambda: True if all(w.handle != handle for w in app.windows()) else None,
             TRANSITION_SECONDS,
         )
-    except Exception:
+    except Exception as cleanup_error:
         if not failing:
             raise
+        msg = (
+            f"Export dialog {handle} could not be closed; an unresolved native "
+            "dialog may still block Capstone. Inspect the current windows before "
+            f"retrying. Cleanup failure: {cleanup_error}."
+        )
+        if original is not None:
+            msg = f"{original} {msg}"
+        raise AutomationError(msg) from original or cleanup_error
 
 
-def _is_open_field(control: Control) -> bool:
-    return control.control_type == "Edit" and control.automation_id == OPEN_FIELD_ID
+def _is_open_field(control: Control, field_id: str = OPEN_FIELD_ID) -> bool:
+    return control.control_type == "Edit" and control.automation_id == field_id
 
 
-def _is_discard(control: Control) -> bool:
-    return control.control_type == "Button" and control.name == "Discard"
+def _is_discard(control: Control, label: str = "Discard") -> bool:
+    return control.control_type == "Button" and control.name == label
 
 
 def await_opened(app: Capstone, handle: int, path: Path) -> str:
@@ -385,9 +429,10 @@ def _open_preconditions(
     return path, before, window.process_id
 
 
-def open_experiment(
+def open_experiment(  # noqa: PLR0913
     app: Capstone, handle: int, source: str,
     *, discard_unsaved: bool = False, allow_foreground: bool = True,
+    workflow_labels: FileWorkflowLabels | None = None,
 ) -> OpenedExperiment:
     """Open an existing .cap through File > Open Experiment, replacing the document."""
     if not allow_foreground:
@@ -396,37 +441,47 @@ def open_experiment(
     path, before, pid = _open_preconditions(
         app, handle, source, discard_unsaved=discard_unsaved,
     )
+    labels = workflow_labels or FileWorkflowLabels()
+    def is_field(control: Control) -> bool:
+        return _is_open_field(control, labels.open_filename_id)
+
+    def is_discard(control: Control) -> bool:
+        return _is_discard(control, labels.discard)
+
     discarded = False
     with WindowEvents(pid) as events:
-        previous = _open_command(app, events, handle, "mActionOpenExperiment")
+        previous = _open_command(
+            app, events, handle, "mActionOpenExperiment",
+            file_menu_label=labels.file_menu,
+        )
         dialog = events.changes.until(
             lambda: _new_snapshot(
                 app, previous,
-                lambda s: any(_is_open_field(c) or _is_discard(c) for c in s.controls),
-                depth=12,
+                lambda s: any(is_field(c) or is_discard(c) for c in s.controls),
+                depth=16,
             ),
             TRANSITION_SECONDS, description="Open Experiment dialog",
         )
-        if any(_is_discard(c) for c in dialog.controls):
+        if any(is_discard(c) for c in dialog.controls):
             if not discard_unsaved:
                 msg = (
                     "Capstone asks whether to save the current experiment. Answer "
                     "that prompt deliberately; nothing was opened or discarded."
                 )
                 raise AutomationError(msg)
-            _ = app.act(_one(dialog, _is_discard).ref, Action.INVOKE)
+            _ = app.act(_one(dialog, is_discard).ref, Action.INVOKE)
             discarded = True
             dialog = events.changes.until(
                 lambda: _new_snapshot(
                     app, previous,
-                    lambda s: any(_is_open_field(c) for c in s.controls),
-                    depth=12,
+                    lambda s: any(is_field(c) for c in s.controls),
+                    depth=16,
                 ),
                 TRANSITION_SECONDS, description="Open Experiment file dialog",
             )
-        _ = app.set_value(_one(dialog, _is_open_field).ref, str(path))
+        _ = app.set_value(_one(dialog, is_field).ref, str(path))
         confirm = _one(
-            app.snapshot(dialog.window.handle, 12, 1500),
+            app.snapshot(dialog.window.handle, 16, 10_000),
             lambda c: c.control_type == "Button" and c.automation_id == "1",
         )
         _ = app.act(confirm.ref, Action.INVOKE)
