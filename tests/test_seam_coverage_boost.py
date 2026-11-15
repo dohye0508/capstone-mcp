@@ -331,15 +331,15 @@ async def test_physics_tools_invocations() -> None:
 
     # Extra physics pure tools
     plot_fn = tools["capstone_plot"]
-    img = plot_fn(PlotInput(x=[0.0, 1.0], y=[0.0, 2.0]))
+    img = await plot_fn(PlotInput(x=[0.0, 1.0], y=[0.0, 2.0]))
     assert isinstance(img, Image)
 
     fit_fn = tools["capstone_linear_fit"]
-    fit_res = fit_fn(FitInput(x=[0.0, 1.0, 2.0], y=[0.0, 2.0, 4.0]))
+    fit_res = await fit_fn(FitInput(x=[0.0, 1.0, 2.0], y=[0.0, 2.0, 4.0]))
     assert fit_res.slope == 2.0
 
     comp_fn = tools["capstone_compare_runs"]
-    res_comp = comp_fn([
+    res_comp = await comp_fn([
         RunSamples(name="R1", values=[1.0, 2.0]),
         RunSamples(name="R2", values=[2.0, 3.0]),
     ])

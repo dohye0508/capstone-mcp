@@ -139,7 +139,7 @@ def test_set_control_value_via_iface_value() -> None:
     mock_node = MagicMock()
     mock_node.iface_value.SetValue = MagicMock()
     app.control = MagicMock(return_value=mock_node)
-    ctrl = _make_control("ref:input", "TextBox")
+    ctrl = _make_control("ref:input", "TextBox", control_type="Edit")
 
     set_control_value(app, 100, ctrl, "50.0")
 
@@ -154,7 +154,7 @@ def test_set_control_value_fallback_keyboard() -> None:
     mock_node = MagicMock()
     mock_node.iface_value = None
     app.control = MagicMock(return_value=mock_node)
-    ctrl = _make_control("ref:input", "TextBox")
+    ctrl = _make_control("ref:input", "TextBox", control_type="Edit")
 
     set_control_value(app, 100, ctrl, "100 ms")
 

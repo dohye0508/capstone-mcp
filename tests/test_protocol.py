@@ -2,6 +2,7 @@
 """Read-only integration: requires a running Capstone in the current desktop."""
 
 import base64
+import os
 import sys
 from pathlib import Path
 from typing import Final
@@ -17,6 +18,10 @@ from capstone_mcp.agent_instructions import INSTRUCTIONS
 from capstone_mcp.models import Snapshot, Window
 
 ROOT: Final = str(Path(__file__).resolve().parents[1])
+pytestmark = pytest.mark.skipif(
+    os.environ.get("CAPSTONE_RUN_LIVE_TESTS") != "1",
+    reason="Set CAPSTONE_RUN_LIVE_TESTS=1 to allow desktop interaction",
+)
 
 
 class WindowsResult(BaseModel):

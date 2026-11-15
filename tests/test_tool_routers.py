@@ -122,7 +122,7 @@ def test_isolated_router_registration() -> None:
     mcp_physics = FastMCP("test-physics")
     physics_tools = register_physics_tools(mcp_physics, mock_native)
     assert len(physics_tools) == 7
-    assert len(mcp_physics._tool_manager.list_tools()) == 6
+    assert len(mcp_physics._tool_manager.list_tools()) == 7
 
     # Run router
     mcp_runs = FastMCP("test-runs")

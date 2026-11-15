@@ -33,6 +33,21 @@ def test_find_capstone_executable_respects_env_var(tmp_path: Path) -> None:
         assert resolved == fake_exe
 
 
+@pytest.mark.parametrize("kind", ["relative", "directory", "text", "missing"])
+def test_executable_override_rejects_invalid_paths(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / ("program.txt" if kind == "text" else "program.exe")
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "text":
+        path.touch()
+    value = "program.exe" if kind == "relative" else str(path)
+    with (
+        patch.dict(os.environ, {"CAPSTONE_EXECUTABLE": value}),
+        pytest.raises(ValueError, match=r"absolute \.exe file"),
+    ):
+        _ = find_capstone_executable()
+
+
 def test_capstone_click_and_type_text_methods_exist() -> None:
     """Verify Capstone class defines click and type_text methods."""
     app = Capstone()
@@ -102,10 +117,9 @@ def test_reports_generator_raises_value_error_for_empty_data() -> None:
         generate_report(file_path_or_run=None, experiment_id="generic")
 
 
-def test_harness_set_control_text_falls_back_to_keys() -> None:
-    """Verify set_control_value sends keys when app lacks type_text."""
+def test_harness_set_control_text_uses_literal_typing() -> None:
+    """Verify shortcut syntax is never used to type arbitrary values."""
     app = MagicMock()
-    del app.type_text
     ctrl = Control(
         ref="c-1",
         parent=None,
@@ -118,12 +132,12 @@ def test_harness_set_control_text_falls_back_to_keys() -> None:
     )
     app.control.return_value = MagicMock(iface_value=None)
     set_control_value(app, 1234, ctrl, "x = 42")
-    calls = [call[0] for call in app.keys.call_args_list]
-    assert any("x = 42" in str(c) for c in calls)
+    app.type_text.assert_called_once_with("x = 42")
 
 
-def test_clipboard_backup_and_restore_cycle() -> None:
+def test_clipboard_backup_and_restore_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify clipboard backup and restore safely handle missing or active clipboard."""
+    monkeypatch.setattr("capstone_mcp.graphs.inspection.win32clipboard", None)
     backup = _backup_clipboard()
     assert isinstance(backup, dict)
     # Restore should not throw even if empty

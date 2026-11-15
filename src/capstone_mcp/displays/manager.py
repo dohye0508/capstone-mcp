@@ -213,10 +213,7 @@ class DisplayManager:
 
     def _manage_set_page_layout(self, request: DisplayRequest) -> DisplayResult:
         if request.set_page_layout is None:
-            msg = (
-                "set_page_layout request must be provided for "
-                "SET_PAGE_LAYOUT action."
-            )
+            msg = "set_page_layout request must be provided for SET_PAGE_LAYOUT action."
             raise AutomationError(msg)
         return DisplayResult(
             action=request.action,

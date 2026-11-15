@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import (
     double_click_control,
+    find_display_container,
     find_palette_item,
+    is_within_bounds,
     set_control_value,
 )
 from capstone_mcp.displays.models import (
@@ -38,16 +40,41 @@ def _configure_scope(
     timebase_str: str | None,
     channel: str | None,
 ) -> None:
-    fresh = app.snapshot(handle, depth=16, limit=10_000)
-    for ctrl in fresh.controls:
-        if not ctrl.visible:
-            continue
-        aid = ctrl.automation_id.lower()
-        name = ctrl.name.lower()
-        if timebase_str and ("timebase" in aid or "sec/div" in name or "time" in aid):
-            set_control_value(app, handle, ctrl, timebase_str)
-        elif channel and ("channel" in aid or "y-axis" in name or "measurement" in aid):
-            set_control_value(app, handle, ctrl, channel)
+    for value, keywords in (
+        (timebase_str, ("timebase", "sec/div")),
+        (channel, ("channel", "y-axis", "measurement")),
+    ):
+        if value is not None:
+            _configure_display_field(app, handle, "scope", None, keywords, value)
+
+
+def _configure_display_field(  # noqa: PLR0913, PLR0917
+    app: Capstone,
+    handle: int,
+    kind: str,
+    display_name: str | None,
+    keywords: tuple[str, ...],
+    value: str,
+) -> None:
+    snapshot = app.snapshot(handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Display configuration requires a complete snapshot."
+        raise AutomationError(msg)
+    container = find_display_container(snapshot.controls, kind, display_name)
+    matches = [
+        c
+        for c in snapshot.controls
+        if c.visible
+        and c.enabled
+        and c.ref != container.ref
+        and is_within_bounds(c, container)
+        and c.control_type in ("Edit", "ComboBox")
+        and any(k in c.automation_id.lower() or k in c.name.lower() for k in keywords)
+    ]
+    if len(matches) != 1:
+        msg = f"No unique {kind} control for {keywords!r}; no value was entered."
+        raise AutomationError(msg)
+    set_control_value(app, handle, matches[0], value)
 
 
 def create_scope(
@@ -62,7 +89,10 @@ def create_scope(
         msg = "Scope creation requires allow_foreground=true."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=12, limit=10_000)
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Display creation requires a complete snapshot."
+        raise AutomationError(msg)
     palette_item = find_palette_item(snapshot.controls, "Scope", SCOPE_PALETTE_SUFFIX)
     double_click_control(app, request.handle, palette_item)
 
@@ -72,13 +102,13 @@ def create_scope(
     if timebase_str is not None or request.channel is not None:
         _configure_scope(app, request.handle, timebase_str, request.channel)
 
-    detail = f"Scope display '{display_id}' created successfully."
+    detail = f"Scope '{display_id}' creation requested; native state is unverified."
     return CreateScopeResult(
         display_id=display_id,
         display_type="Scope",
         timebase=timebase_str,
         channel=request.channel,
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
@@ -119,35 +149,42 @@ def set_scope_trigger(
     normalized_slope = VALID_SLOPES.get(request.trigger_slope.lower())
     if not normalized_slope:
         valid = list(VALID_SLOPES.keys())
-        msg = (
-            f"Unsupported trigger slope "
-            f"'{request.trigger_slope}'. Valid: {valid}"
-        )
+        msg = f"Unsupported trigger slope '{request.trigger_slope}'. Valid: {valid}"
         raise AutomationError(msg)
 
     normalized_mode = VALID_MODES.get(request.trigger_mode.lower())
     if not normalized_mode:
         valid = list(VALID_MODES.keys())
-        msg = (
-            f"Unsupported trigger mode "
-            f"'{request.trigger_mode}'. Valid: {valid}"
-        )
+        msg = f"Unsupported trigger mode '{request.trigger_mode}'. Valid: {valid}"
         raise AutomationError(msg)
 
     scope_id = request.scope_id or "Scope 1"
 
+    if request.trigger_source is not None:
+        msg = "Trigger source binding is unverified; no trigger settings were changed."
+        raise AutomationError(msg)
+    fields = (
+        (
+            ("triggerlevel", "trigger_level", "trigger level"),
+            str(request.trigger_level),
+        ),
+        (("triggerslope", "trigger_slope", "trigger slope"), normalized_slope),
+        (("triggermode", "trigger_mode", "trigger mode"), normalized_mode),
+    )
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    level_ctrl, slope_ctrl, mode_ctrl = _find_trigger_controls(snapshot.controls)
-
-    if level_ctrl:
-        set_control_value(app, request.handle, level_ctrl, f"{request.trigger_level} V")
-    if slope_ctrl:
-        set_control_value(app, request.handle, slope_ctrl, normalized_slope)
-    if mode_ctrl:
-        set_control_value(app, request.handle, mode_ctrl, normalized_mode)
+    container = find_display_container(snapshot.controls, "scope", request.scope_id)
+    scoped = [c for c in snapshot.controls if is_within_bounds(c, container)]
+    if any(c is None for c in _find_trigger_controls(scoped)):
+        msg = "Scope trigger controls are unavailable; open its trigger drawer first."
+        raise AutomationError(msg)
+    for keywords, value in fields:
+        _configure_display_field(
+            app, request.handle, "scope", request.scope_id, keywords, value,
+        )
 
     detail = (
-        f"Scope '{scope_id}' trigger configured: Level={request.trigger_level}V, "
+        f"Scope '{scope_id}' trigger settings requested (unverified): "
+        f"Level={request.trigger_level}, "
         f"Slope={normalized_slope}, Mode={normalized_mode}."
     )
     return ScopeTriggerResult(
@@ -156,7 +193,7 @@ def set_scope_trigger(
         trigger_slope=normalized_slope,
         trigger_mode=normalized_mode,
         trigger_source=request.trigger_source,
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
@@ -167,20 +204,12 @@ def _configure_fft(
     measurement: str | None,
     frequency_range: str | None,
 ) -> None:
-    fresh = app.snapshot(handle, depth=16, limit=10_000)
-    for ctrl in fresh.controls:
-        if not ctrl.visible:
-            continue
-        aid = ctrl.automation_id.lower()
-        name = ctrl.name.lower()
-        if measurement and (
-            "measurement" in aid or "channel" in aid or "y-axis" in name
-        ):
-            set_control_value(app, handle, ctrl, measurement)
-        elif frequency_range and (
-            "range" in aid or "freq_range" in aid or "span" in name
-        ):
-            set_control_value(app, handle, ctrl, frequency_range)
+    for value, keywords in (
+        (measurement, ("measurement", "channel", "y-axis")),
+        (frequency_range, ("freq_range", "span")),
+    ):
+        if value is not None:
+            _configure_display_field(app, handle, "fft", None, keywords, value)
 
 
 def create_fft(
@@ -195,7 +224,10 @@ def create_fft(
         msg = "FFT creation requires allow_foreground=true."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=12, limit=10_000)
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Display creation requires a complete snapshot."
+        raise AutomationError(msg)
     palette_item = find_palette_item(snapshot.controls, "FFT", FFT_PALETTE_SUFFIX)
     double_click_control(app, request.handle, palette_item)
 
@@ -209,19 +241,20 @@ def create_fft(
             request.frequency_range,
         )
 
-    detail = f"FFT display '{display_id}' created successfully."
+    detail = f"FFT '{display_id}' creation requested; native state is unverified."
     return CreateFftResult(
         display_id=display_id,
         display_type="FFT",
         measurement=request.measurement,
         frequency_range=request.frequency_range,
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
 
 def _parse_peak_text(text: str) -> tuple[float, float] | None:
     """Parse frequency and amplitude from coordinate text like '(1200 Hz, 3.5 V)'."""
+    text = text.replace("\u2212", "-")
     coord_match = re.search(
         r"\(\s*([0-9.]+)\s*(?:Hz|kHz)?\s*,\s*([0-9.]+)\s*(?:V|mV|dB)?\s*\)",
         text,
@@ -299,6 +332,6 @@ def read_fft_peaks(
         fft_id=fft_id,
         peaks=top_peaks,
         peak_count=len(top_peaks),
-        verified=True,
+        verified=False,
         detail=detail,
     )

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from _ctypes import COMError
 from contextlib import suppress
 from dataclasses import dataclass
@@ -60,6 +61,7 @@ FIT_ERROR_STATUS_FAILED: Final = 10
 TRANSITION_SECONDS: Final = 15
 GRAPH_MIME: Final = "ItemCutCopyPasteMimeType"
 MENU_RELEASE_ATTEMPTS: Final = 3
+MENU_RELEASE_DELAY_SECONDS: Final = 0.05
 MIN_MODELS_FOR_COMPARISON: Final = 2
 
 
@@ -141,18 +143,28 @@ def _fit_parameter(
     error_status: int,
 ) -> FitParameter:
     index = _required_integer(
-        description, "ZCFDICurveFitParameterDescriptionIndexToActual",
+        description,
+        "ZCFDICurveFitParameterDescriptionIndexToActual",
     )
     if not 0 <= index < len(definitions):
         msg = f"Fit parameter descriptor index {index} is outside its definitions."
         raise GraphStateError(msg)
     definition = definitions[index]
-    value = _required(definition, "ZCFDICurveFitParameterResultValue")
-    uncertainty = _required(definition, "ZCFDICurveFitParameterFitGoodness")
+    successful = error_status in FIT_SUCCESS_STATUSES
+    value = (
+        _required(definition, "ZCFDICurveFitParameterResultValue")
+        if successful
+        else None
+    )
+    uncertainty = (
+        _required(definition, "ZCFDICurveFitParameterFitGoodness")
+        if successful
+        else None
+    )
     return FitParameter(
         name=_required(description, "ZCFDICurveFitParameterAbbreviation"),
-        value=value if error_status in FIT_SUCCESS_STATUSES else None,
-        uncertainty=uncertainty if error_status in FIT_SUCCESS_STATUSES else None,
+        value=value,
+        uncertainty=uncertainty,
         locked=_flag(
             _required(definition, "ZCFDICurveParameterIsLocked"),
             context="ZCFDICurveFitParameterDefinition.ZCFDICurveParameterIsLocked",
@@ -166,11 +178,11 @@ def _fit_metric(element: Element, *, error_status: int) -> FitMetric:
         context="ZCFDICurveFitResultsDefinition.ZCFDICurveFitResultsValidity",
     )
     valid = error_status in FIT_SUCCESS_STATUSES and validity
-    value = _required(element, "ZCFDICurveFitResultsValue")
+    value = _required(element, "ZCFDICurveFitResultsValue") if valid else None
     return FitMetric(
         name=_required(element, "ZCFDICurveFitResultsName"),
         abbreviation=_required(element, "ZCFDICurveFitResultsAbbreviation"),
-        value=value if valid else None,
+        value=value,
         valid=valid,
     )
 
@@ -178,7 +190,8 @@ def _fit_metric(element: Element, *, error_status: int) -> FitMetric:
 def _native_fit(element: Element) -> NativeFit:
     parameter_count = _required_integer(element, "ZCFDICurveFitCountOfParameters")
     description_count = _required_integer(
-        element, "ZCFDICurveFitCountOfParameterDescriptions",
+        element,
+        "ZCFDICurveFitCountOfParameterDescriptions",
     )
     result_count = _required_integer(element, "ZCFDICurveFitCountOfResults")
     if min(parameter_count, description_count, result_count) < 0:
@@ -190,14 +203,10 @@ def _native_fit(element: Element) -> NativeFit:
         if child.tag == "ZCFDICurveFitParameterDescriptionDefinition"
     ]
     definitions = [
-        child
-        for child in element
-        if child.tag == "ZCFDICurveFitParameterDefinition"
+        child for child in element if child.tag == "ZCFDICurveFitParameterDefinition"
     ]
     results = [
-        child
-        for child in element
-        if child.tag == "ZCFDICurveFitResultsDefinition"
+        child for child in element if child.tag == "ZCFDICurveFitResultsDefinition"
     ]
     if (
         len(definitions) != parameter_count
@@ -209,7 +218,8 @@ def _native_fit(element: Element) -> NativeFit:
         raise GraphStateError(msg)
     indices = [
         _required_integer(
-            description, "ZCFDICurveFitParameterDescriptionIndexToActual",
+            description,
+            "ZCFDICurveFitParameterDescriptionIndexToActual",
         )
         for description in descriptions
     ]
@@ -232,18 +242,14 @@ def _native_fit(element: Element) -> NativeFit:
             _fit_parameter(description, definitions, error_status=error_status)
             for description in descriptions
         ],
-        metrics=[
-            _fit_metric(result, error_status=error_status) for result in results
-        ],
+        metrics=[_fit_metric(result, error_status=error_status) for result in results],
     )
 
 
 def _graph_series(element: Element) -> GraphSeries:
     return GraphSeries(
         renderer_id=_required(element, "ZTDDRUniqueId"),
-        inputs=[
-            _graph_input(child) for child in element if child.tag == "BundleInput"
-        ],
+        inputs=[_graph_input(child) for child in element if child.tag == "BundleInput"],
         fits=[_native_fit(fit) for fit in element.iter("ZRSCurveFit")],
     )
 
@@ -293,8 +299,7 @@ def parse_graph_xml(payload: bytes) -> GraphState:
         fit_enabled=fit_enabled,
         selected_types=selected_types,
         series=[
-            _graph_series(renderer)
-            for renderer in graph.iter("ZRSIndividualRenederer")
+            _graph_series(renderer) for renderer in graph.iter("ZRSIndividualRenederer")
         ],
     )
 
@@ -309,12 +314,14 @@ def release_menu_bar(app: Capstone, handle: int) -> None:
     for _ in range(MENU_RELEASE_ATTEMPTS):
         snapshot = app.snapshot(handle, 3, 400)
         armed = any(
-            c.control_type == "MenuItem" and app.refs[c.ref].has_keyboard_focus()
+            c.control_type == "MenuItem" and app.control(c.ref).has_keyboard_focus()
             for c in snapshot.controls
         )
-        if not armed and {w.handle for w in app.windows()} == {handle}:
+        if not armed:
+            app.require_input_ready(handle)
             return
         _ = app.keys(handle, "{ESC}")
+        time.sleep(MENU_RELEASE_DELAY_SECONDS)
     msg = "Capstone stayed in menu mode after Escape; inspect the window."
     raise AutomationError(msg)
 
@@ -324,39 +331,41 @@ def _backup_clipboard() -> dict[int, Any]:
     if win32clipboard is None:
         return backup
     clip: Any = win32clipboard
-    with suppress(Exception):
-        clip.OpenClipboard()
-        try:
-            fmt = 0
-            while True:
-                fmt = clip.EnumClipboardFormats(fmt)
-                if fmt == 0:
-                    break
-                with suppress(Exception):
-                    backup[fmt] = clip.GetClipboardData(fmt)
-        finally:
-            with suppress(Exception):
-                clip.CloseClipboard()
+    clip.OpenClipboard()
+    try:
+        fmt = 0
+        while fmt := clip.EnumClipboardFormats(fmt):
+            data = clip.GetClipboardData(fmt)
+            if not isinstance(data, (str, bytes)):
+                msg = "Clipboard cannot be safely preserved; copy was not started."
+                raise AutomationError(msg)
+            backup[fmt] = data
+    finally:
+        clip.CloseClipboard()
     return backup
 
 
-def _restore_clipboard(backup: dict[int, Any]) -> None:
-    if not backup or win32clipboard is None:
+def _restore_clipboard(
+    backup: dict[int, Any], *, expected_sequence: int | None = None,
+) -> None:
+    """Restore only while the clipboard still contains this operation's copy."""
+    if win32clipboard is None or expected_sequence is None:
         return
     clip: Any = win32clipboard
-    with suppress(Exception):
-        clip.OpenClipboard()
-        try:
-            clip.EmptyClipboard()
-            for fmt, data in backup.items():
-                with suppress(Exception):
-                    clip.SetClipboardData(fmt, data)
-        finally:
-            with suppress(Exception):
-                clip.CloseClipboard()
+    clip.OpenClipboard()
+    try:
+        if clip.GetClipboardSequenceNumber() != expected_sequence:
+            return
+        clip.EmptyClipboard()
+        for fmt, data in backup.items():
+            clip.SetClipboardData(fmt, data)
+    finally:
+        clip.CloseClipboard()
 
 
-def _copied_graph(sequence: int, process_id: int) -> GraphState | None:
+def _copied_graph_payload(
+    sequence: int, process_id: int,
+) -> tuple[object, int] | None:
     if win32clipboard is None or win32process is None:
         return None
     if win32clipboard.GetClipboardSequenceNumber() == sequence:
@@ -371,16 +380,25 @@ def _copied_graph(sequence: int, process_id: int) -> GraphState | None:
         raise AutomationError(msg)
     win32clipboard.OpenClipboard()
     try:
+        owner = win32clipboard.GetClipboardOwner()
+        if not owner or win32process.GetWindowThreadProcessId(owner)[1] != process_id:
+            msg = "Clipboard ownership changed before its graph payload could be read."
+            raise AutomationError(msg)
+        copied_sequence = win32clipboard.GetClipboardSequenceNumber()
         payload = win32clipboard.GetClipboardData(format_id)
     finally:
         win32clipboard.CloseClipboard()
+    return payload, copied_sequence
+
+
+def _parse_graph_payload(payload: object) -> GraphState:
     if not isinstance(payload, bytes) or len(payload) > MAX_GRAPH_XML_BYTES:
         msg = "Native graph clipboard payload is invalid or exceeds 8 MiB."
         raise AutomationError(msg)
     return parse_graph_xml(payload.rstrip(b"\0"))
 
 
-def read_graph(
+def read_graph(  # noqa: PLR0915
     app: Capstone,
     handle: int,
     *,
@@ -391,10 +409,13 @@ def read_graph(
         msg = "Graph inspection uses the native Copy Display menu."
         raise AutomationError(msg)
     windows = app.windows()
-    if len(windows) != 1 or windows[0].handle != handle:
-        msg = "Select one graph and close existing menus before graph inspection."
+    target = next((w for w in windows if w.handle == handle), None)
+    if target is None:
+        msg = "Target graph window is unavailable."
         raise AutomationError(msg)
-    pid = windows[0].process_id
+    app.require_input_ready(handle)
+    baseline_handles = {w.handle for w in windows}
+    pid = target.process_id
     if (
         WindowEvents is None
         or win32clipboard is None
@@ -404,7 +425,9 @@ def read_graph(
         msg = "Native clipboard events require Windows pywin32 environment."
         raise AutomationError(msg)
 
+    backup_sequence = win32clipboard.GetClipboardSequenceNumber()
     clipboard_backup = _backup_clipboard()
+    copied_sequence: int | None = None
     try:
         with WindowEvents(pid, clipboard=True) as events:
             _ = app.focus_window(handle)
@@ -443,24 +466,32 @@ def read_graph(
                 msg = "Select exactly one graph before inspecting its analysis."
                 raise AutomationError(msg)
             sequence = win32clipboard.GetClipboardSequenceNumber()
+            if sequence != backup_sequence:
+                msg = "Clipboard changed before graph copy; inspect again."
+                raise AutomationError(msg)
             _ = app.control(copies[0].ref).invoke()
             app.refs.clear()
-            state = events.changes.until(
-                lambda: _copied_graph(sequence, pid),
+            payload, copied_sequence = events.changes.until(
+                lambda: _copied_graph_payload(sequence, pid),
                 TRANSITION_SECONDS,
                 description="New native graph clipboard data",
             )
+            state = _parse_graph_payload(payload)
             if any(w.handle == popup.window.handle for w in app.windows()):
                 _ = app.keys(handle, "{ESC}")
             _ = events.changes.until(
-                lambda: True if {w.handle for w in app.windows()} == {handle} else None,
+                lambda: (
+                    True
+                    if {w.handle for w in app.windows()} == baseline_handles
+                    else None
+                ),
                 TRANSITION_SECONDS,
                 description="Copy Display menu dismissal",
             )
             release_menu_bar(app, handle)
             return state
     finally:
-        _restore_clipboard(clipboard_backup)
+        _restore_clipboard(clipboard_backup, expected_sequence=copied_sequence)
 
 
 def _display_popup(app: Capstone, main_handle: int) -> Snapshot | None:
@@ -471,7 +502,9 @@ def _display_popup(app: Capstone, main_handle: int) -> Snapshot | None:
             snapshot = app.snapshot(window.handle, 3, 100)
         except Exception as e:  # noqa: BLE001
             logger.debug(
-                "Failed to snapshot window handle %s: %s", window.handle, e,
+                "Failed to snapshot window handle %s: %s",
+                window.handle,
+                e,
             )
             continue
         if any(
@@ -640,10 +673,12 @@ def _build_group(series: GraphSeries) -> RendererAnalysisGroup:
     minima: list[MetricMinimum] = []
     limitations = [code for item in prepared for code in item.row.limitations]
     if series.fits:
-        limitations.extend((
-            LimitationCode.SAMPLE_COUNT_UNAVAILABLE,
-            LimitationCode.RESIDUALS_UNAVAILABLE,
-        ))
+        limitations.extend(
+            (
+                LimitationCode.SAMPLE_COUNT_UNAVAILABLE,
+                LimitationCode.RESIDUALS_UNAVAILABLE,
+            ),
+        )
     else:
         limitations.append(LimitationCode.NO_NATIVE_FITS)
     if len(successful) >= MIN_MODELS_FOR_COMPARISON:

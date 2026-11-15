@@ -225,5 +225,5 @@ def test_create_digits_success_with_measurement_and_unit() -> None:
     assert res.measurement == "Acceleration (m/s^2)"
     assert res.current_value == 9.81
     assert res.unit == "m/s^2"
-    assert res.verified is True
-    assert app.click.call_count == 2
+    assert res.verified is False
+    assert app.click.call_count == 1

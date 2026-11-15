@@ -108,13 +108,13 @@ def test_delete_run_via_unified_manager() -> None:
         app,
         RunRequest(
             action=RunAction.DELETE,
-            delete=DeleteRunRequest(run_name="last_run"),
+            delete=DeleteRunRequest(run_name="Run #2"),
         ),
     )
 
     # Then:
     assert result.delete is not None
-    assert result.delete.verified is True
+    assert result.delete.verified is False
     assert result.delete.deleted_run == "Run #2"
 
 
@@ -125,6 +125,9 @@ def test_visibility_toggle_via_unified_manager() -> None:
     app = _make_mock_app([disp_ctrl, chk_ctrl])
     node_mock = MagicMock()
     node_mock.iface_toggle.ToggleState = 0
+    node_mock.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_mock.iface_toggle, "ToggleState", 1,
+    )
     app.control.return_value = node_mock
 
     # When: toggle visibility

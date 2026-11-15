@@ -113,6 +113,7 @@ def test_systematic_tool_annotations() -> None:
     # 2. Destructive modification tools
     destructive_tools = [
         "capstone_open_experiment",
+        "capstone_manage_run",
     ]
     for name in destructive_tools:
         tool = tools[name]
@@ -126,7 +127,6 @@ def test_systematic_tool_annotations() -> None:
         "capstone_manage_instrument",
         "capstone_manage_display",
         "capstone_manage_graph",
-        "capstone_manage_run",
         "capstone_save_experiment",
         "capstone_export_data",
         "capstone_create_calculation",

@@ -359,6 +359,8 @@ def _armed_app(
     monkeypatch.setattr(app, "snapshot", Mock(return_value=snapshot))
     node = Mock(has_keyboard_focus=Mock(side_effect=focus_states))
     monkeypatch.setattr(app, "refs", {"display": node})
+    monkeypatch.setattr(app, "control", Mock(return_value=node))
+    monkeypatch.setattr(app, "require_input_ready", Mock())
     keys = Mock()
     monkeypatch.setattr(app, "keys", keys)
     return app, keys

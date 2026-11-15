@@ -121,7 +121,19 @@ def test_attach_launch_injects_remote_debugging_port(
     start.assert_called_once()
     called_cmd = start.call_args[0][0]
     assert "--remote-debugging-port=9222" in called_cmd
-    assert "--remote-allow-origins=*" in called_cmd
+    assert "--remote-allow-origins" not in called_cmd
+
+
+def test_reused_hwnd_resolves_a_fresh_uia_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = Capstone()
+    window = Mock(handle=123)
+    monkeypatch.setattr(app, "windows", Mock(return_value=[window]))
+    first, second = Mock(), Mock()
+    resolver = Mock()
+    resolver.window.return_value.wrapper_object.side_effect = [first, second]
+    monkeypatch.setattr(desktop, "Desktop", Mock(return_value=resolver))
+    assert app.window(123) is first
+    assert app.window(123) is second
 
 
 

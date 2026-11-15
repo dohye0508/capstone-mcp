@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Filtered snapshots return only matching controls with usable references."""
 
+from _ctypes import COMError
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -8,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from capstone_mcp.desktop import Capstone
+from capstone_mcp.desktop import AutomationError, Capstone
 
 if TYPE_CHECKING:
     from pywinauto.controls.uiawrapper import UIAWrapper
@@ -98,3 +99,12 @@ def test_limit_bounds_the_visit_so_an_unvisited_match_is_reported_truncated(
     # Then
     assert snapshot.controls == []
     assert snapshot.truncated
+
+
+def test_uia_access_denied_discards_partial_snapshot_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _app(monkeypatch)
+    root = app.window(1)
+    monkeypatch.setattr(root, "iter_children", Mock(side_effect=COMError(-2147024891, "Access denied", None)))
+    with pytest.raises(AutomationError, match="inaccessible"):
+        _ = app.snapshot(1, 12, 800)
+    assert app.refs == {}
