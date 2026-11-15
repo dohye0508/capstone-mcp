@@ -33,9 +33,9 @@ class CreateCalculationResult(Model):
     calculation_name: str
     expression: str
     unit: str | None = None
-    status: CalculationStatus = "valid"
+    status: CalculationStatus = "failed"
     detail: str = ""
-    verified: bool = True
+    verified: bool = False
 
 
 def _parse_calculation_name(expression: str) -> str:
@@ -167,9 +167,13 @@ def create_calculation(
         app.keys(request.handle, "{ENTER}")
 
         # 5. Status check
-        status: CalculationStatus = "valid"
-        detail = f"Calculation '{calc_name}' successfully registered."
-        verified = True
+        status: CalculationStatus = "failed"
+        detail = (
+            f"Calculation '{calc_name}' was submitted, but registration and "
+            "syntax validity could not be verified from Capstone. Inspect the "
+            "Calculator before using this expression."
+        )
+        verified = False
 
         return CreateCalculationResult(
             calculation_name=calc_name,

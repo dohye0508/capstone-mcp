@@ -47,7 +47,7 @@ def test_create_calculation_raises_when_calculator_toggle_not_found() -> None:
         _ = create_calculation(app, req)
 
 
-def test_create_calculation_success_opens_inputs_and_restores_drawer() -> None:
+def test_create_calculation_submission_is_not_verified_success() -> None:
     app = Capstone()
     mock_window = Window(
         handle=100, title="Capstone", process_id=1,
@@ -120,8 +120,9 @@ def test_create_calculation_success_opens_inputs_and_restores_drawer() -> None:
     assert result.calculation_name == "KE"
     assert result.expression == "KE = 0.5 * [m] * [v]^2"
     assert result.unit == "J"
-    assert result.status == "valid"
-    assert result.verified is True
+    assert result.status == "failed"
+    assert result.verified is False
+    assert "could not be verified" in result.detail
 
     # Check that calculator toggle was clicked to open and close/restore
     assert app.click.call_count == 2
