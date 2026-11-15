@@ -671,6 +671,7 @@ class NativeDesktop:
 
     def dispatch(self, request: NativeRequest) -> JsonValue:
         """Route a validated allowlisted command on the owning COM thread."""
+        request = self._resolve_default_window(request)
         if request.operation not in GRAPH_INPUT_OPERATIONS | {
             "read_graph",
             "observe_graph",
@@ -723,6 +724,50 @@ class NativeDesktop:
             ) from error
         finally:
             self.graph_progress = None
+
+    def _resolve_default_window(self, request: NativeRequest) -> NativeRequest:
+        """Resolve optional unified-action handles only when the target is unique."""
+        contracts = {
+            "manage_run": ("run_request", RunRequest),
+            "manage_graph": ("graph_request", GraphRequest),
+            "manage_display": ("display_request", DisplayRequest),
+            "manage_instrument": ("instrument_request", InstrumentRequest),
+        }
+        contract = contracts.get(request.operation)
+        if contract is None:
+            if request.operation not in {
+                "rename_run", "delete_run", "set_run_visibility",
+                "create_calculation",
+            } or request.handle != 0:
+                return request
+            return request.model_copy(update={"handle": self._unique_window_handle()})
+        field, model = contract
+        payload = model.model_validate(getattr(request, field))
+        action = str(payload.action)
+        selected = "visibility" if action == "set_visibility" else action
+        parameters = getattr(payload, selected, None)
+        if (
+            not isinstance(parameters, BaseModel)
+            or "handle" not in type(parameters).model_fields
+        ):
+            return request
+        if parameters.model_dump()["handle"] != 0:
+            return request
+        resolved = parameters.model_copy(update={
+            "handle": self._unique_window_handle(),
+        })
+        payload = payload.model_copy(update={selected: resolved})
+        return request.model_copy(update={field: payload.model_dump(mode="json")})
+
+    def _unique_window_handle(self) -> int:
+        windows = self.app.windows()
+        if len(windows) != 1 or windows[0].handle <= 0:
+            msg = (
+                "Specify an explicit window handle unless "
+                "exactly one window is visible."
+            )
+            raise AutomationError(msg)
+        return windows[0].handle
 
     def _observe_graph(self, request: NativeRequest) -> JsonValue:
         png = self.app.graph_screenshot(request.handle, activate=True)

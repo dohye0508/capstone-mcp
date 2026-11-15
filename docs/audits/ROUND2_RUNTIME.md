@@ -48,7 +48,7 @@ Scope: offline internal verification only. No Capstone GUI, sensor, or real debu
 | STRM04 | unsupported/false | alleged record_interval function absent; run_sequence uses bounded Event.wait(duration). See instruments ledger. |
 | WF23 | fixed-now | Exact mutating keep_sample borrows active job worker; target handle is validated/resolved to that job. Backend command lock serializes sample with observe/stop/save/close; closed owner rejects input. Other mutation guards remain. Real thread regressions verify stop/save cannot overlap sample; hardware retention remains unverified. |
 | WF24 | unsupported/false | analyze_graph changes axes and fit selections, so mutation reservation is necessary; report calls it read-only incorrectly. |
-| RUN-P3-01 | cross-owner | UI desktop unique-window handle=0 resolution reviewed with run-manager tests; no arbitrary multiwindow fallback allowed. |
+| RUN-P3-01 | fixed-now | Native dispatcher resolves default handle=0 for the selected nested unified run/graph/display/instrument action, plus legacy run operations, only when exactly one visible window exists. Explicit handles remain unchanged; zero/multiple windows fail before dispatch. Graph frame receipt checks remain mandatory. tests/test_default_window.py covers all run actions and other unified defaults. |
 
 ## Test and fixture findings
 
@@ -78,4 +78,5 @@ Scope: offline internal verification only. No Capstone GUI, sensor, or real debu
 | MOCK02, MOCK03 | requires-live; cross-owner guards | actual Automation IDs require observed UI evidence; no guessed production IDs introduced. |
 
 Validation: 97 scoped tests passed before final NAT18 addition; runtime_round2 subsequently 16 passed including NAT18. Includes real fixture subprocesses and ephemeral local mock sockets only. Final root aggregate checks and CI remain necessary before merge.
+
 
