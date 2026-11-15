@@ -140,7 +140,7 @@ def test_live_measurement_adapter_class() -> None:
     datasets = adapter.list_datasets()
     assert len(datasets) == 1
     assert datasets[0].name == "Voltage"
-    series = adapter.get_series("time", "Voltage")
+    series = adapter.get_series("index", "Voltage")
     assert series.y.clean_floats() == [3.3]
 
 
@@ -183,9 +183,9 @@ def test_get_experiment_series_live_measurements_mocked() -> None:
         session_inst.read_live_measurement.return_value = 9.81
         mock_cls.return_value = session_inst
 
-        series = get_experiment_series("live://measurements", "time", "force")
+        series = get_experiment_series("live://measurements", "index", "force")
         assert isinstance(series, ExperimentSeries)
-        assert series.x.name == "time"
+        assert series.x.name == "index"
         assert series.x.clean_floats() == [0.0]
         assert series.y.name == "force"
         assert series.y.clean_floats() == [9.81]
