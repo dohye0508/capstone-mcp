@@ -10,7 +10,9 @@ from capstone_mcp.capfiles.archive import (
     MAX_XML_DEPTH,
     MAX_XML_NODES,
     extract_cap_datasets,
+    list_cap_datasets,
     read_cap_configuration,
+    read_cap_dataset_page,
     read_cap_file,
     select_configuration,
 )
@@ -54,7 +56,9 @@ __all__ = [
     "decode_numeric_payload",
     "decode_text_records",
     "extract_cap_datasets",
+    "list_cap_datasets",
     "read_cap_configuration",
+    "read_cap_dataset_page",
     "read_cap_file",
     "select_configuration",
 ]

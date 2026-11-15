@@ -7,8 +7,10 @@ import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Final
+from zipfile import ZipFile
 
 import pytest
+from defusedxml.ElementTree import fromstring
 
 from capstone_mcp.capfile_models import CapFile, CapValueKind
 from capstone_mcp.capfiles import (
@@ -20,12 +22,13 @@ from capstone_mcp.capfiles import (
 GOLDEN_MASTER_DIR: Final = Path(
     os.environ.get(
         "CAPSTONE_GOLDEN_MASTER_DIR",
-        r"C:\Users\Jio\Downloads\(2026)캡스톤 실험별 파일",
+        "",
     ),
 )
 
 pytestmark = pytest.mark.skipif(
-    not GOLDEN_MASTER_DIR.exists(),
+    not os.environ.get("CAPSTONE_GOLDEN_MASTER_DIR")
+    or not GOLDEN_MASTER_DIR.is_dir(),
     reason=f"Golden master Capstone archives not found at {GOLDEN_MASTER_DIR}",
 )
 
@@ -93,6 +96,15 @@ def _sensor_names(cap: CapFile) -> set[str]:
         for sensor in interface.sensors
         if sensor.name
     }
+
+
+def _require_recorded_gyroscope(path: Path) -> None:
+    """Distinguish the setup-only variant using native XML, not parser output."""
+    if path.name.startswith("자이로스코프("):
+        with ZipFile(path) as archive:
+            root = fromstring(archive.read("main.xml"))
+        if not list(root.iter("DataSet")):
+            pytest.skip("Gyroscope fixture is a setup-only variant without recorded runs.")
 
 
 def test_golden_master_catalog_discovery() -> None:
@@ -401,6 +413,7 @@ def test_golden_master_physical_units(domain: str, filename: str) -> None:
 @pytest.mark.parametrize("filename", ARCHIVES_WITH_DATASETS)
 def test_golden_master_dataset_integrity(filename: str) -> None:
     archive_path = GOLDEN_MASTER_DIR / filename
+    _require_recorded_gyroscope(archive_path)
     cap = read_cap_file(archive_path)
     assert len(cap.datasets) > 0
 
@@ -452,6 +465,7 @@ def test_golden_master_run_labels_gyroscope() -> None:
         GOLDEN_MASTER_DIR
         / "자이로스코프(ME-8960, 850, CS, PS-2120A, PS-3220)[6].cap"
     )
+    _require_recorded_gyroscope(archive_path)
     cap = read_cap_file(archive_path)
     assert len(cap.datasets) == 36
 

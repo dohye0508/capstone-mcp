@@ -17,12 +17,12 @@ from capstone_mcp.capfile_models import (
     CapSection,
 )
 from capstone_mcp.capfiles import (
-    extract_cap_datasets,
+    list_cap_datasets,
     read_cap_configuration,
+    read_cap_dataset_page,
     select_configuration,
 )
 from capstone_mcp.csv_data import CsvPage, read_csv_page
-from capstone_mcp.desktop import AutomationError
 from capstone_mcp.file_workflows import FileArtifact, OpenedExperiment
 from capstone_mcp.models import Model
 
@@ -156,7 +156,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
             openWorldHint=False,
         ),
     )
-    def capstone_inspect_file(
+    async def capstone_inspect_file(
         path: str,
         sections: list[CapSection] | None = None,
     ) -> CapConfigurationView:
@@ -171,7 +171,8 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
         is needed, e.g. ["hardware_interfaces", "experiment_settings"]. Sections
         not requested are null and named in omitted_sections; omit sections for all.
         """
-        return select_configuration(read_cap_configuration(path), sections)
+        configuration = await anyio.to_thread.run_sync(read_cap_configuration, path)
+        return select_configuration(configuration, sections)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -182,8 +183,8 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
             openWorldHint=False,
         ),
     )
-    def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
-        """List decodable saved datasets with source IDs, unit IDs and sample counts.
+    async def capstone_file_datasets(path: str) -> list[CapDatasetSummary]:
+        """List saved dataset metadata without decoding sample arrays.
 
         run_name/run_number identify the recorded run a dataset belongs to; datasets
         of one run share its dataset_id across sources. Pair x and y by that run.
@@ -192,20 +193,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
         or implicit-index independent coordinates.
         Unsupported array encodings raise an error instead of reporting empty data.
         """
-        return [
-            CapDatasetSummary(
-                index=index,
-                dataset_id=dataset.data_set_id,
-                source_euid=dataset.source_euid,
-                name=dataset.source_name,
-                run_name=dataset.run_name,
-                run_number=dataset.run_number,
-                unit_id=dataset.unit_id,
-                value_kind=dataset.value_kind,
-                count=len(dataset.raw_values),
-            )
-            for index, dataset in enumerate(extract_cap_datasets(path))
-        ]
+        return await anyio.to_thread.run_sync(list_cap_datasets, path)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -216,7 +204,7 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
             openWorldHint=False,
         ),
     )
-    def capstone_extract_dataset(
+    async def capstone_extract_dataset(
         path: str,
         dataset_index: Annotated[int, Field(ge=0)],
         offset: Annotated[int, Field(ge=0)] = 0,
@@ -227,34 +215,8 @@ def register_file_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
         Numeric decimals are serialized losslessly as decimal strings. Implicit
         sample_indices are indices, not seconds. Use list tools to select the dataset.
         """
-        datasets = extract_cap_datasets(path)
-        if dataset_index >= len(datasets):
-            msg = "Dataset index is outside this file's dataset list."
-            raise AutomationError(msg)
-        dataset = datasets[dataset_index]
-        end = offset + limit
-        return CapDatasetPage(
-            dataset=CapDatasetSummary(
-                index=dataset_index,
-                dataset_id=dataset.data_set_id,
-                source_euid=dataset.source_euid,
-                name=dataset.source_name,
-                run_name=dataset.run_name,
-                run_number=dataset.run_number,
-                unit_id=dataset.unit_id,
-                value_kind=dataset.value_kind,
-                count=len(dataset.raw_values),
-            ),
-            offset=offset,
-            sample_indices=dataset.sample_indices[offset:end],
-            raw_values=dataset.raw_values[offset:end],
-            numeric_values=(
-                None
-                if dataset.numeric_values is None
-                else dataset.numeric_values[offset:end]
-            ),
-            independent_values=dataset.independent_values[offset:end],
-            independent_kind=dataset.independent_kind,
+        return await anyio.to_thread.run_sync(
+            read_cap_dataset_page, path, dataset_index, offset, limit,
         )
 
     return {

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import struct
+from copy import deepcopy
 from decimal import Decimal
 from typing import TYPE_CHECKING
+from unittest.mock import patch
+from xml.etree.ElementTree import fromstring, tostring
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -18,6 +21,7 @@ from capstone_mcp.capfiles import (
     read_cap_file,
     select_configuration,
 )
+from capstone_mcp.capfiles import archive as archive_parser
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -340,6 +344,91 @@ def test_zero_record_dataset_does_not_require_payload(tmp_path: Path) -> None:
     assert dataset.raw_values == []
     assert dataset.numeric_values == []
     assert dataset.sample_indices == []
+
+
+def _repeated_dataset_xml(count: int, repeats: int) -> bytes:
+    root = fromstring(_xml(count))  # noqa: S314 -- test-controlled XML
+    source = root.find("./DataRepository/DataSource")
+    assert source is not None
+    dataset = source.find("DataSet")
+    assert dataset is not None
+    for index in range(1, repeats):
+        copy = deepcopy(dataset)
+        copy.set("DataSetID", f"dataset-{index}")
+        source.append(copy)
+    return tostring(root)
+
+
+def test_repeated_payload_record_budget_precedes_decoding(tmp_path: Path) -> None:
+    cap_path = tmp_path / "repeated-records.cap"
+    _write_cap(cap_path, xml=_repeated_dataset_xml(2, 2), payload=_payload(["1", "2"]))
+    with (
+        patch.object(archive_parser, "MAX_TOTAL_RECORDS", 3),
+        patch.object(archive_parser, "_dataset") as decode,
+        pytest.raises(CapFileError, match="dataset records exceed"),
+    ):
+        _ = read_cap_file(cap_path)
+    decode.assert_not_called()
+    # The same archive remains inspectable without decoding its arrays.
+    assert read_cap_configuration(cap_path).data_sources
+
+
+def test_repeated_payload_byte_budget_precedes_decoding(tmp_path: Path) -> None:
+    cap_path = tmp_path / "repeated-bytes.cap"
+    payload = _payload(["1234"])
+    _write_cap(cap_path, xml=_repeated_dataset_xml(1, 2), payload=payload)
+    with (
+        patch.object(archive_parser, "MAX_TOTAL_PAYLOAD_BYTES", len(payload)),
+        patch.object(archive_parser, "_dataset") as decode,
+        pytest.raises(CapFileError, match="referenced dataset payloads exceed"),
+    ):
+        _ = read_cap_file(cap_path)
+    decode.assert_not_called()
+
+
+def test_dataset_budgets_allow_exact_boundary(tmp_path: Path) -> None:
+    cap_path = tmp_path / "boundary.cap"
+    payload = _payload(["1", "2"])
+    _write_cap(cap_path, xml=_repeated_dataset_xml(2, 2), payload=payload)
+    with (
+        patch.object(archive_parser, "MAX_TOTAL_RECORDS", 4),
+        patch.object(archive_parser, "MAX_TOTAL_PAYLOAD_BYTES", 2 * len(payload)),
+    ):
+        cap = read_cap_file(cap_path)
+    assert [ds.numeric_values for ds in cap.datasets] == [[Decimal(1), Decimal(2)]] * 2
+
+
+def test_payload_budget_includes_stored_independent_coordinates(tmp_path: Path) -> None:
+    cap_path = tmp_path / "stored-axis-budget.cap"
+    xml = _xml(1, storage_types=(0, 0)).replace(
+        b'CacheDataCount="1"',
+        b'DataCacheDataSize="1" FileName="data/values.tmp"',
+    )
+    payload = struct.pack("<Id", 1, 2.5)
+    _write_cap(cap_path, xml=xml, payload=payload)
+    with (
+        patch.object(archive_parser, "MAX_TOTAL_PAYLOAD_BYTES", len(payload)),
+        patch.object(archive_parser, "_dataset") as decode,
+        pytest.raises(CapFileError, match="referenced dataset payloads exceed"),
+    ):
+        _ = read_cap_file(cap_path)
+    decode.assert_not_called()
+    with patch.object(archive_parser, "MAX_TOTAL_PAYLOAD_BYTES", 2 * len(payload)):
+        dataset = read_cap_file(cap_path).datasets[0]
+    assert dataset.numeric_values == dataset.independent_values == [Decimal("2.5")]
+
+
+def test_corrupt_deflate_returns_domain_error(tmp_path: Path) -> None:
+    cap_path = tmp_path / "corrupt-deflate.cap"
+    _write_cap(cap_path, xml=_xml(0))
+    raw = bytearray(cap_path.read_bytes())
+    name_length, extra_length = struct.unpack_from("<HH", raw, 26)
+    compressed_offset = 30 + name_length + extra_length
+    # RFC 1951 reserved block type (BTYPE=3), not a valid DEFLATE stream.
+    raw[compressed_offset] = 0x07
+    _ = cap_path.write_bytes(raw)
+    with pytest.raises(CapFileError, match="Unable to read archive member"):
+        _ = read_cap_file(cap_path)
 
 
 def test_rejects_non_zip_input(tmp_path: Path) -> None:
