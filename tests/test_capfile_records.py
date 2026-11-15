@@ -160,3 +160,19 @@ def test_decode_interval_coordinates_valid() -> None:
         Decimal("1.5"),
         Decimal("1.75"),
     ]
+
+
+@pytest.mark.parametrize("count", [-1, 1_000_001])
+def test_interval_rejects_out_of_bounds_record_count(count: int) -> None:
+    with pytest.raises(CapFileError, match="outside the valid range"):
+        _ = decode_interval_coordinates(Decimal(0), Decimal(1), count)
+
+
+def test_interval_empty_and_zero_step_preserve_native_arithmetic() -> None:
+    assert decode_interval_coordinates(Decimal(2), Decimal(0), 0) == []
+    assert decode_interval_coordinates(Decimal(2), Decimal(0), 3) == [Decimal(2)] * 3
+
+
+def test_interval_overflow_returns_domain_error() -> None:
+    with pytest.raises(CapFileError, match="nonfinite coordinate"):
+        _ = decode_interval_coordinates(Decimal("1e308"), Decimal("1e308"), 2)
