@@ -11,26 +11,16 @@
   ],
   "counting_rule": "One independently actionable residual task. HW09/INST12/INST13 are one trigger-selection task; WF07 aliases GR02. Generic live caveats do not reopen fixed code. Test-only debt is separate. Source P0/red labels are claims, not newly validated severities.",
   "counts": {
-    "residual_tasks": 25,
-    "original_ids": 28,
-    "confirmed_defect": 1,
-    "capability_gap": 8,
+    "residual_tasks": 22,
+    "original_ids": 25,
+    "confirmed_defect": 0,
+    "capability_gap": 7,
     "unconfirmed_claim": 15,
-    "contract_gap": 1,
+    "contract_gap": 0,
     "test_only_ids": 15,
     "test_only_tasks_after_TST12_MOCK01_dedup": 14
   },
   "items": [
-    {
-      "ids": [
-        "DEFECT-GR06"
-      ],
-      "category": "confirmed_defect",
-      "title": "창 밖으로 펼쳐진 피트 팝업을 잘림으로 오판",
-      "procedure": "비최대화 창의 하단·우측에서 팝업이 본창 밖이지만 모니터 안에 펼쳐지게 한다. 팝업 HWND·소유 PID·화면 경계를 기록한다.",
-      "acceptance": "완전히 보이는 소유 팝업은 허용하고 실제 화면 밖·가려진 대상은 클릭하지 않는다.",
-      "requirement": "안전한 모니터/팝업 경계 구현과 실제 창 배치 대조가 필요"
-    },
     {
       "ids": [
         "DEFECT-HW01"
@@ -72,16 +62,6 @@
       "procedure": "센서 두 개에서 실제 측정 선택 컨트롤·연산자·임계값을 읽고 지정 센서만 임계값을 넘긴다.",
       "acceptance": "지정 센서·연산자·값이 재조회와 일치하고 다른 센서는 트리거하지 않는다.",
       "requirement": "현재 패널 변경 전 미지원 오류; 실제 UI·센서 증거 필요"
-    },
-    {
-      "ids": [
-        "DEFECT-DIFF10"
-      ],
-      "category": "capability_gap",
-      "title": "이중 슬릿 분석",
-      "procedure": "알려진 폭·간격·파장·거리의 해석적 합성 곡선과 독립 기준 결과로 회절 포락선/간섭무늬를 분리 검증한다. 이후 실제 측정으로 확인한다.",
-      "acceptance": "슬릿 폭과 간격을 각각 복원하고 식별 불가능·노이즈 과다 입력은 명시적으로 거부한다.",
-      "requirement": "실기 필수 아님: 알고리즘 개발과 독립 기준 검증이 먼저"
     },
     {
       "ids": [
@@ -263,16 +243,6 @@
       "procedure": "복제 실험에서 잘못된 연산자·없는 측정·올바른 다국어 수식을 입력하고 실제 오류/수락 상태를 캡처한다.",
       "acceptance": "잘못된 수식을 성공으로 보고하지 않고 모달을 방치하지 않는다. 네이티브 수락 관측 뒤에만 검증한다.",
       "requirement": "괄호 검사는 구현됨; 전체 문법/수락 API 증거 필요"
-    },
-    {
-      "ids": [
-        "DEFECT-TEL05"
-      ],
-      "category": "contract_gap",
-      "title": "시간축 원점·단위·클록 도메인 계약",
-      "procedure": "호출자가 제공할 시간 단위/원점/클록 ID와 변환 규칙을 정의하고 다른 도메인의 합성을 시험한다.",
-      "acceptance": "문서화된 변환 없이는 도메인 혼합을 거부하고 같은 도메인 원점을 보존한다.",
-      "requirement": "실기보다 API 계약 결정이 먼저; 유한값·단조성·limit 검사는 수정됨"
     }
   ],
   "test_only_ids": [
@@ -304,5 +274,43 @@
     "P0-WIN03 missing-bootstrap premise contradicted by native_main.init_dpi_awareness",
     "TST03 severity conflicts: red P0 heading, P1 matrix row; retained only as test debt",
     "94 total in source summary cannot be decremented reliably because source IDs and priority tables are inconsistent"
+  ],
+  "resolved_in_round3": [
+    {
+      "ids": [
+        "DEFECT-GR06"
+      ],
+      "category": "confirmed_defect",
+      "title": "창 밖으로 펼쳐진 피트 팝업을 잘림으로 오판",
+      "procedure": "비최대화 창의 하단·우측에서 팝업이 본창 밖이지만 모니터 안에 펼쳐지게 한다. 팝업 HWND·소유 PID·화면 경계를 기록한다.",
+      "acceptance": "완전히 보이는 소유 팝업은 허용하고 실제 화면 밖·가려진 대상은 클릭하지 않는다.",
+      "requirement": "안전한 모니터/팝업 경계 구현과 실제 창 배치 대조가 필요",
+      "resolution": "Monitor/popup bounds replace owner-window clipping; fresh owned geometry and uncovered target checks.",
+      "evidence": "ROUND3_GRAPHS.md"
+    },
+    {
+      "ids": [
+        "DEFECT-DIFF10"
+      ],
+      "category": "capability_gap",
+      "title": "이중 슬릿 분석",
+      "procedure": "알려진 폭·간격·파장·거리의 해석적 합성 곡선과 독립 기준 결과로 회절 포락선/간섭무늬를 분리 검증한다. 이후 실제 측정으로 확인한다.",
+      "acceptance": "슬릿 폭과 간격을 각각 복원하고 식별 불가능·노이즈 과다 입력은 명시적으로 거부한다.",
+      "requirement": "실기 필수 아님: 알고리즘 개발과 독립 기준 검증이 먼저",
+      "resolution": "Equal-width Fraunhofer double-slit fitting implemented; independently validated aperture integral; explicit sampling/model limits.",
+      "evidence": "ROUND3_DIFFRACTION.md"
+    },
+    {
+      "ids": [
+        "DEFECT-TEL05"
+      ],
+      "category": "contract_gap",
+      "title": "시간축 원점·단위·클록 도메인 계약",
+      "procedure": "호출자가 제공할 시간 단위/원점/클록 ID와 변환 규칙을 정의하고 다른 도메인의 합성을 시험한다.",
+      "acceptance": "문서화된 변환 없이는 도메인 혼합을 거부하고 같은 도메인 원점을 보존한다.",
+      "requirement": "실기보다 API 계약 결정이 먼저; 유한값·단조성·limit 검사는 수정됨",
+      "resolution": "Explicit immutable timestamp domain/unit/origin contract with atomic provenance export.",
+      "evidence": "ROUND3_TELEMETRY.md"
+    }
   ]
 }
