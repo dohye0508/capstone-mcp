@@ -17,6 +17,8 @@ from capstone_mcp.capfile_models import (
     CapConfiguration,
     CapConfigurationView,
     CapDataSet,
+    CapDatasetPage,
+    CapDatasetSummary,
     CapDataSource,
     CapExperimentSetting,
     CapFile,
@@ -64,19 +66,16 @@ MAX_XML_DEPTH: Final = 128
 # Preserve the existing single-dataset limit while bounding retained arrays.
 MAX_TOTAL_RECORDS: Final = MAX_RECORDS
 MAX_TOTAL_PAYLOAD_BYTES: Final = MAX_TOTAL_UNCOMPRESSED_BYTES
+MAX_DATASET_PAGE_SIZE: Final = 10_000
 
 
 def _normalize_member_name(name: str) -> str:
     normalized = name.replace("\\", "/")
-    if (
-        not normalized
-        or "\x00" in normalized
-        or normalized.startswith("/")
-    ):
+    if not normalized or "\x00" in normalized or normalized.startswith("/"):
         msg = f"Unsafe archive member path: {name!r}."
         raise CapFileError(msg)
     parts = [part for part in normalized.split("/") if part not in {"", "."}]
-    if not parts or ".." in parts or ":" in parts[0]:
+    if not parts or ".." in parts or any(":" in part for part in parts):
         msg = f"Unsafe archive member path: {name!r}."
         raise CapFileError(msg)
     return "/".join(parts)
@@ -338,7 +337,8 @@ def _hardware_sensor(
         sensor_id=sensor.attrib.get("ID"),
         name=sensor.attrib.get("Name"),
         sample_period=_decimal(
-            sensor.attrib.get("SamplePeriod"), context="Sensor.SamplePeriod",
+            sensor.attrib.get("SamplePeriod"),
+            context="Sensor.SamplePeriod",
         ),
         interface_euid=interface_euid,
         channel_index=_integer(
@@ -447,6 +447,8 @@ def _dataset_storage(element: Element) -> tuple[int, int, int, str]:
         raise CapFileError(msg)
     member_name_raw = dependent.attrib.get("FileName")
     if member_name_raw is None:
+        if count == 0:
+            return dependent_type, independent_type, count, ""
         msg = "DependentStorageElement is missing FileName."
         raise CapFileError(msg)
     member_name = _normalize_member_name(member_name_raw)
@@ -458,6 +460,7 @@ def _numeric_payload(
     count: int,
     archive: ZipFile,
     members: dict[str, ZipInfo],
+    page: tuple[int, int] | None = None,
 ) -> tuple[list[str], list[Decimal | None], list[int]]:
     if element.get("DataCacheStorageType") == "-1":
         msg = "Legacy string caches marked StorageType=0 are not numeric caches."
@@ -467,26 +470,36 @@ def _numeric_payload(
         msg = "Numeric cache offset is missing."
         raise CapFileError(msg)
     payload = b""
-    if count:
+    if count and (page is None or page[1]):
         name = _normalize_member_name(element.get("FileName", ""))
         if name not in members:
             msg = f"Dataset payload is missing: {name!r}."
             raise CapFileError(msg)
         payload = _read_member(archive, members[name], maximum_size=MAX_PAYLOAD_BYTES)
 
-    decoded = decode_numeric_payload(payload, count, offset)
+    if page is not None and page[1] == 0:
+        return [], [], []
+    start_index, limit = page if page is not None else (0, None)
+    decoded = decode_numeric_payload(
+        payload,
+        count,
+        offset,
+        start_index=start_index,
+        limit=limit,
+    )
     return decoded.text, decoded.values, decoded.attributes
 
 
-def _independent_coordinates(
+def _independent_coordinates(  # noqa: PLR0913, PLR0917
     element: Element,
     count: int,
     storage_type: int,
     archive: ZipFile,
     members: dict[str, ZipInfo],
+    page: tuple[int, int] | None = None,
 ) -> tuple[list[Decimal | None], Literal["index", "interval", "stored"]]:
     if storage_type == NUMERIC_STORAGE_TYPE:
-        _, values, _ = _numeric_payload(element, count, archive, members)
+        _, values, _ = _numeric_payload(element, count, archive, members, page)
         return values, "stored"
     if storage_type == INTERVAL_STORAGE_TYPE:
         exceptions = element.find("AttributeExceptionList")
@@ -504,11 +517,19 @@ def _independent_coordinates(
         if start is None or interval is None:
             msg = "Interval cache requires explicit start and interval."
             raise CapFileError(msg)
+        start_index, limit = page if page is not None else (0, None)
         coordinates: list[Decimal | None] = list(
-            decode_interval_coordinates(start, interval, count),
+            decode_interval_coordinates(
+                start,
+                interval,
+                count,
+                start_index=start_index,
+                limit=limit,
+            ),
         )
         return coordinates, "interval"
-    return [Decimal(index) for index in range(count)], "index"
+    begin, size = page if page is not None else (0, count)
+    return [Decimal(index) for index in range(begin, min(count, begin + size))], "index"
 
 
 def _run_labels(root: Element) -> dict[str, tuple[str | None, int | None]]:
@@ -525,19 +546,21 @@ def _run_labels(root: Element) -> dict[str, tuple[str | None, int | None]]:
                 name = value.attrib["RunName"]
             if "RunNumber" in value.attrib:
                 number = _integer(
-                    value.attrib["RunNumber"], context="RunNumber",
+                    value.attrib["RunNumber"],
+                    context="RunNumber",
                 )
         labels[identifier] = (name, number)
     return labels
 
 
-def _dataset(
+def _dataset(  # noqa: PLR0913
     element: Element,
     *,
     source_element: Element,
     source: CapDataSource,
     archive: ZipFile,
     members: dict[str, ZipInfo],
+    page: tuple[int, int] | None = None,
 ) -> CapDataSet:
     dependent_type, independent_type, count, member_name = _dataset_storage(
         element,
@@ -551,10 +574,14 @@ def _dataset(
     value_kind = source.value_kind
     if dependent_type == NUMERIC_STORAGE_TYPE:
         values, numeric_values, scalar_attributes = _numeric_payload(
-            dependent, count, archive, members,
+            dependent,
+            count,
+            archive,
+            members,
+            page,
         )
         value_kind = CapValueKind.NUMERIC
-    elif count:
+    elif count and (page is None or page[1]):
         info = members.get(member_name)
         if info is None:
             msg = f"Dataset payload is missing: {member_name!r}."
@@ -563,6 +590,8 @@ def _dataset(
             _read_member(archive, info, maximum_size=MAX_PAYLOAD_BYTES),
             count,
             member_name=member_name,
+            start_index=page[0] if page is not None else 0,
+            limit=page[1] if page is not None else None,
         )
     text_values: list[str] | None = None
     if (
@@ -570,7 +599,7 @@ def _dataset(
         and source.value_kind is CapValueKind.NUMERIC
     ):
         numeric_values = [
-            _decimal(raw, context=f"{member_name} record {index}")
+            _numeric_text_value(raw, context=f"{member_name} record {index}")
             for index, raw in enumerate(values)
         ]
     elif (
@@ -579,8 +608,14 @@ def _dataset(
     ):
         text_values = list(values)
     independent_values, independent_kind = _independent_coordinates(
-        independent, count, independent_type, archive, members,
+        independent,
+        count,
+        independent_type,
+        archive,
+        members,
+        page,
     )
+    begin, size = page if page is not None else (0, count)
     return CapDataSet(
         data_set_id=element.attrib.get("DataSetID"),
         name=element.attrib.get("Name"),
@@ -591,7 +626,7 @@ def _dataset(
         raw_values=values,
         numeric_values=numeric_values,
         text_values=text_values,
-        sample_indices=list(range(count)),
+        sample_indices=list(range(begin, min(count, begin + size))),
         independent_values=independent_values,
         independent_kind=independent_kind,
         scalar_attributes=scalar_attributes,
@@ -600,6 +635,17 @@ def _dataset(
         attributes=dict(element.attrib),
         metadata=_xml_node(element),
     )
+
+
+def _numeric_text_value(raw: str, *, context: str) -> Decimal | None:
+    if not raw.strip():
+        return None
+    try:
+        number = Decimal(raw)
+    except InvalidOperation as exc:
+        msg = f"Invalid decimal in {context}: {raw!r}."
+        raise CapFileError(msg) from exc
+    return number if number.is_finite() else None
 
 
 def _validate_dataset_budget(
@@ -640,6 +686,8 @@ def _parse_archive(
     *,
     file_name: str,
     include_data: bool,
+    dataset_index: int | None = None,
+    page: tuple[int, int] | None = None,
 ) -> CapFile:
     members = _archive_members(archive)
     main_info = members.get("main.xml")
@@ -660,6 +708,11 @@ def _parse_archive(
         msg = f"main.xml contains more than {MAX_XML_NODES} elements."
         raise CapFileError(msg)
     dataset_elements = list(root.iter("DataSet")) if include_data else []
+    if dataset_index is not None:
+        if dataset_index < 0 or dataset_index >= len(dataset_elements):
+            msg = "Dataset index is outside this file's dataset list."
+            raise CapFileError(msg)
+        dataset_elements = [dataset_elements[dataset_index]]
     _validate_dataset_budget(dataset_elements, members)
     parent_by_child = {child: parent for parent in nodes for child in parent}
     header = _single_child(root, "Header")
@@ -677,7 +730,8 @@ def _parse_archive(
             msg = "DataSet is not linked to a DataSource."
             raise CapFileError(msg)
         run_name, run_number = runs.get(
-            element.attrib.get("DataSetID", ""), (None, None),
+            element.attrib.get("DataSetID", ""),
+            (None, None),
         )
         datasets.append(
             _dataset(
@@ -686,6 +740,7 @@ def _parse_archive(
                 source=source_by_element[source_element],
                 archive=archive,
                 members=members,
+                page=page,
             ).model_copy(update={"run_name": run_name, "run_number": run_number}),
         )
     return CapFile(
@@ -696,8 +751,7 @@ def _parse_archive(
         hardware_interfaces=_hardware_interfaces(hardware, parent_by_child),
         unconnected_sensors=_unconnected_sensors(hardware),
         experiment_settings=[
-            _experiment_setting(element)
-            for element in root.iter("ExperimentSettings")
+            _experiment_setting(element) for element in root.iter("ExperimentSettings")
         ],
         data_sources=source_models,
         workspace=None if workspace is None else _xml_node(workspace),
@@ -706,7 +760,13 @@ def _parse_archive(
     )
 
 
-def read_cap_file(path: str | Path, *, include_data: bool = True) -> CapFile:
+def _read_cap_file(
+    path: str | Path,
+    *,
+    include_data: bool = True,
+    dataset_index: int | None = None,
+    page: tuple[int, int] | None = None,
+) -> CapFile:
     """Read one bounded Capstone archive without extracting it to disk."""
     archive_path = Path(path)
     try:
@@ -720,13 +780,74 @@ def read_cap_file(path: str | Path, *, include_data: bool = True) -> CapFile:
     try:
         with ZipFile(archive_path, mode="r", allowZip64=False) as archive:
             return _parse_archive(
-                archive, file_name=archive_path.name, include_data=include_data,
+                archive,
+                file_name=archive_path.name,
+                include_data=include_data,
+                dataset_index=dataset_index,
+                page=page,
             )
     except CapFileError:
         raise
     except (BadZipFile, LargeZipFile, OSError) as exc:
         msg = f"Invalid Capstone archive: {archive_path}."
         raise CapFileError(msg) from exc
+
+
+def read_cap_file(path: str | Path, *, include_data: bool = True) -> CapFile:
+    """Read one bounded Capstone archive without extracting it to disk."""
+    return _read_cap_file(path, include_data=include_data)
+
+
+def _dataset_summary(dataset: CapDataSet, index: int) -> CapDatasetSummary:
+    segment = next(
+        child
+        for child in dataset.metadata.children
+        if child.tag == "DataSegmentElement"
+    )
+    dependent = next(
+        child for child in segment.children if child.tag == "DependentStorageElement"
+    )
+    return CapDatasetSummary(
+        index=index,
+        dataset_id=dataset.data_set_id,
+        source_euid=dataset.source_euid,
+        name=dataset.source_name,
+        run_name=dataset.run_name,
+        run_number=dataset.run_number,
+        unit_id=dataset.unit_id,
+        value_kind=dataset.value_kind,
+        count=int(dependent.attributes["DataCacheDataSize"]),
+    )
+
+
+def list_cap_datasets(path: str | Path) -> list[CapDatasetSummary]:
+    """List saved dataset metadata without decoding sample payloads."""
+    datasets = _read_cap_file(path, page=(0, 0)).datasets
+    return [_dataset_summary(dataset, index) for index, dataset in enumerate(datasets)]
+
+
+def read_cap_dataset_page(
+    path: str | Path,
+    dataset_index: int,
+    offset: int = 0,
+    limit: int = 1000,
+) -> CapDatasetPage:
+    """Decode only the requested dataset's bounded sample page."""
+    if offset < 0 or not 1 <= limit <= MAX_DATASET_PAGE_SIZE:
+        msg = "Dataset page requires offset >= 0 and 1 <= limit <= 10000."
+        raise CapFileError(msg)
+    dataset = _read_cap_file(
+        path, dataset_index=dataset_index, page=(offset, limit),
+    ).datasets[0]
+    return CapDatasetPage(
+        dataset=_dataset_summary(dataset, dataset_index),
+        offset=offset,
+        sample_indices=dataset.sample_indices,
+        raw_values=dataset.raw_values,
+        numeric_values=dataset.numeric_values,
+        independent_values=dataset.independent_values,
+        independent_kind=dataset.independent_kind,
+    )
 
 
 def extract_cap_datasets(path: str | Path) -> list[CapDataSet]:
@@ -767,13 +888,16 @@ def select_configuration(
         header=pick("header", configuration.header),
         hardware=pick("hardware", configuration.hardware),
         hardware_interfaces=pick(
-            "hardware_interfaces", configuration.hardware_interfaces,
+            "hardware_interfaces",
+            configuration.hardware_interfaces,
         ),
         unconnected_sensors=pick(
-            "unconnected_sensors", configuration.unconnected_sensors,
+            "unconnected_sensors",
+            configuration.unconnected_sensors,
         ),
         experiment_settings=pick(
-            "experiment_settings", configuration.experiment_settings,
+            "experiment_settings",
+            configuration.experiment_settings,
         ),
         data_sources=pick("data_sources", configuration.data_sources),
         workspace=pick("workspace", configuration.workspace),
