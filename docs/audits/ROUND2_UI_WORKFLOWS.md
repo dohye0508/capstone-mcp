@@ -24,7 +24,7 @@ clipboard regressions use a mock. The local CAP corpus remains read-only.
 | GR10 | Fixed: explicit enable compares observed Toggle state/visible readout, no-ops if already correct, rejects unknown state before clicking. |
 | GR11 | Mitigated: requested crosshair repositioning is rejected before input because two clicks do not establish requested coordinates. Read-only observed delta labels remain supported; drag placement requires live evidence. |
 | GR12 | Fixed: coordinate pairs may be on separate labels; exactly two pairs required, three cannot be arbitrarily paired. |
-| GR13 | Partial: removed cross-window global button fallback and unrelated graph fallback; ambiguous graphs/buttons fail. Toolbar geometry/ancestry at unusual layouts still needs live validation. |
+| GR13 | Fixed in follow-up: toolbar controls must have explicit selected-graph ancestry; overlapping/neighboring rectangles cannot assign ownership. Removed the top120px restriction. Unknown/cyclic ancestry fails. Six new regression cases pass; native UIA ancestry availability still requires live compatibility validation. |
 | GR14 | Requires native locale toolbar evidence. |
 
 ## File workflows and Windows/localization
