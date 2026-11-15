@@ -7,10 +7,14 @@
 <p align="center">
   <a href="#시작하기">시작하기</a> &nbsp;·&nbsp;
   <a href="#이렇게-요청하세요">사용 예시</a> &nbsp;·&nbsp;
-  <a href="docs/usage.md">상세 사용 가이드</a>
+  <a href="docs/usage.md">상세 사용 가이드</a> &nbsp;·&nbsp;
+  <a href="DEVELOPER_REMEDIATION_GUIDE.md"><strong>🛠️ 개발자 결함 수리 가이드</strong></a>
 </p>
 
 ---
+
+> [!NOTE]
+> **엔지니어링 공지**: 4단계 전수 코드베이스 실사를 통해 발굴된 426건의 결함을 해결하는 리팩토링 프로젝트가 진행 중입니다. 개발 참여자는 **[DEVELOPER_REMEDIATION_GUIDE.md](DEVELOPER_REMEDIATION_GUIDE.md)** 및 **[EXHAUSTIVE_REPOSITORY_AUDIT_REPORT.md](EXHAUSTIVE_REPOSITORY_AUDIT_REPORT.md)**를 참조하세요.
 
 PASCO Capstone MCP는 AI 클라이언트에서 **PASCO Capstone의 화면 조작, 실험 파일 추출, 수치 분석**을 사용할 수 있게 해 주는 비공식 MCP 서버입니다. MCP(Model Context Protocol)를 통해 AI가 로컬 PC의 Capstone 도구를 호출합니다.
 
