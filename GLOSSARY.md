@@ -62,4 +62,19 @@ The decomposed STA automation core in `capstone_mcp.native.runtime`, separating 
 ### Tool Annotations (4-Hint Conformance)
 Explicit boolean declarations across all four MCP hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) on every FastMCP tool, strictly conforming to m8ven and OpenAI registry standards.
 
+### Live Runtime Blind Spot
+The deceptive discrepancy where automated test suites pass completely (e.g. 570 green unit tests) against mock backends (`InMemoryFakeBackend`, `MagicMock`), while masking real runtime failure modes on live Windows OS environments (clipboard hijacking, UI race conditions, locale mismatch, and dropped keystrokes).
+
+### Zero OS Pollution
+The architectural principle strictly prohibiting MCP servers from modifying, capturing, or corrupting external operating system global states (such as Windows clipboard, system mouse focus, or unmanaged temp files) during tool execution.
+
+### Bi-furcated Exception Contract
+The error handling rule strictly distinguishing safe inspection probing (`contextlib.suppress` allowed only for checking optional interfaces/attributes) from state-mutating actions (clicks, drags, keystrokes, deletes), requiring all mutating action failures to fail fast with explicit domain errors (`AutomationError`).
+
+### Locale Decoupling
+Elimination of UI text-based control queries (e.g. `"File"`, `"Select All"`, `"Export"`) in favor of language-neutral UIA `AutomationId` selectors backed by centralized multi-language resource dictionaries (`LocaleTable`).
+
+### Direct Synthesis Path
+Bypassing brittle UI automation macros by programmatically generating or patching `.cap` compound archives (ZIP + XML) and directly invoking QWebChannel C++ RPC slots over CDP WebSockets.
+
 
