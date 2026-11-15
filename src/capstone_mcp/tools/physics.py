@@ -73,6 +73,12 @@ def _write_report_file(
 def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
     """Register all math analysis, plotting, and recipe macro tools."""
 
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            title="Read Capstone workflow guidance", readOnlyHint=True,
+            destructiveHint=False, idempotentHint=True, openWorldHint=False,
+        ),
+    )
     def capstone_guide(topic: GuideTopic | None = None) -> str:
         """Return targeted instructions for common Capstone workflow scenarios.
 
@@ -91,13 +97,13 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             openWorldHint=False,
         ),
     )
-    def capstone_plot(samples: PlotInput) -> Image:
+    async def capstone_plot(samples: PlotInput) -> Image:
         """Render a scatter/line plot of labeled numerical samples as a PNG image.
 
         Generates an inline plot directly from numeric data points, without
         modifying the Capstone document workspace.
         """
-        return Image(data=render_plot(samples), format="png")
+        return Image(data=await anyio.to_thread.run_sync(render_plot, samples), format="png")
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -108,9 +114,9 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             openWorldHint=False,
         ),
     )
-    def capstone_linear_fit(samples: FitInput) -> LinearFit:
+    async def capstone_linear_fit(samples: FitInput) -> LinearFit:
         """Run standard OLS linear regression (y = slope*x + intercept) on points."""
-        return linear_fit(samples)
+        return await anyio.to_thread.run_sync(linear_fit, samples)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -121,11 +127,11 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             openWorldHint=False,
         ),
     )
-    def capstone_compare_runs(
+    async def capstone_compare_runs(
         runs: list[RunSamples],
     ) -> list[RunComparison]:
         """Group and compare sample metrics across multiple named experimental runs."""
-        return compare_runs(runs)
+        return await anyio.to_thread.run_sync(compare_runs, runs)
 
     @mcp.tool(
         annotations=ToolAnnotations(
@@ -188,14 +194,14 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
     ) -> GenerateLabReportResult:
         """Generate a formal physics laboratory report from experiment data.
 
-        Ingests data from a .cap archive, CSV file, JSON payload, or active run,
+        Ingests data from a .cap archive, CSV file, or JSON payload,
         computes summary statistics, regression parameters (slope, intercept, R^2),
         performs error analysis against accepted theoretical physical constants
         (e.g. Planck's constant h, resonant frequency f_0, adiabatic index gamma),
         generates ASCII plots, and renders publication-ready Markdown and HTML.
 
         Args:
-            file_path_or_run: Path to a .cap archive, CSV/JSON file, or active run name.
+            file_path_or_run: Path to a .cap archive, CSV/JSON file, or JSON object.
             experiment_id: Canonical experiment identifier ('photoelectric_effect',
                 'rlc_resonance', 'forced_harmonic_oscillation', 'adiabatic_gas',
                 'slit_diffraction', or 'generic').
