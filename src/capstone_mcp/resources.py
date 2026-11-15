@@ -8,6 +8,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final
 
+import anyio
 import httpx2
 from pydantic import JsonValue, TypeAdapter
 
@@ -273,7 +274,7 @@ def register_resources(
     @mcp.resource("capstone://measurements/live")
     async def capstone_live_measurements_resource() -> str:
         """Return real-time live sensor measurements via CDP WebSocket fast-path."""
-        return _read_live_measurements_doc(worker)
+        return await anyio.to_thread.run_sync(_read_live_measurements_doc, worker)
 
     @mcp.resource("capstone://displays/active")
     async def capstone_active_displays_resource() -> str:

@@ -3,12 +3,14 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from capstone_mcp import resources as resource_module
 from capstone_mcp import server
 from capstone_mcp.acquisition import RecordingStatus
+from capstone_mcp.bridge import NativeInventory
 from capstone_mcp.models import Action, Button, Point
 from capstone_mcp.repetition import (
     AcquisitionJob,
@@ -170,8 +172,14 @@ def test_license_file_and_metadata_present() -> None:
 
 
 @pytest.mark.anyio
-async def test_dynamic_resources_contract() -> None:
+async def test_dynamic_resources_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify capstone://status, capstone://runs/active, and capstone://hardware/inventory."""
+    session = Mock(debug_port=9222)
+    session.read_live_inventory.return_value = NativeInventory(
+        sensors=[], measurements=[],
+    )
+    monkeypatch.setattr(resource_module, "UnifiedSessionManager", Mock(return_value=session))
+    monkeypatch.setattr(server, "_native", AsyncMock(return_value=[]))
     resources = {str(r.uri): r for r in server.MCP._resource_manager.list_resources()}
     assert "capstone://status" in resources
     assert "capstone://runs/active" in resources

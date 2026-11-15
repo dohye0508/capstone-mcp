@@ -3,18 +3,19 @@
 
 from __future__ import annotations
 
+import re
 from typing import Final
 
 from capstone_mcp.graphs import GraphOperationError
 
 _ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
     (
-        ("recording",),
+        ("recording session has not been initialized", "recording not initialized"),
         "RECORDING_NOT_INITIALIZED",
         "Initialize recording session before invoking recording operations.",
     ),
     (
-        ("attach", "session", "not attached", "no running capstone"),
+        ("attach to capstone", "not attached", "no running capstone"),
         "SESSION_NOT_ATTACHED",
         "Call capstone_attach(launch=True) to attach to or launch PASCO Capstone.",
     ),
@@ -54,7 +55,7 @@ _ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
         "Check tool argument types, values, and schema constraints before retrying.",
     ),
     (
-        ("time",),
+        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
         "TIMEOUT_ERROR",
         (
             "Operation timed out; inspect Capstone responsiveness and reattach "
@@ -80,6 +81,15 @@ def classify_native_error(error: Exception) -> tuple[str, str]:
             ),
         )
 
+    if isinstance(error, TimeoutError):
+        return (
+            "TIMEOUT_ERROR",
+            (
+                "Operation timed out; inspect Capstone responsiveness and reattach "
+                "if needed."
+            ),
+        )
+
     lower = str(error).lower()
     if "control" in lower and ("not found" in lower or "missing" in lower):
         return (
@@ -91,7 +101,7 @@ def classify_native_error(error: Exception) -> tuple[str, str]:
         )
 
     for keywords, code, remediation in _ERROR_RULES:
-        if any(kw in lower for kw in keywords):
+        if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in keywords):
             return code, remediation
 
     return (

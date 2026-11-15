@@ -152,28 +152,33 @@ class WindowEvents:
             self.error = str(ctypes.WinError(ctypes.get_last_error()))
             self.ready.set()
             return
-        if self.clipboard:
-            user32.AddClipboardFormatListener.argtypes = (wintypes.HWND,)
-            user32.AddClipboardFormatListener.restype = wintypes.BOOL
-            user32.RemoveClipboardFormatListener.argtypes = (wintypes.HWND,)
-            user32.RemoveClipboardFormatListener.restype = wintypes.BOOL
-            self.clipboard_handle = win32gui.CreateWindowEx(
-                0, "STATIC", "Capstone clipboard observer", 0,
-                0, 0, 0, 0, -3, 0, 0, None,
-            )
-            if not user32.AddClipboardFormatListener(self.clipboard_handle):
-                self.error = str(ctypes.WinError(ctypes.get_last_error()))
-                win32gui.DestroyWindow(self.clipboard_handle)
-                user32.UnhookWinEvent(hook)
-                self.ready.set()
-                return
-        self.ready.set()
         try:
+            if self.clipboard:
+                user32.AddClipboardFormatListener.argtypes = (wintypes.HWND,)
+                user32.AddClipboardFormatListener.restype = wintypes.BOOL
+                user32.RemoveClipboardFormatListener.argtypes = (wintypes.HWND,)
+                user32.RemoveClipboardFormatListener.restype = wintypes.BOOL
+                self.clipboard_handle = win32gui.CreateWindowEx(
+                    0, "STATIC", "Capstone clipboard observer", 0,
+                    0, 0, 0, 0, -3, 0, 0, None,
+                )
+                if not user32.AddClipboardFormatListener(self.clipboard_handle):
+                    self.error = str(ctypes.WinError(ctypes.get_last_error()))
+                    return
+            self.ready.set()
             while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
                 if message.message == WM_CLIPBOARDUPDATE:
                     self.changes.notify()
+        except Exception as error:  # noqa: BLE001
+            self.error = str(error)
         finally:
-            if self.clipboard_handle:
-                user32.RemoveClipboardFormatListener(self.clipboard_handle)
-                win32gui.DestroyWindow(self.clipboard_handle)
-            user32.UnhookWinEvent(hook)
+            try:
+                if self.clipboard_handle:
+                    try:
+                        user32.RemoveClipboardFormatListener(self.clipboard_handle)
+                    finally:
+                        win32gui.DestroyWindow(self.clipboard_handle)
+                        self.clipboard_handle = 0
+            finally:
+                user32.UnhookWinEvent(hook)
+                self.ready.set()

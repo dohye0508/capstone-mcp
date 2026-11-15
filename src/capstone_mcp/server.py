@@ -72,23 +72,13 @@ async def _native(
     mutates: bool = False,
 ) -> JsonValue:
     with JOBS.interaction() if mutates else nullcontext():
-        if request.operation == "attach" and WORKER.retired:
-            await anyio.to_thread.run_sync(WORKER.reset)
         try:
+            if request.operation == "attach" and WORKER.retired:
+                await anyio.to_thread.run_sync(WORKER.reset)
             return await anyio.to_thread.run_sync(WORKER.call, request)
         except NativeSessionError as exc:
-            if exc.error_code:
-                payload = ToolErrorPayload(
-                    error_code=exc.error_code,
-                    message=exc.message,
-                    remediation=(
-                        exc.remediation
-                        or "Check Capstone application state using "
-                        "capstone_windows and retry."
-                    ),
-                )
-                raise ToolError(payload.model_dump_json(indent=2)) from exc
-            raise
+            payload = format_tool_error(exc)
+            raise ToolError(payload.model_dump_json(indent=2)) from exc
 
 
 MCP: Final = FastMCP(
@@ -166,7 +156,10 @@ capstone_manage_run = _run_tools["capstone_manage_run"]
 
 _FALLBACK_ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
     (
-        ("attach", "session"),
+        (
+            "capstone_attach", "attach to capstone", "not attached",
+            "no running capstone",
+        ),
         "SESSION_NOT_ATTACHED",
         "Call capstone_attach(launch=True) to attach to or launch PASCO Capstone.",
     ),
@@ -217,7 +210,7 @@ _FALLBACK_ERROR_RULES: Final[tuple[tuple[tuple[str, ...], str, str], ...]] = (
         ),
     ),
     (
-        ("time",),
+        ("timed out", "timeout", "deadline exceeded", "time exceeded"),
         "TIMEOUT_ERROR",
         (
             "Operation timed out; inspect Capstone responsiveness and reattach "
@@ -239,7 +232,7 @@ def _classify_error_text(cleaned: str) -> tuple[str, str]:
         )
 
     for keywords, code, remediation in _FALLBACK_ERROR_RULES:
-        if any(kw in lower for kw in keywords):
+        if any(re.search(r"\b" + re.escape(kw) + r"\b", lower) for kw in keywords):
             return code, remediation
     return (
         "AUTOMATION_ERROR",
@@ -249,12 +242,12 @@ def _classify_error_text(cleaned: str) -> tuple[str, str]:
 
 def format_tool_error(error_message: Exception | str) -> ToolErrorPayload:
     """Classify and format an error string into a structured ToolErrorPayload."""
-    if isinstance(error_message, NativeSessionError) and error_message.error_code:
+    if isinstance(error_message, NativeSessionError):
+        code, remediation = _classify_error_text(error_message.message)
         return ToolErrorPayload(
-            error_code=error_message.error_code,
+            error_code=error_message.error_code or code,
             message=error_message.message,
-            remediation=error_message.remediation
-            or "Check Capstone application state using capstone_windows and retry.",
+            remediation=error_message.remediation or remediation,
         )
     msg_str = str(error_message)
     cleaned = re.sub(r"^Error executing tool \w+:\s*", "", msg_str).strip()

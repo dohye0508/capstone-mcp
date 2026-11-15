@@ -2,6 +2,7 @@
 """Protocol maturity contract tests for structured errors and workflow prompts."""
 
 import json
+from unittest.mock import Mock
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -13,6 +14,7 @@ from mcp.types import (
 )
 
 from capstone_mcp import server
+from capstone_mcp.automation_worker import NativeSessionError
 from capstone_mcp.models import ToolErrorPayload
 from capstone_mcp.server import (
     data_analysis_workflow,
@@ -74,11 +76,20 @@ def test_format_tool_error_classification() -> None:
 
 
 @pytest.mark.anyio
-async def test_mcp_request_handler_returns_structured_error_envelope() -> None:
+async def test_mcp_request_handler_returns_structured_error_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify MCP protocol handler returns CallToolResult(isError=True) with JSON payload."""
     handler = server.MCP._mcp_server.request_handlers[CallToolRequest]
 
-    # Attempt calling capstone_snapshot without an attached Capstone process
+    monkeypatch.setattr(
+        server.WORKER, "call",
+        Mock(side_effect=NativeSessionError(
+            "Attach to Capstone before accessing controls.",
+            error_code="SESSION_NOT_ATTACHED",
+        )),
+    )
+    # Exercise the real MCP handler with a deterministic worker failure.
     req = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="capstone_snapshot", arguments={"handle": 12345}),
@@ -101,8 +112,17 @@ async def test_mcp_request_handler_returns_structured_error_envelope() -> None:
 
 
 @pytest.mark.anyio
-async def test_fastmcp_call_tool_raises_structured_tool_error() -> None:
+async def test_fastmcp_call_tool_raises_structured_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify direct MCP.call_tool raises ToolError with structured JSON."""
+    monkeypatch.setattr(
+        server.WORKER, "call",
+        Mock(side_effect=NativeSessionError(
+            "Attach to Capstone before accessing controls.",
+            error_code="SESSION_NOT_ATTACHED",
+        )),
+    )
     with pytest.raises(ToolError) as exc_info:
         await server.MCP.call_tool("capstone_snapshot", {"handle": 12345})
 
