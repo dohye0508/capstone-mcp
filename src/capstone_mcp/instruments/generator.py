@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 from typing import TYPE_CHECKING
 
 from capstone_mcp.desktop import AutomationError, Capstone
+from capstone_mcp.instruments._controls import select_observed_option, selected_text
 from capstone_mcp.instruments.models import (
     DEFAULT_GENERATOR_NAME,
     SIGNAL_GENERATOR_NAME,
@@ -63,70 +65,59 @@ def _is_drawer_open(app: Capstone, toggle_ctrl: Control) -> bool:
         if hasattr(node, "iface_toggle") and node.iface_toggle:
             toggle = node.iface_toggle
             v = getattr(toggle, "ToggleState", None)
-            if isinstance(v, int):
+            if isinstance(v, int) and v in (0, 1):
                 return bool(v == 1)
             v_curr = getattr(toggle, "CurrentToggleState", None)
-            if isinstance(v_curr, int):
+            if isinstance(v_curr, int) and v_curr in (0, 1):
                 return bool(v_curr == 1)
-    return False
+    msg = "Instrument drawer state is unobservable; no toggle was sent."
+    raise AutomationError(msg)
 
 
 def _is_power_button(ctrl: Control) -> bool:
     aid_lower = ctrl.automation_id.lower()
     name_lower = ctrl.name.lower()
-    return (
-        ctrl.control_type in ("Button", "CheckBox")
-        and (
-            "power" in aid_lower
-            or "onoff" in aid_lower
-            or "output_on" in aid_lower
-            or name_lower in ("on", "off", "power", "auto")
-            or ("output" in name_lower and "on" in name_lower)
-        )
+    return ctrl.control_type in ("Button", "CheckBox") and (
+        "power" in aid_lower
+        or "onoff" in aid_lower
+        or "output_on" in aid_lower
+        or name_lower in ("on", "off", "power", "auto")
+        or bool(re.search(r"\boutput\s+(?:on|off)\b", name_lower))
     )
 
 
 def _is_waveform_input(ctrl: Control) -> bool:
     aid_lower = ctrl.automation_id.lower()
     name_lower = ctrl.name.lower()
-    return (
-        ctrl.control_type in ("ComboBox", "Edit", "List")
-        and (
-            "waveform" in aid_lower
-            or "wave" in aid_lower
-            or "shape" in aid_lower
-            or "waveform" in name_lower
-        )
+    return ctrl.control_type in ("ComboBox", "Edit", "List") and (
+        "waveform" in aid_lower
+        or "wave" in aid_lower
+        or "shape" in aid_lower
+        or "waveform" in name_lower
     )
 
 
 def _is_frequency_input(ctrl: Control) -> bool:
     aid_lower = ctrl.automation_id.lower()
     name_lower = ctrl.name.lower()
-    return (
-        ctrl.control_type == "Edit"
-        and (
-            "frequency" in aid_lower
-            or "freq" in aid_lower
-            or "frequency" in name_lower
-            or "freq" in name_lower
-        )
+    return ctrl.control_type == "Edit" and (
+        "frequency" in aid_lower
+        or "freq" in aid_lower
+        or "frequency" in name_lower
+        or "freq" in name_lower
     )
 
 
 def _is_amplitude_input(ctrl: Control) -> bool:
     aid_lower = ctrl.automation_id.lower()
     name_lower = ctrl.name.lower()
-    return (
-        ctrl.control_type == "Edit"
-        and (
-            "amplitude" in aid_lower
-            or "voltage" in aid_lower
-            or "amp" in aid_lower
-            or "amplitude" in name_lower
-            or "voltage" in name_lower
-            or "amp" in name_lower
-        )
+    return ctrl.control_type == "Edit" and (
+        "amplitude" in aid_lower
+        or "voltage" in aid_lower
+        or "amp" in aid_lower
+        or "amplitude" in name_lower
+        or "voltage" in name_lower
+        or "amp" in name_lower
     )
 
 
@@ -134,35 +125,21 @@ def _find_generator_controls(
     controls: list[Control],
 ) -> tuple[Control | None, Control | None, Control | None, Control | None]:
     """Find power toggle, waveform selector, frequency edit, and amplitude edit."""
-    power_ctrl: Control | None = None
-    waveform_ctrl: Control | None = None
-    freq_ctrl: Control | None = None
-    amp_ctrl: Control | None = None
-
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        if _is_power_button(ctrl) and not power_ctrl:
-            power_ctrl = ctrl
-        elif _is_waveform_input(ctrl) and not waveform_ctrl:
-            waveform_ctrl = ctrl
-        elif _is_frequency_input(ctrl) and not freq_ctrl:
-            freq_ctrl = ctrl
-        elif _is_amplitude_input(ctrl) and not amp_ctrl:
-            amp_ctrl = ctrl
-
-    # Fallback to positional Edits if not specifically named
-    edits = [c for c in controls if c.visible and c.control_type == "Edit"]
-    if not freq_ctrl and edits:
-        freq_ctrl = edits[0]
-    if not amp_ctrl and len(edits) > 1:
-        amp_ctrl = edits[1]
-
-    return power_ctrl, waveform_ctrl, freq_ctrl, amp_ctrl
+    groups = [[c for c in controls if c.visible and predicate(c)]
+              for predicate in (_is_power_button, _is_waveform_input,
+                                _is_frequency_input, _is_amplitude_input)]
+    if any(len(group) > 1 for group in groups):
+        msg = "Signal generator controls are ambiguous; select one output manually."
+        raise AutomationError(msg)
+    found = [group[0] if group else None for group in groups]
+    return found[0], found[1], found[2], found[3]
 
 
 def _set_ctrl_value(app: Capstone, handle: int, ctrl: Control, text: str) -> None:
     """Set text or value in a target control with keyboard fallback."""
+    if ctrl.control_type == "ComboBox":
+        select_observed_option(app, ctrl, text)
+        return
     node = app.control(ctrl.ref)
     try:
         if hasattr(node, "iface_value") and node.iface_value:
@@ -181,34 +158,40 @@ def _read_ctrl_value(app: Capstone, ctrl: Control | None) -> str:
     """Read text or value string from a control."""
     if not ctrl:
         return ""
+    if ctrl.control_type == "ComboBox":
+        return selected_text(app, ctrl)
     node = app.control(ctrl.ref)
     with contextlib.suppress(Exception):
         if hasattr(node, "iface_value") and node.iface_value:
             val = node.iface_value.CurrentValue
             if val is not None:
                 return str(val).strip()
-    return ctrl.name.strip()
+    msg = "Control does not expose a readable value; accessible name is not its value."
+    raise AutomationError(msg)
 
 
 def _is_power_on(app: Capstone, power_ctrl: Control | None) -> bool:
     """Determine whether the signal generator output power is currently ON."""
     if not power_ctrl:
-        return False
+        msg = "Signal generator power control was not found."
+        raise AutomationError(msg)
     node = app.control(power_ctrl.ref)
     with contextlib.suppress(Exception):
         if hasattr(node, "iface_toggle") and node.iface_toggle:
             toggle = node.iface_toggle
             v = getattr(toggle, "ToggleState", None)
-            if isinstance(v, int):
+            if isinstance(v, int) and v in (0, 1):
                 return bool(v == 1)
             v_curr = getattr(toggle, "CurrentToggleState", None)
-            if isinstance(v_curr, int):
+            if isinstance(v_curr, int) and v_curr in (0, 1):
                 return bool(v_curr == 1)
     name_lower = power_ctrl.name.strip().lower()
-    return (
-        name_lower in ("on", "running", "active")
-        or "on" in power_ctrl.automation_id.lower()
-    )
+    if name_lower in ("on", "running", "active"):
+        return True
+    if name_lower in ("off", "stopped", "inactive"):
+        return False
+    msg = "Signal generator power state is unobservable; no toggle was sent."
+    raise AutomationError(msg)
 
 
 def _parse_numeric(text: str) -> float | None:
@@ -227,6 +210,35 @@ def _parse_numeric(text: str) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+def _configure_values(
+    app: Capstone, request: SetSignalGeneratorRequest, waveform: str,
+) -> None:
+    """Reacquire controls between mutations and require every requested input."""
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    power_ctrl, wave_ctrl, freq_ctrl, amp_ctrl = _find_generator_controls(
+        snapshot.controls,
+    )
+    if (
+        wave_ctrl is None
+        or power_ctrl is None
+        or (request.frequency is not None and freq_ctrl is None)
+        or (request.amplitude is not None and amp_ctrl is None)
+    ):
+        msg = "Required signal generator controls are unavailable."
+        raise AutomationError(msg)
+    _set_ctrl_value(app, request.handle, wave_ctrl, waveform)
+
+    for index, value in ((2, request.frequency), (3, request.amplitude)):
+        if value is None:
+            continue
+        fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+        ctrl = _find_generator_controls(fresh.controls)[index]
+        if ctrl is None:
+            msg = "Signal generator input disappeared after configuration."
+            raise AutomationError(msg)
+        _set_ctrl_value(app, request.handle, ctrl, str(value))
+
+
 def set_signal_generator(
     app: Capstone,
     request: SetSignalGeneratorRequest,
@@ -241,6 +253,12 @@ def set_signal_generator(
         msg = "Frequency must be non-negative."
         raise AutomationError(msg)
 
+    if any(
+        v is not None and not math.isfinite(v)
+        for v in (request.frequency, request.amplitude)
+    ):
+        msg = "Frequency and amplitude must be finite."
+        raise AutomationError(msg)
     generator_name = request.generator_name or DEFAULT_GENERATOR_NAME
 
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
@@ -258,22 +276,33 @@ def set_signal_generator(
             snapshot.controls,
         )
 
-        if wave_ctrl:
-            _set_ctrl_value(app, request.handle, wave_ctrl, waveform)
+        _configure_values(app, request, waveform)
 
-        if request.frequency is not None and freq_ctrl:
-            _set_ctrl_value(app, request.handle, freq_ctrl, f"{request.frequency} Hz")
-
-        if request.amplitude is not None and amp_ctrl:
-            _set_ctrl_value(app, request.handle, amp_ctrl, f"{request.amplitude} V")
-
+        fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+        power_ctrl = _find_generator_controls(fresh.controls)[0]
         if power_ctrl:
             current_on = _is_power_on(app, power_ctrl)
             if current_on != request.enabled:
                 app.click(request.handle, power_ctrl.ref, allow_foreground=True)
 
+        fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+        power_ctrl, wave_ctrl, freq_ctrl, amp_ctrl = _find_generator_controls(
+            fresh.controls,
+        )
+        verified = (
+            _is_power_on(app, power_ctrl) == request.enabled
+            and _read_ctrl_value(app, wave_ctrl).casefold() == waveform.casefold()
+            and (
+                request.frequency is None
+                or _parse_numeric(_read_ctrl_value(app, freq_ctrl)) == request.frequency
+            )
+            and (
+                request.amplitude is None
+                or _parse_numeric(_read_ctrl_value(app, amp_ctrl)) == request.amplitude
+            )
+        )
         detail = (
-            f"Signal Generator '{generator_name}' configured: "
+            f"Signal Generator '{generator_name}' input delivered: "
             f"Waveform={waveform}, Freq={request.frequency}Hz, "
             f"Amp={request.amplitude}V, Power={'On' if request.enabled else 'Off'}."
         )
@@ -284,13 +313,15 @@ def set_signal_generator(
             frequency=request.frequency,
             amplitude=request.amplitude,
             enabled=request.enabled,
-            verified=True,
+            verified=verified,
             detail=detail,
         )
 
     finally:
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle_ctrl.ref, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_signal_generator_toggle(fresh.controls)
+            app.click(request.handle, current_toggle.ref, allow_foreground=True)
 
 
 def read_signal_generator_status(
@@ -346,4 +377,6 @@ def read_signal_generator_status(
 
     finally:
         if opened_by_tool and not request.keep_open:
-            app.click(request.handle, toggle_ctrl.ref, allow_foreground=True)
+            fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+            current_toggle = _find_signal_generator_toggle(fresh.controls)
+            app.click(request.handle, current_toggle.ref, allow_foreground=True)

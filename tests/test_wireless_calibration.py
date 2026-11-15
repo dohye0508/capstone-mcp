@@ -43,12 +43,14 @@ def test_scan_wireless_sensors_requires_foreground() -> None:
 def test_scan_wireless_sensors_raises_when_toggle_missing() -> None:
     app = Capstone()
     mock_win = _create_mock_window()
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[],
-        truncated=False,
-    ))
-    req = ScanWirelessSensorsRequest()
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[],
+            truncated=False,
+        ),
+    )
+    req = ScanWirelessSensorsRequest(timeout_seconds=0.01)
     with pytest.raises(AutomationError, match="Hardware Setup palette toggle"):
         _ = manage_instrument(
             app,
@@ -61,38 +63,50 @@ def test_scan_wireless_sensors_success_discovers_sensors() -> None:
     mock_win = _create_mock_window()
 
     toggle_btn = Control(
-        ref="ref:hw_toggle", parent=None, name="Hardware Setup",
-        control_type="CheckBox", automation_id="Palette.ObjNameHardware",
-        enabled=True, visible=True,
+        ref="ref:hw_toggle",
+        parent=None,
+        name="Hardware Setup",
+        control_type="CheckBox",
+        automation_id="Palette.ObjNameHardware",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=10, top=50, right=50, bottom=90),
     )
     sensor1 = Control(
-        ref="ref:s1", parent=None,
+        ref="ref:s1",
+        parent=None,
         name="Wireless Force Acceleration Sensor 642-108 (85%)",
-        control_type="ListItem", automation_id="Device.642-108",
-        enabled=True, visible=True,
+        control_type="ListItem",
+        automation_id="Device.642-108",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=100, right=300, bottom=130),
     )
     sensor2 = Control(
-        ref="ref:s2", parent=None,
+        ref="ref:s2",
+        parent=None,
         name="Smart Cart Red 024-511 Connected",
-        control_type="ListItem", automation_id="Device.024-511",
-        enabled=True, visible=True,
+        control_type="ListItem",
+        automation_id="Device.024-511",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=140, right=300, bottom=170),
     )
 
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[toggle_btn, sensor1, sensor2],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[toggle_btn, sensor1, sensor2],
+            truncated=False,
+        ),
+    )
     app.click = MagicMock()
 
     toggle_node = MagicMock()
     toggle_node.iface_toggle.ToggleState = 1  # already open
     app.control = MagicMock(return_value=toggle_node)
 
-    req = ScanWirelessSensorsRequest()
+    req = ScanWirelessSensorsRequest(timeout_seconds=0.01)
     inst_res = manage_instrument(
         app,
         InstrumentRequest(action=InstrumentAction.SCAN_WIRELESS, scan_wireless=req),
@@ -116,7 +130,9 @@ def test_connect_wireless_sensor_requires_foreground() -> None:
     with pytest.raises(AutomationError, match="allow_foreground=true"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req),
+            InstrumentRequest(
+                action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req,
+            ),
         )
 
 
@@ -126,7 +142,9 @@ def test_connect_wireless_sensor_rejects_empty_id() -> None:
     with pytest.raises(AutomationError, match="sensor_id must not be empty"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req),
+            InstrumentRequest(
+                action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req,
+            ),
         )
 
 
@@ -135,16 +153,22 @@ def test_connect_wireless_sensor_raises_when_not_found() -> None:
     mock_win = _create_mock_window()
 
     toggle_btn = Control(
-        ref="ref:hw_toggle", parent=None, name="Hardware Setup",
-        control_type="CheckBox", automation_id="Palette.ObjNameHardware",
-        enabled=True, visible=True,
+        ref="ref:hw_toggle",
+        parent=None,
+        name="Hardware Setup",
+        control_type="CheckBox",
+        automation_id="Palette.ObjNameHardware",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=10, top=50, right=50, bottom=90),
     )
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[toggle_btn],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[toggle_btn],
+            truncated=False,
+        ),
+    )
     toggle_node = MagicMock()
     toggle_node.iface_toggle.ToggleState = 1
     app.control = MagicMock(return_value=toggle_node)
@@ -153,7 +177,9 @@ def test_connect_wireless_sensor_raises_when_not_found() -> None:
     with pytest.raises(AutomationError, match="not found in Hardware Setup"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req),
+            InstrumentRequest(
+                action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req,
+            ),
         )
 
 
@@ -162,41 +188,68 @@ def test_connect_wireless_sensor_success() -> None:
     mock_win = _create_mock_window()
 
     toggle_btn = Control(
-        ref="ref:hw_toggle", parent=None, name="Hardware Setup",
-        control_type="CheckBox", automation_id="Palette.ObjNameHardware",
-        enabled=True, visible=True,
+        ref="ref:hw_toggle",
+        parent=None,
+        name="Hardware Setup",
+        control_type="CheckBox",
+        automation_id="Palette.ObjNameHardware",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=10, top=50, right=50, bottom=90),
     )
     sensor_item = Control(
-        ref="ref:s1", parent=None,
+        ref="ref:s1",
+        parent=None,
         name="Wireless Force Sensor 642-108",
-        control_type="ListItem", automation_id="Device.642-108",
-        enabled=True, visible=True,
+        control_type="ListItem",
+        automation_id="Device.642-108",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=100, right=300, bottom=130),
     )
     connect_btn = Control(
-        ref="ref:conn_btn", parent=None,
+        ref="ref:conn_btn",
+        parent=None,
         name="Connect",
-        control_type="Button", automation_id="Device.642-108.Connect",
-        enabled=True, visible=True,
+        control_type="Button",
+        automation_id="Device.642-108.Connect",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=310, top=100, right=380, bottom=130),
     )
 
-    app.snapshot = MagicMock(return_value=Snapshot(
-        window=mock_win,
-        controls=[toggle_btn, sensor_item, connect_btn],
-        truncated=False,
-    ))
+    app.snapshot = MagicMock(
+        return_value=Snapshot(
+            window=mock_win,
+            controls=[toggle_btn, sensor_item, connect_btn],
+            truncated=False,
+        ),
+    )
     app.click = MagicMock()
 
     toggle_node = MagicMock()
     toggle_node.iface_toggle.ToggleState = 1
     app.control = MagicMock(return_value=toggle_node)
 
+    connected_item = sensor_item.model_copy(
+        update={"name": sensor_item.name + " Connected"},
+    )
+    app.snapshot.side_effect = [
+        Snapshot(
+            window=mock_win,
+            controls=[toggle_btn, sensor_item, connect_btn],
+            truncated=False,
+        ),
+        Snapshot(
+            window=mock_win, controls=[toggle_btn, connected_item], truncated=False,
+        ),
+    ]
     req = ConnectWirelessSensorRequest(sensor_id="642-108", handle=100)
     inst_res = manage_instrument(
         app,
-        InstrumentRequest(action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req),
+        InstrumentRequest(
+            action=InstrumentAction.CONNECT_WIRELESS, connect_wireless=req,
+        ),
     )
     assert isinstance(inst_res, InstrumentResult)
     assert isinstance(inst_res.connect_wireless, ConnectWirelessSensorResult)
@@ -214,7 +267,9 @@ def test_calibrate_sensor_requires_foreground() -> None:
     with pytest.raises(AutomationError, match="allow_foreground=true"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req),
+            InstrumentRequest(
+                action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req,
+            ),
         )
 
 
@@ -224,7 +279,9 @@ def test_calibrate_sensor_rejects_invalid_type() -> None:
     with pytest.raises(AutomationError, match="Unsupported calibration type"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req),
+            InstrumentRequest(
+                action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req,
+            ),
         )
 
 
@@ -239,7 +296,9 @@ def test_calibrate_sensor_requires_standard_2_for_two_point() -> None:
     with pytest.raises(AutomationError, match="standard_2 is required"):
         _ = manage_instrument(
             app,
-            InstrumentRequest(action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req),
+            InstrumentRequest(
+                action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req,
+            ),
         )
 
 
@@ -248,58 +307,86 @@ def test_calibrate_sensor_two_point_success() -> None:
     mock_win = _create_mock_window()
 
     toggle_btn = Control(
-        ref="ref:cal_toggle", parent=None, name="Calibration",
-        control_type="CheckBox", automation_id="Palette.ObjNameCalibration",
-        enabled=True, visible=True,
+        ref="ref:cal_toggle",
+        parent=None,
+        name="Calibration",
+        control_type="CheckBox",
+        automation_id="Palette.ObjNameCalibration",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=10, top=50, right=50, bottom=90),
     )
     meas_item = Control(
-        ref="ref:meas", parent=None, name="Force Sensor",
-        control_type="RadioButton", automation_id="Cal.MeasSelector",
-        enabled=True, visible=True,
+        ref="ref:meas",
+        parent=None,
+        name="Force Sensor",
+        control_type="RadioButton",
+        automation_id="Cal.MeasSelector",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=100, right=200, bottom=130),
     )
     next_btn = Control(
-        ref="ref:next", parent=None, name="Next",
-        control_type="Button", automation_id="Cal.Next",
-        enabled=True, visible=True,
+        ref="ref:next",
+        parent=None,
+        name="Next",
+        control_type="Button",
+        automation_id="Cal.Next",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=300, top=400, right=360, bottom=430),
     )
     std_edit = Control(
-        ref="ref:std_edit", parent=None, name="Standard Value",
-        control_type="Edit", automation_id="Cal.StdValue",
-        enabled=True, visible=True,
+        ref="ref:std_edit",
+        parent=None,
+        name="Standard Value",
+        control_type="Edit",
+        automation_id="Cal.StdValue",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=100, top=150, right=200, bottom=180),
     )
     set_btn = Control(
-        ref="ref:set_btn", parent=None, name="Set",
-        control_type="Button", automation_id="Cal.Set",
-        enabled=True, visible=True,
+        ref="ref:set_btn",
+        parent=None,
+        name="Set",
+        control_type="Button",
+        automation_id="Cal.Set",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=210, top=150, right=260, bottom=180),
     )
     finish_btn = Control(
-        ref="ref:finish", parent=None, name="Finish",
-        control_type="Button", automation_id="Cal.Finish",
-        enabled=True, visible=True,
+        ref="ref:finish",
+        parent=None,
+        name="Finish",
+        control_type="Button",
+        automation_id="Cal.Finish",
+        enabled=True,
+        visible=True,
         bounds=Bounds(left=300, top=400, right=360, bottom=430),
     )
 
     step = 0
 
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
-        nonlocal step
-        step += 1
         controls = [toggle_btn]
-        if step == 1:
+        if step == 0:
             controls.extend([meas_item, next_btn])
-        elif step in (2, 3):
+        elif step in (1, 2):
             controls.extend([std_edit, set_btn, next_btn])
         else:
             controls.extend([finish_btn])
         return Snapshot(window=mock_win, controls=controls, truncated=False)
 
     app.snapshot = mock_snapshot
-    app.click = MagicMock()
+    def click(_handle: int, ref: str, *, allow_foreground: bool) -> None:
+        nonlocal step
+        del allow_foreground
+        if ref == "ref:next":
+            step += 1
+
+    app.click = MagicMock(side_effect=click)
     app.keys = MagicMock()
     app.type_text = MagicMock()
 
@@ -327,7 +414,9 @@ def test_calibrate_sensor_two_point_success() -> None:
     )
     inst_res = manage_instrument(
         app,
-        InstrumentRequest(action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req),
+        InstrumentRequest(
+            action=InstrumentAction.CALIBRATE_SENSOR, calibrate_sensor=req,
+        ),
     )
     assert isinstance(inst_res, InstrumentResult)
     assert isinstance(inst_res.calibrate_sensor, CalibrateSensorResult)
@@ -337,5 +426,5 @@ def test_calibrate_sensor_two_point_success() -> None:
     assert res.calibration_type == "two_point"
     assert res.standard_1 == 0.0
     assert res.standard_2 == 9.8
-    assert res.verified is True
+    assert res.verified is False
     assert std_node.iface_value.SetValue.call_count == 2

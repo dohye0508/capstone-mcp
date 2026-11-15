@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Literal
 
@@ -30,7 +31,8 @@ if TYPE_CHECKING:
 
 def _unique_suffix(snapshot: Snapshot, suffix: str) -> Control:
     controls = [
-        control for control in snapshot.controls
+        control
+        for control in snapshot.controls
         if control.visible and control.automation_id.endswith(suffix)
     ]
     if len(controls) != 1:
@@ -56,7 +58,9 @@ def _settings(app: Capstone, handle: int) -> _Settings:
 
 
 def _rate_controls(
-    app: Capstone, handle: int, expected_sensor: str,
+    app: Capstone,
+    handle: int,
+    expected_sensor: str,
 ) -> _RateControls:
     recording, _ = observe_recording(app, handle)
     if recording.recording:
@@ -80,7 +84,10 @@ def _rate_controls(
 
 
 def _close_menu(
-    app: Capstone, handle: int, popup_handles: set[int], *,
+    app: Capstone,
+    handle: int,
+    popup_handles: set[int],
+    *,
     allow_foreground: bool,
 ) -> None:
     _ = app.keys(handle, "{ESC}", allow_foreground=allow_foreground)
@@ -91,11 +98,15 @@ def _close_menu(
 
 
 def _sensor_result(
-    requested: str, before: _Settings, after: _Settings,
+    requested: str,
+    before: _Settings,
+    after: _Settings,
 ) -> SensorSelection:
     return SensorSelection(
-        requested_sensor=requested, before_sensor=before.sensor,
-        after_sensor=after.sensor, before_sampling_rate=before.sampling_rate,
+        requested_sensor=requested,
+        before_sensor=before.sensor,
+        after_sensor=after.sensor,
+        before_sampling_rate=before.sampling_rate,
         after_sampling_rate=after.sampling_rate,
         changed=before.sensor != after.sensor,
     )
@@ -107,7 +118,9 @@ def _sensor_result(
 
 
 def select_sensor(
-    app: Capstone, handle: int, request: SensorSelectionRequest,
+    app: Capstone,
+    handle: int,
+    request: SensorSelectionRequest,
 ) -> SensorSelection:
     """Select one unique menu item by exact observed name and verify the result."""
     before = _settings(app, handle)
@@ -121,13 +134,13 @@ def select_sensor(
         msg = "The sampling sensor selector is unavailable."
         raise AutomationError(msg)
     _ = app.act(
-        selector.ref, Action.INVOKE,
+        selector.ref,
+        Action.INVOKE,
         allow_foreground=request.allow_foreground,
     )
 
     popup_handles = {
-        window.handle for window in app.windows()
-        if window.handle not in before_handles
+        window.handle for window in app.windows() if window.handle not in before_handles
     }
     menu_handles: list[int] = []
     for popup_handle in popup_handles:
@@ -139,7 +152,9 @@ def select_sensor(
             menu_handles.append(popup_handle)
     if len(menu_handles) != 1:
         _close_menu(
-            app, handle, popup_handles,
+            app,
+            handle,
+            popup_handles,
             allow_foreground=request.allow_foreground,
         )
         msg = "No unique Capstone sensor menu appeared."
@@ -147,20 +162,24 @@ def select_sensor(
 
     menu = app.snapshot(menu_handles[0], 4, 256)
     matches = [
-        control for control in menu.controls
+        control
+        for control in menu.controls
         if control.visible
         and control.control_type == "MenuItem"
         and control.name == request.sensor
     ]
     if len(matches) != 1 or not matches[0].enabled:
         _close_menu(
-            app, handle, popup_handles,
+            app,
+            handle,
+            popup_handles,
             allow_foreground=request.allow_foreground,
         )
         msg = "Requested sensor name is unavailable or not unique."
         raise AutomationError(msg)
     _ = app.act(
-        matches[0].ref, Action.INVOKE,
+        matches[0].ref,
+        Action.INVOKE,
         allow_foreground=request.allow_foreground,
     )
     after = _settings(app, handle)
@@ -171,8 +190,11 @@ def select_sensor(
 
 
 def _step_rate(
-    app: Capstone, handle: int, request: SamplingRateRequest,
-    direction: Literal["increase", "decrease"], before: _RateControls,
+    app: Capstone,
+    handle: int,
+    request: SamplingRateRequest,
+    direction: Literal["increase", "decrease"],
+    before: _RateControls,
 ) -> _RateControls:
     """Click one step from the controls just observed and return the new ones."""
     match direction:
@@ -184,15 +206,21 @@ def _step_rate(
         msg = f"The {direction} sampling-rate step is unavailable."
         raise AutomationError(msg)
     _ = app.act(ref, Action.INVOKE, allow_foreground=request.allow_foreground)
-    after = _rate_controls(app, handle, request.sensor)
-    if after.display == before.display:
-        msg = "Sampling-rate input was delivered but the display did not change."
-        raise AutomationError(msg)
-    return after
+    deadline = time.monotonic() + 2.0
+    while True:
+        after = _rate_controls(app, handle, request.sensor)
+        if after.display != before.display:
+            return after
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            msg = "Sampling-rate input was delivered but the display did not change."
+            raise AutomationError(msg)
+        time.sleep(min(0.05, remaining))
 
 
 def _restore_rate(
-    step: Callable[[_RateControls], _RateControls], expected: list[str],
+    step: Callable[[_RateControls], _RateControls],
+    expected: list[str],
     controls: _RateControls,
 ) -> None:
     for display in reversed(expected):
@@ -212,21 +240,42 @@ def _rate_parts(display: str) -> tuple[Decimal, str]:
     if not value.is_finite() or value <= 0:
         msg = "Sampling rate must be finite and positive."
         raise AutomationError(msg)
+    frequency_units = {"Hz": Decimal(1), "kHz": Decimal(1000), "MHz": Decimal(1000000)}
+    period_units = {
+        "s": Decimal(1),
+        "ms": Decimal("0.001"),
+        "us": Decimal("0.000001"),
+        "µs": Decimal("0.000001"),
+        "μs": Decimal("0.000001"),
+    }
+    if unit in frequency_units:
+        return value * frequency_units[unit], "Hz"
+    if unit in period_units:
+        return Decimal(1) / (value * period_units[unit]), "Hz"
+    # Unknown native units may be compared only to the same observed unit.
     return value, unit
 
 
 def _rate_result(
-    request: SamplingRateRequest, before: str, after: str, inputs: int,
+    request: SamplingRateRequest,
+    before: str,
+    after: str,
+    inputs: int,
 ) -> SamplingRateSelection:
     return SamplingRateSelection(
-        sensor=request.sensor, requested_rate=request.target,
-        before=before, after=after, changed=before != after,
+        sensor=request.sensor,
+        requested_rate=request.target,
+        before=before,
+        after=after,
+        changed=before != after,
         inputs_delivered=inputs,
     )
 
 
 def target_sampling_rate(
-    app: Capstone, handle: int, request: SamplingRateRequest,
+    app: Capstone,
+    handle: int,
+    request: SamplingRateRequest,
 ) -> SamplingRateSelection:
     """Reach a supported rate without requiring identical decimal formatting."""
     controls = _rate_controls(app, handle, request.sensor)
@@ -257,11 +306,13 @@ def target_sampling_rate(
                 break
             if value == target:
                 return _rate_result(
-                    request, initial, controls.display, len(previous),
+                    request,
+                    initial,
+                    controls.display,
+                    len(previous),
                 )
-            if (
-                (increasing and (value <= current or value > target))
-                or (not increasing and (value >= current or value < target))
+            if (increasing and (value <= current or value > target)) or (
+                not increasing and (value >= current or value < target)
             ):
                 break
             current = value
@@ -275,7 +326,8 @@ def target_sampling_rate(
     try:
         _restore_rate(
             lambda before: _step_rate(app, handle, request, reverse, before),
-            previous, controls,
+            previous,
+            controls,
         )
     except Exception as error:
         msg = (
@@ -316,6 +368,10 @@ def zero_sensor(app: Capstone, request: ZeroSensorRequest) -> ZeroSensorResult:
         msg = "Sensor zeroing requires allow_foreground=true."
         raise AutomationError(msg)
 
+    recording, _ = observe_recording(app, request.handle)
+    if recording.recording:
+        msg = "Stop recording before zeroing sensors."
+        raise AutomationError(msg)
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     zero_buttons = [c for c in snapshot.controls if _is_zero_button(c)]
 
@@ -326,31 +382,46 @@ def zero_sensor(app: Capstone, request: ZeroSensorRequest) -> ZeroSensorResult:
     target_buttons: list[Control] = []
     if request.sensor_name:
         s_lower = request.sensor_name.strip().lower()
-        target_buttons.extend([
-            btn for btn in zero_buttons
-            if s_lower in btn.name.lower() or s_lower in btn.automation_id.lower()
-        ])
-        if not target_buttons:
-            if len(zero_buttons) == 1:
-                target_buttons.append(zero_buttons[0])
-            else:
-                msg = f"Zero button for sensor '{request.sensor_name}' not found."
-                raise AutomationError(msg)
+        target_buttons.extend(
+            [
+                btn
+                for btn in zero_buttons
+                if s_lower in btn.name.lower() or s_lower in btn.automation_id.lower()
+            ],
+        )
+        if len(target_buttons) != 1:
+            msg = f"Zero button for sensor '{request.sensor_name}' not uniquely found."
+            raise AutomationError(msg)
     else:
         target_buttons = zero_buttons
 
     zeroed_names: list[str] = []
     for btn in target_buttons:
-        app.click(request.handle, btn.ref, allow_foreground=True)
+        recording, _ = observe_recording(app, request.handle)
+        if recording.recording:
+            msg = "Stop recording before zeroing sensors."
+            raise AutomationError(msg)
+        fresh = app.snapshot(request.handle, depth=16, limit=10_000)
+        matches = [
+            c
+            for c in fresh.controls
+            if _is_zero_button(c)
+            and c.automation_id == btn.automation_id
+            and c.name == btn.name
+        ]
+        if len(matches) != 1 or not matches[0].enabled:
+            msg = "Zero button became unavailable; no further zero inputs were sent."
+            raise AutomationError(msg)
+        _ = app.act(matches[0].ref, Action.INVOKE, allow_foreground=True)
         zeroed_names.append(btn.name.strip() or btn.automation_id)
 
     detail = (
-        f"Zero/Tare executed for {len(zeroed_names)} sensor(s): "
+        f"Zero/Tare input delivered for {len(zeroed_names)} sensor(s): "
         f"{', '.join(zeroed_names)}."
     )
 
     return ZeroSensorResult(
         zeroed_sensors=zeroed_names,
-        verified=True,
-        detail=detail,
+        verified=False,
+        detail=detail + " Hardware completion is unverified; confirm before recording.",
     )
