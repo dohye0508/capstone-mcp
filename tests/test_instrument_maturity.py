@@ -2,7 +2,7 @@
 """Maturity and protocol contract tests for instrument workflows and error envelopes."""
 
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -14,8 +14,10 @@ from mcp.types import (
 )
 
 from capstone_mcp import server
+from capstone_mcp.automation_worker import NativeSessionError
 from capstone_mcp.desktop import AutomationError
 from capstone_mcp.models import ToolErrorPayload
+from capstone_mcp.native.errors import classify_native_error
 from capstone_mcp.server import (
     format_tool_error,
     hardware_setup_workflow,
@@ -83,9 +85,17 @@ def test_format_tool_error_instrument_classification() -> None:
 
 
 @pytest.mark.anyio
-async def test_instrument_mcp_request_handler_structured_error() -> None:
+async def test_instrument_mcp_request_handler_structured_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify unattached instrument tool calls return structured CallToolResult(isError=True)."""
     handler = server.MCP._mcp_server.request_handlers[CallToolRequest]
+
+    message = "Call capstone_attach first."
+    code, remediation = classify_native_error(AutomationError(message))
+    monkeypatch.setattr(server.WORKER, "call", Mock(side_effect=NativeSessionError(
+        message, error_code=code, remediation=remediation,
+    )))
 
     # Call capstone_manage_instrument when Capstone session is unattached
     req = CallToolRequest(
@@ -117,8 +127,15 @@ async def test_instrument_mcp_request_handler_structured_error() -> None:
 
 
 @pytest.mark.anyio
-async def test_instrument_fastmcp_call_tool_raises_structured_tool_error() -> None:
+async def test_instrument_fastmcp_call_tool_raises_structured_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Verify MCP.call_tool raises ToolError containing structured JSON payload."""
+    message = "Call capstone_attach first."
+    code, remediation = classify_native_error(AutomationError(message))
+    monkeypatch.setattr(server.WORKER, "call", Mock(side_effect=NativeSessionError(
+        message, error_code=code, remediation=remediation,
+    )))
     with pytest.raises(ToolError) as exc_info:
         await server.MCP.call_tool(
             "capstone_manage_instrument",
