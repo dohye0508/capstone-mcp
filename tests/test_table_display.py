@@ -215,8 +215,8 @@ def test_set_table_columns_configures_and_auto_expands() -> None:
     assert res.table_name == "Table 1"
     assert res.column_count == 2
     assert res.columns == ["Time (s)", "Velocity (m/s)"]
-    assert res.verified is True
-    assert app.click.call_count >= 3
+    assert res.verified is False
+    assert mock_node.iface_value.SetValue.call_count == 2
 
 
 def test_read_table_validates_pagination_bounds() -> None:

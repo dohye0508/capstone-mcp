@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import click_control
 from capstone_mcp.displays.models import (
-    ADD_PAGE_NAMES,
     ADD_PAGE_SUFFIX,
     LAYOUT_AREAS,
     LAYOUT_KEYWORDS,
@@ -34,8 +33,7 @@ def _find_add_page_button(controls: list[Control]) -> Control:
         if aid.endswith((ADD_PAGE_SUFFIX, ".NewPageButton")):
             return ctrl
         if ctrl.control_type in ("Button", "TabItem") and (
-            cname in ADD_PAGE_NAMES
-            or any(n.lower() in cname.lower() for n in ("add page", "new page"))
+            cname.casefold() in ("add page", "new page")
         ):
             return ctrl
     msg = "Add Page button not found in workbook."
@@ -58,7 +56,9 @@ def _rename_page_tab(
     click_control(app, handle, tab_ctrl, allow_foreground=True)
     if hasattr(app, "keys"):
         _ = app.keys(handle, "{F2}", allow_foreground=True)
-        _ = app.keys(handle, f"^a{title}{{ENTER}}", allow_foreground=True)
+        _ = app.keys(handle, "^a", allow_foreground=True)
+        _ = app.type_text(title)
+        _ = app.keys(handle, "{ENTER}", allow_foreground=True)
 
 
 def add_page(
@@ -70,7 +70,7 @@ def add_page(
         request = AddPageRequest()
 
     clean_title = request.title.strip()
-    if not clean_title:
+    if not clean_title or any(c in clean_title for c in "\r\n"):
         msg = "title must not be empty."
         raise AutomationError(msg)
 
@@ -92,15 +92,25 @@ def add_page(
     new_tabs = [
         c for c in post_snap.controls if c.visible and c.control_type == "TabItem"
     ]
-    if new_tabs:
-        latest_tab = new_tabs[-1]
-        _rename_page_tab(app, request.handle, latest_tab, clean_title)
+    old_names = {c.name for c in existing_tabs}
+    candidates = [c for c in new_tabs if c.name not in old_names]
+    if len(new_tabs) != len(existing_tabs) + 1 or len(candidates) != 1:
+        msg = (
+            "New workbook page was not uniquely observed; no existing tab was renamed."
+        )
+        raise AutomationError(msg)
+    _rename_page_tab(app, request.handle, candidates[0], clean_title)
+    verification = app.snapshot(request.handle, depth=16, limit=10_000)
+    verified = not verification.truncated and any(
+        c.visible and c.control_type == "TabItem" and c.name == clean_title
+        for c in verification.controls
+    )
 
     detail = f"Workbook page '{clean_title}' added at index {page_index}."
     return AddPageResult(
         page_index=page_index,
         title=clean_title,
-        verified=True,
+        verified=verified,
         detail=detail,
     )
 
@@ -118,7 +128,7 @@ def _switch_to_page(
         if (
             ctrl.visible
             and ctrl.control_type == "TabItem"
-            and (ctrl.name.strip().lower() == p_lower or p_lower in ctrl.name.lower())
+            and ctrl.name.strip().lower() == p_lower
         ):
             target_tab = ctrl
             break
@@ -147,7 +157,9 @@ def _find_layout_template_control(
         cname = ctrl.name.strip().lower()
         aid = ctrl.automation_id.lower()
         for kw in keywords:
-            if kw in cname or kw in aid:
+            if kw in ("grid", "template3"):
+                continue
+            if cname == kw or aid.rsplit(".", 1)[-1] == kw:
                 return ctrl
 
     msg = f"Layout template control for '{layout}' not found on active page."
@@ -178,12 +190,13 @@ def set_page_layout(
     click_control(app, request.handle, template_ctrl, allow_foreground=True)
 
     areas_count = LAYOUT_AREAS[request.layout]
-    detail = f"Page layout template '{request.layout}' applied ({areas_count} areas)."
+    detail = (f"Page layout '{request.layout}' requested ({areas_count} areas); "
+              "resulting layout is unverified.")
 
     return SetPageLayoutResult(
         layout=request.layout,
         page_name=request.page_name,
         areas_created=areas_count,
-        verified=True,
+        verified=False,
         detail=detail,
     )

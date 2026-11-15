@@ -2,6 +2,7 @@
 """The reported document title reflects the completed Save As."""
 
 import time
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
@@ -63,6 +64,46 @@ def test_export_reads_the_title_once_because_it_never_renames() -> None:
     )
     assert title == "experiment.cap*"
     windows.assert_called_once()
+
+
+def test_saved_title_tolerates_transient_missing_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "sleep", Mock())
+    windows = Mock(side_effect=[[], [_titled(HANDLE, "new.cap")]])
+    app = cast("Capstone", cast("object", Mock(windows=windows)))
+    assert file_workflows.settled_title(app, HANDLE, Path("new.cap"), "cap") == "new.cap"
+
+
+def test_missing_saved_window_raises_domain_error_at_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(file_workflows, "TITLE_SECONDS", 0.0)
+    app = cast("Capstone", cast("object", Mock(windows=Mock(return_value=[]))))
+    with pytest.raises(AutomationError, match="title is unavailable"):
+        _ = file_workflows.settled_title(app, HANDLE, Path("new.cap"), "cap")
+
+
+def test_save_and_open_title_match_canonical_unicode(monkeypatch: pytest.MonkeyPatch) -> None:
+    title = "한글실험.cap"
+    path = Path(unicodedata.normalize("NFD", title))
+    app, _ = _app([title, title])
+    monkeypatch.setattr(file_workflows, "OPEN_STABLE_SECONDS", 0.0)
+    assert file_workflows.settled_title(app, HANDLE, path, "cap") == title
+    assert file_workflows.await_opened(app, HANDLE, path) == title
+
+
+def test_open_confirmation_allows_existing_palette_when_target_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(file_workflows, "OPEN_STABLE_SECONDS", 0.0)
+    app = Mock(windows=Mock(return_value=[_titled(99, "Palette"), _titled(HANDLE, "new.cap")]))
+    assert file_workflows.await_opened(app, HANDLE, Path("new.cap")) == "new.cap"
+    app.require_input_ready.assert_called_once_with(HANDLE)
+
+
+def test_prepare_uses_requested_window_and_checks_modal_guard(tmp_path: Path) -> None:
+    app = Mock(windows=Mock(return_value=[_titled(99, "Palette"), _titled(HANDLE, "document.cap")]))
+    _, title, _ = file_workflows._prepare(app, HANDLE, str(tmp_path / "new.cap"), ".cap", allow_foreground=True)
+    assert title == "document.cap"
+    app.require_input_ready.assert_called_once_with(HANDLE)
+    app.require_input_ready.side_effect = AutomationError("blocked by modal")
+    with pytest.raises(AutomationError, match="blocked by modal"):
+        _ = file_workflows._prepare(app, HANDLE, str(tmp_path / "new.cap"), ".cap", allow_foreground=True)
 
 
 def _titled(handle: int, title: str) -> Window:

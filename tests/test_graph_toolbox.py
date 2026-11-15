@@ -214,7 +214,7 @@ def test_measure_graph_area_success() -> None:
     app.click.assert_called_once_with(100, "ref:area_btn", allow_foreground=True)
 
 
-def test_graph_delta_success_with_points() -> None:
+def test_graph_delta_reads_observed_values() -> None:
     app = Capstone()
     mock_win = _mock_window()
 
@@ -277,8 +277,6 @@ def test_graph_delta_success_with_points() -> None:
         app,
         GraphDeltaRequest(
             handle=100,
-            point1=Point(x=200, y=250),
-            point2=Point(x=350, y=400),
         ),
     )
 
@@ -290,4 +288,39 @@ def test_graph_delta_success_with_points() -> None:
     assert res.unit_y == "m/s"
     assert res.verified is True
     app.click.assert_called_once_with(100, "ref:delta_btn", allow_foreground=True)
-    assert app.click_point.call_count == 2
+    app.click_point.assert_not_called()
+
+
+def test_graph_delta_rejects_unverified_endpoint_positioning_before_input() -> None:
+    app = MagicMock(spec=Capstone)
+    with pytest.raises(AutomationError, match="positioning is unverified"):
+        _ = graph_delta(app, GraphDeltaRequest(point1=Point(x=20, y=30)))
+    app.snapshot.assert_not_called()
+    app.click.assert_not_called()
+
+
+@pytest.mark.parametrize("enable", [True, False])
+@pytest.mark.parametrize("tool", ["statistics", "area"])
+def test_explicit_tool_state_is_idempotent(tool: str, *, enable: bool) -> None:
+    app = MagicMock(spec=Capstone)
+    graph = Control(ref="graph", parent=None, name="Graph", control_type="Custom", automation_id="GraphDisplay", enabled=True, visible=True, bounds=Bounds(left=0, top=0, right=500, bottom=500))
+    button = Control(ref="button", parent="graph", name=tool, control_type="CheckBox", automation_id=tool, enabled=True, visible=True, bounds=Bounds(left=10, top=10, right=30, bottom=30))
+    app.snapshot.return_value = Snapshot(window=_mock_window(), controls=[graph, button], truncated=False)
+    app.control.return_value.iface_toggle.CurrentToggleState = int(enable)
+    result = (
+        toggle_graph_statistics(app, ToggleGraphStatisticsRequest(enable=enable))
+        if tool == "statistics" else measure_graph_area(app, MeasureGraphAreaRequest(enable=enable))
+    )
+    app.click.assert_not_called()
+    assert result.verified
+
+
+def test_explicit_unknown_tool_state_never_sends_input() -> None:
+    app = MagicMock(spec=Capstone)
+    graph = Control(ref="graph", parent=None, name="Graph", control_type="Custom", automation_id="GraphDisplay", enabled=True, visible=True, bounds=Bounds(left=0, top=0, right=500, bottom=500))
+    button = Control(ref="button", parent="graph", name="Statistics", control_type="Button", automation_id="Stats", enabled=True, visible=True, bounds=Bounds(left=10, top=10, right=30, bottom=30))
+    app.snapshot.return_value = Snapshot(window=_mock_window(), controls=[graph, button], truncated=False)
+    app.control.side_effect = AutomationError("no toggle pattern")
+    with pytest.raises(AutomationError, match="toggle state"):
+        _ = toggle_graph_statistics(app, ToggleGraphStatisticsRequest(enable=True))
+    app.click.assert_not_called()

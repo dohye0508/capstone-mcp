@@ -79,7 +79,7 @@ def test_set_run_visibility_raises_when_run_control_not_found() -> None:
     ))
 
     req = SetRunVisibilityRequest(handle=100, runs=["Run #99"])
-    with pytest.raises(AutomationError, match="Run visibility control for 'Run #99'"):
+    with pytest.raises(AutomationError, match="Unique run visibility control for 'Run #99'"):
         _ = set_run_visibility(app, req)
 
 
@@ -108,9 +108,15 @@ def test_set_run_visibility_success_toggle_pattern() -> None:
 
     node_run1 = MagicMock()
     node_run1.iface_toggle.ToggleState = 0  # initially hidden
+    node_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_run1.iface_toggle, "ToggleState", 1 - node_run1.iface_toggle.ToggleState,
+    )
 
     node_run2 = MagicMock()
     node_run2.iface_toggle.ToggleState = 0  # initially hidden
+    node_run2.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_run2.iface_toggle, "ToggleState", 1 - node_run2.iface_toggle.ToggleState,
+    )
 
     def mock_control(ref: str) -> MagicMock:
         if ref == "ref:run1":
@@ -157,9 +163,15 @@ def test_set_run_visibility_hide_run_success() -> None:
 
     node_run1 = MagicMock()
     node_run1.iface_toggle.ToggleState = 1  # visible
+    node_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_run1.iface_toggle, "ToggleState", 1 - node_run1.iface_toggle.ToggleState,
+    )
 
     node_run2 = MagicMock()
     node_run2.iface_toggle.ToggleState = 1  # visible
+    node_run2.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_run2.iface_toggle, "ToggleState", 1 - node_run2.iface_toggle.ToggleState,
+    )
 
     def mock_control(ref: str) -> MagicMock:
         if ref == "ref:run1":
@@ -220,8 +232,14 @@ def test_set_run_visibility_target_specific_display_bounds() -> None:
 
     node_g_run1 = MagicMock()
     node_g_run1.iface_toggle.ToggleState = 0
+    node_g_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_g_run1.iface_toggle, "ToggleState", 1 - node_g_run1.iface_toggle.ToggleState,
+    )
     node_t_run1 = MagicMock()
     node_t_run1.iface_toggle.ToggleState = 0
+    node_t_run1.iface_toggle.Toggle.side_effect = lambda: setattr(
+        node_t_run1.iface_toggle, "ToggleState", 1 - node_t_run1.iface_toggle.ToggleState,
+    )
 
     def mock_control(ref: str) -> MagicMock:
         if ref == "ref:g_run1":

@@ -104,7 +104,8 @@ def test_add_page_success() -> None:
             )
         return Snapshot(
             window=mock_win,
-            controls=[tab1, tab2, add_btn],
+            controls=[tab1, tab2.model_copy(update={"name": "Experiment Results"})
+                      if step > 2 else tab2, add_btn],
             truncated=False,
         )
 
@@ -233,7 +234,7 @@ def test_set_page_layout_two_vertical_success() -> None:
     result = display_res.set_page_layout
     assert result.layout == "two_vertical"
     assert result.areas_created == 2
-    assert result.verified is True
+    assert result.verified is False
     app.click.assert_called_once_with(100, "ref:tpl_2v", allow_foreground=True)
 
 
@@ -283,6 +284,6 @@ def test_set_page_layout_four_grid_with_page_selection_success() -> None:
     assert result.layout == "four_grid"
     assert result.areas_created == 4
     assert result.page_name == "Analysis"
-    assert result.verified is True
+    assert result.verified is False
     page2_node.iface_selection_item.Select.assert_called_once()
     app.click.assert_called_once_with(100, "ref:grid4", allow_foreground=True)

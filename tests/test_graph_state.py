@@ -1,6 +1,8 @@
 # Copyright 2026 Capstone MCP contributors.
 """Native graph clipboard parsing and fit catalog coverage."""
 
+import re
+
 import pytest
 
 from capstone_mcp.graphs import (
@@ -99,6 +101,28 @@ def _payload(
       </WorkbookItem>
     </PasteRoot>
     """.encode()
+
+
+def test_failed_fit_can_omit_unavailable_result_values() -> None:
+    fit = re.sub(
+        r'\s+(?:ZCFDICurveFitParameterResultValue|ZCFDICurveFitParameterFitGoodness|ZCFDICurveFitResultsValue)="[^"]*"',
+        "", _fit(1, "Linear", status=10),
+    )
+    state = parse_graph_xml(_payload(_renderer(
+        "renderer", source_id="x", dataset_id="run", unit="0", fits=fit,
+    )))
+    native = state.series[0].fits[0]
+    assert native.error_status == 10
+    assert all(p.value is None and p.uncertainty is None for p in native.parameters)
+    assert all(m.value is None and not m.valid for m in native.metrics)
+
+
+def test_successful_fit_still_requires_result_values() -> None:
+    fit = re.sub(r'\s+ZCFDICurveFitParameterResultValue="[^"]*"', "", _fit(1, "Linear"))
+    with pytest.raises(GraphStateError, match="missing attribute"):
+        _ = parse_graph_xml(_payload(_renderer(
+            "renderer", source_id="x", dataset_id="run", unit="0", fits=fit,
+        )))
 
 
 def test_catalog_matches_native_rows_and_excludes_user_defined() -> None:

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
+import unicodedata
 from _ctypes import COMError
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -17,6 +20,8 @@ from capstone_mcp.ui_events import WindowEvents
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from capstone_mcp.models import Window
 
 MAX_OUTPUT_BYTES: Final = 64 * 1024 * 1024
 TRANSITION_SECONDS: Final = 15
@@ -88,15 +93,20 @@ def _open_command(
         lambda c: c.control_type == "MenuItem" and c.name == "File",
     )
     _ = app.act(file_menu.ref, Action.INVOKE)
-    menu = events.changes.until(
-        lambda: _new_snapshot(
-            app, before,
-            lambda s: any(c.automation_id == command_id for c in s.controls),
-        ),
-        TRANSITION_SECONDS,
-    )
-    command = _one(menu, lambda c: c.automation_id == command_id)
-    _ = app.act(command.ref, Action.INVOKE)
+    try:
+        menu = events.changes.until(
+            lambda: _new_snapshot(
+                app, before,
+                lambda s: any(c.automation_id == command_id for c in s.controls),
+            ),
+            TRANSITION_SECONDS,
+        )
+        command = _one(menu, lambda c: c.automation_id == command_id)
+        _ = app.act(command.ref, Action.INVOKE)
+    except Exception:
+        with suppress(Exception):
+            _ = app.keys(handle, "{ESC}")
+        raise
     return before
 
 
@@ -168,6 +178,15 @@ def _save_dialog(
     )
 
 
+def _workflow_window(app: Capstone, handle: int) -> Window:
+    windows = [window for window in app.windows() if window.handle == handle]
+    if len(windows) != 1:
+        msg = "The target Capstone window is not available."
+        raise AutomationError(msg)
+    app.require_input_ready(handle)
+    return windows[0]
+
+
 def _prepare(
     app: Capstone, handle: int, destination: str, suffix: str,
     *, allow_foreground: bool,
@@ -182,14 +201,8 @@ def _prepare(
     if not path.parent.is_dir():
         msg = "Output directory must already exist."
         raise AutomationError(msg)
-    windows = app.windows()
-    if len(windows) != 1 or windows[0].handle != handle:
-        msg = (
-            "Close existing Capstone dialogs/menus before this workflow: "
-            + ", ".join(f"{w.handle}: {w.title}" for w in windows)
-        )
-        raise AutomationError(msg)
-    return path, windows[0].title, windows[0].process_id
+    window = _workflow_window(app, handle)
+    return path, window.title, window.process_id
 
 
 def settled_title(
@@ -202,11 +215,22 @@ def settled_title(
     """
     deadline = time.monotonic() + TITLE_SECONDS
     while True:
-        title = next(w.title for w in app.windows() if w.handle == handle)
-        renamed = title.startswith(path.name)
-        if kind != "cap" or renamed or time.monotonic() >= deadline:
+        title = next((w.title for w in app.windows() if w.handle == handle), None)
+        renamed = title is not None and _title_matches_path(title, path)
+        if title is not None and (
+            kind != "cap" or renamed or time.monotonic() >= deadline
+        ):
             return title
+        if time.monotonic() >= deadline:
+            msg = "Saved output exists but the target window title is unavailable."
+            raise AutomationError(msg)
         time.sleep(TITLE_POLL_SECONDS)
+
+
+def _title_matches_path(title: str, path: Path) -> bool:
+    return unicodedata.normalize("NFC", title).startswith(
+        unicodedata.normalize("NFC", path.name),
+    )
 
 
 def _artifact(
@@ -236,7 +260,7 @@ def save_experiment(
     with WindowEvents(pid) as events, FileEvents(path.parent, events.changes) as files:
         previous = _open_command(app, events, handle, "mActionSaveAs")
         dialog = _file_dialog(app, events, previous)
-        _save_dialog(app, files, dialog, path, {handle})
+        _save_dialog(app, files, dialog, path, previous)
     _ = read_cap_configuration(path)
     return _artifact(app, handle, path, before, "cap")
 
@@ -250,6 +274,7 @@ def export_data(
     )
     with WindowEvents(pid) as events, FileEvents(path.parent, events.changes) as files:
         previous = _open_command(app, events, handle, "mActionExportData")
+        baseline_windows = previous.copy()
         dialog = events.changes.until(
             lambda: _new_snapshot(
                 app, previous,
@@ -259,30 +284,45 @@ def export_data(
             TRANSITION_SECONDS,
         )
         export_handle = dialog.window.handle
-        _choose_export_option(
-            app, events, export_handle, "Export Format", "Comma separated values",
-        )
-        _choose_export_option(
-            app, events, export_handle, "Alignment Options", "Align by Index",
-        )
-        select = _named_button(app, export_handle, "Select All")
-        _ = app.act(select.ref, Action.INVOKE)
-        export = _named_button(app, export_handle, "Export to file...")
-        previous = {w.handle for w in app.windows()}
-        _ = app.act(export.ref, Action.INVOKE)
-        file_dialog = _file_dialog(app, events, previous)
-        _save_dialog(
-            app, files, file_dialog, path, {handle, export_handle},
-        )
-        close = _named_button(app, export_handle, "Close")
+        try:
+            _choose_export_option(
+                app, events, export_handle, "Export Format", "Comma separated values",
+            )
+            _choose_export_option(
+                app, events, export_handle, "Alignment Options", "Align by Index",
+            )
+            select = _named_button(app, export_handle, "Select All")
+            _ = app.act(select.ref, Action.INVOKE)
+            export = _named_button(app, export_handle, "Export to file...")
+            previous = {w.handle for w in app.windows()}
+            _ = app.act(export.ref, Action.INVOKE)
+            file_dialog = _file_dialog(app, events, previous)
+            _save_dialog(
+                app, files, file_dialog, path, baseline_windows | {export_handle},
+            )
+        finally:
+            _close_export_dialog(
+                app, events, export_handle, failing=sys.exception() is not None,
+            )
+    return _artifact(app, handle, path, before, "csv")
+
+
+def _close_export_dialog(
+    app: Capstone, events: WindowEvents, handle: int, *, failing: bool,
+) -> None:
+    """Close only the export dialog observed by this workflow, if still present."""
+    try:
+        if not any(window.handle == handle for window in app.windows()):
+            return
+        close = _named_button(app, handle, "Close")
         _ = app.act(close.ref, Action.INVOKE)
         _ = events.changes.until(
-            lambda: True if all(
-                w.handle != export_handle for w in app.windows()
-            ) else None,
+            lambda: True if all(w.handle != handle for w in app.windows()) else None,
             TRANSITION_SECONDS,
         )
-    return _artifact(app, handle, path, before, "csv")
+    except Exception:
+        if not failing:
+            raise
 
 
 def _is_open_field(control: Control) -> bool:
@@ -294,7 +334,7 @@ def _is_discard(control: Control) -> bool:
 
 
 def await_opened(app: Capstone, handle: int, path: Path) -> str:
-    """Wait until only the experiment window remains and carries the file name.
+    """Wait until the target window is input-ready and carries the file name.
 
     The loading progress window can appear after the file dialog closes, so the
     title must stay confirmed for a short stable period before it is accepted.
@@ -304,7 +344,14 @@ def await_opened(app: Capstone, handle: int, path: Path) -> str:
     while time.monotonic() < deadline:
         windows = app.windows()
         title = next((w.title for w in windows if w.handle == handle), "")
-        if len(windows) == 1 and title.startswith(path.name):
+        ready = False
+        if title and _title_matches_path(title, path):
+            try:
+                app.require_input_ready(handle)
+                ready = True
+            except AutomationError:
+                pass
+        if ready:
             if stable_since is None:
                 stable_since = time.monotonic()
             if time.monotonic() - stable_since >= OPEN_STABLE_SECONDS:
@@ -326,14 +373,8 @@ def _open_preconditions(
     if path.suffix.lower() != ".cap" or not path.is_file():
         msg = "Choose an existing .cap file to open."
         raise AutomationError(msg)
-    windows = app.windows()
-    if len(windows) != 1 or windows[0].handle != handle:
-        msg = (
-            "Close existing Capstone dialogs/menus before this workflow: "
-            + ", ".join(f"{w.handle}: {w.title}" for w in windows)
-        )
-        raise AutomationError(msg)
-    before = windows[0].title
+    window = _workflow_window(app, handle)
+    before = window.title
     if before.endswith("*") and not discard_unsaved:
         msg = (
             f"The open experiment has unsaved changes ({before}). Save it with "
@@ -341,7 +382,7 @@ def _open_preconditions(
             "drop them."
         )
         raise AutomationError(msg)
-    return path, before, windows[0].process_id
+    return path, before, window.process_id
 
 
 def open_experiment(

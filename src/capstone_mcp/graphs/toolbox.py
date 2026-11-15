@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+from _ctypes import COMError
 from typing import TYPE_CHECKING, Final
 
 from capstone_mcp.desktop import AutomationError, Capstone
@@ -88,45 +89,24 @@ def _find_graph_control(
     graph_name: str | None = None,
 ) -> Control:
     """Find target graph display widget."""
-    if graph_name:
-        g_lower = graph_name.strip().lower()
-        for ctrl in controls:
-            if ctrl.visible and (
-                g_lower == ctrl.name.strip().lower()
-                or g_lower in ctrl.automation_id.lower()
-            ):
-                return ctrl
-        msg = f"Target graph control not found: matching '{graph_name}'."
+    target = graph_name.strip().casefold() if graph_name else "graph"
+    matches = [
+        ctrl for ctrl in controls
+        if ctrl.visible and ctrl.control_type in ("Custom", "Pane", "Group")
+        and (
+            (target == ctrl.name.strip().casefold() if graph_name
+             else target in ctrl.name.casefold())
+            or (target == ctrl.automation_id.casefold() if graph_name
+                else target in ctrl.automation_id.casefold())
+        )
+    ]
+    if not matches:
+        msg = "No Graph display found in the active window."
         raise AutomationError(msg)
-
-    # Search for Graph widget
-    for ctrl in controls:
-        if (
-            ctrl.visible
-            and ctrl.control_type in ("Custom", "Pane", "Group")
-            and (
-                "graph" in ctrl.name.lower()
-                or "graph" in ctrl.automation_id.lower()
-            )
-        ):
-            return ctrl
-
-    # Fallback to largest Custom/Pane
-    best: Control | None = None
-    best_area = 0
-    for ctrl in controls:
-        if ctrl.visible and ctrl.control_type in ("Custom", "Pane"):
-            w = ctrl.bounds.right - ctrl.bounds.left
-            h = ctrl.bounds.bottom - ctrl.bounds.top
-            if w * h > best_area:
-                best_area = w * h
-                best = ctrl
-
-    if best:
-        return best
-
-    msg = "No Graph display found in the active window."
-    raise AutomationError(msg)
+    if len(matches) != 1:
+        msg = "Graph selection is ambiguous; specify a unique graph_name."
+        raise AutomationError(msg)
+    return matches[0]
 
 
 def _find_toolbar_button(
@@ -136,6 +116,7 @@ def _find_toolbar_button(
 ) -> Control:
     """Locate a specific tool button on the graph toolbar."""
     gb = graph_ctrl.bounds
+    matches: list[Control] = []
     for c in controls:
         if not c.visible or not c.enabled:
             continue
@@ -154,19 +135,37 @@ def _find_toolbar_button(
         aid_lower = c.automation_id.lower()
 
         if any(kw.lower() in name_lower or kw.lower() in aid_lower for kw in keywords):
-            return c
-
-    # Fallback: check all window controls matching keywords if toolbar is decoupled
-    for c in controls:
-        if not c.visible or not c.enabled:
-            continue
-        name_lower = c.name.strip().lower()
-        aid_lower = c.automation_id.lower()
-        if any(kw.lower() in name_lower or kw.lower() in aid_lower for kw in keywords):
-            return c
+            matches.append(c)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        msg = f"Graph toolbar button matching {keywords} is ambiguous."
+        raise AutomationError(msg)
 
     msg = f"Graph toolbar button matching {keywords} not found."
     raise AutomationError(msg)
+
+
+def _observed_toggle(app: Capstone, button: Control, *, visible: bool) -> bool | None:
+    with contextlib.suppress(AutomationError, COMError, AttributeError, RuntimeError):
+        state = app.control(button.ref).iface_toggle.CurrentToggleState
+        if isinstance(state, int) and state in (0, 1):
+            return state == 1
+    return True if visible else None
+
+
+def _set_tool_state(
+    app: Capstone, handle: int, button: Control,
+    *, enable: bool | None, visible: bool,
+) -> None:
+    if enable is not None:
+        state = _observed_toggle(app, button, visible=visible)
+        if state is None:
+            msg = "Cannot verify the graph tool's toggle state; no input was sent."
+            raise AutomationError(msg)
+        if state == enable:
+            return
+    click_control(app, handle, button, allow_foreground=True)
 
 
 def _extract_graph_controls(
@@ -257,8 +256,13 @@ def toggle_graph_statistics(
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
     stats_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, STATS_KEYWORDS)
 
-    # Click toggle button using display harness primitive
-    click_control(app, request.handle, stats_btn, allow_foreground=True)
+    previous_stats = _parse_statistics(
+        _extract_graph_controls(snapshot.controls, graph_ctrl),
+    )
+    _set_tool_state(
+        app, request.handle, stats_btn, enable=request.enable,
+        visible=bool(previous_stats.raw_values),
+    )
 
     # Inspect graph overlay for statistics box
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
@@ -272,6 +276,10 @@ def toggle_graph_statistics(
     )
 
     g_name = request.graph_name or graph_ctrl.name or "Graph"
+    observed_button = _find_toolbar_button(
+        snapshot.controls, graph_ctrl, STATS_KEYWORDS,
+    )
+    observed = _observed_toggle(app, observed_button, visible=has_stats)
     detail = (
         f"Statistics on '{g_name}': mean={stats.mean}, std_dev={stats.std_dev}, "
         f"min={stats.min}, max={stats.max}, count={stats.count}."
@@ -281,7 +289,9 @@ def toggle_graph_statistics(
         visible=has_stats,
         statistics=stats if has_stats else None,
         graph_name=g_name,
-        verified=True,
+        verified=observed is not None and (
+            request.enable is None or observed == request.enable
+        ),
         detail=detail,
     )
 
@@ -318,8 +328,13 @@ def measure_graph_area(
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
     area_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, AREA_KEYWORDS)
 
-    # Click toggle button using display harness primitive
-    click_control(app, request.handle, area_btn, allow_foreground=True)
+    previous_area, _, _ = _parse_area(
+        _extract_graph_controls(snapshot.controls, graph_ctrl),
+    )
+    _set_tool_state(
+        app, request.handle, area_btn, enable=request.enable,
+        visible=previous_area is not None,
+    )
 
     # Read area from graph overlay
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
@@ -329,6 +344,8 @@ def measure_graph_area(
     area_val, unit, raw_text = _parse_area(overlay_ctrls)
 
     g_name = request.graph_name or graph_ctrl.name or "Graph"
+    observed_button = _find_toolbar_button(snapshot.controls, graph_ctrl, AREA_KEYWORDS)
+    observed = _observed_toggle(app, observed_button, visible=area_val is not None)
     unit_str = f" {unit}" if unit else ""
     detail = (
         f"Curve area on '{g_name}': {area_val}{unit_str}."
@@ -342,7 +359,9 @@ def measure_graph_area(
         unit=unit,
         raw_text=raw_text,
         graph_name=g_name,
-        verified=True,
+        verified=observed is not None and (
+            request.enable is None or observed == request.enable
+        ),
         detail=detail,
     )
 
@@ -370,6 +389,7 @@ def _parse_delta(
     unit_x: str | None = None
     unit_y: str | None = None
     raw_texts: list[str] = []
+    all_coordinates: list[tuple[str, str]] = []
 
     for c in graph_controls:
         text = c.name.strip()
@@ -393,17 +413,15 @@ def _parse_delta(
             raw_texts.append(text)
 
         coord_pairs = COORD_PAIR_RE.findall(text)
-        if len(coord_pairs) >= MIN_COORDINATE_PAIRS and x1 is None:
-            with contextlib.suppress(ValueError):
-                x1 = float(coord_pairs[0][0])
-                y1 = float(coord_pairs[0][1])
-                x2 = float(coord_pairs[1][0])
-                y2 = float(coord_pairs[1][1])
-                if dx is None:
-                    dx = x2 - x1
-                if dy is None:
-                    dy = y2 - y1
+        if coord_pairs:
+            all_coordinates.extend(coord_pairs)
             raw_texts.append(text)
+
+    if len(all_coordinates) == MIN_COORDINATE_PAIRS:
+        x1, y1 = map(float, all_coordinates[0])
+        x2, y2 = map(float, all_coordinates[1])
+        dx = x2 - x1 if dx is None else dx
+        dy = y2 - y1 if dy is None else dy
 
     raw_combined = " | ".join(raw_texts) if raw_texts else None
     return dx, dy, x1, y1, x2, y2, unit_x, unit_y, raw_combined
@@ -421,28 +439,21 @@ def graph_delta(
         msg = "Graph delta measurement requires allow_foreground=true."
         raise AutomationError(msg)
 
+    if any(
+        point is not None for point in (request.point, request.point1, request.point2)
+    ):
+        msg = (
+            "Delta endpoint positioning is unverified; "
+            "position crosshairs in Capstone first."
+        )
+        raise AutomationError(msg)
+
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
     delta_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, DELTA_KEYWORDS)
 
     # Click delta button to activate tool using display harness primitive
     click_control(app, request.handle, delta_btn, allow_foreground=True)
-
-    # If positioning points provided, position crosshairs
-    if request.point1 and hasattr(app, "click_point"):
-        app.click_point(
-            request.handle,
-            request.point1.x,
-            request.point1.y,
-            allow_foreground=True,
-        )
-    if request.point2 and hasattr(app, "click_point"):
-        app.click_point(
-            request.handle,
-            request.point2.x,
-            request.point2.y,
-            allow_foreground=True,
-        )
 
     # Read delta readout
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
@@ -459,7 +470,8 @@ def graph_delta(
     ).strip()
 
     return GraphDeltaResult(
-        active=True,
+        active=dx is not None or dy is not None,
+        visible=dx is not None or dy is not None,
         delta_x=dx,
         delta_y=dy,
         dx=dx,
@@ -472,6 +484,6 @@ def graph_delta(
         unit_y=unit_y,
         raw_text=raw_text,
         graph_name=g_name,
-        verified=True,
+        verified=dx is not None or dy is not None,
         detail=detail,
     )
