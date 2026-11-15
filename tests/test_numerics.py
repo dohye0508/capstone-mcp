@@ -97,3 +97,28 @@ def test_render_svg_sparkline() -> None:
     assert "Linear SVG" in svg
     assert "circle" in svg
     assert "path" in svg
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-9, 1e-20, 1e20, 1e-200, 1e200])
+def test_linear_regression_respects_input_units(scale: float) -> None:
+    result = fit_linear_series([400 * scale, 500 * scale, 600 * scale], [3.0, 5.0, 7.0])
+    assert result.slope * scale == pytest.approx(0.02)
+    assert result.intercept == pytest.approx(-5.0)
+    assert result.r_squared == pytest.approx(1.0)
+
+@pytest.mark.parametrize("infinite", [float("inf"), -float("inf")])
+def test_linear_regression_does_not_silently_drop_infinity(infinite: float) -> None:
+    with pytest.raises(ValueError, match="finite measurements"):
+        fit_linear_series([1.0, 2.0, 3.0], [2.0, infinite, 6.0])
+
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_linear_regression_scales_both_axes_without_overflow(scale: float) -> None:
+    result = fit_linear_series([scale, 2 * scale, 3 * scale], [2 * scale, 4 * scale, 6 * scale])
+    assert result.slope == pytest.approx(2.0)
+    assert result.intercept / scale == pytest.approx(0.0, abs=1e-14)
+    assert result.r_squared == pytest.approx(1.0)
+
+
+def test_linear_regression_unrepresentable_result_fails() -> None:
+    with pytest.raises(ValueError, match="floating-point range"):
+        fit_linear_series([1e-300, 2e-300], [1e300, 2e300])

@@ -49,66 +49,13 @@ class ForcedOscillationRecipe(ExperimentRecipe):
         parameters: dict[str, Any] | None = None,
         app: Capstone | None = None,
     ) -> RecipePhaseResult:
-        """Configure Smart Cart position 100Hz, 480s stop condition, and displays."""
-        params = parameters or {}
-        pos_rate = float(
-            params.get("position_sample_rate_hz", DEFAULT_SAMPLING_RATE_HZ),
-        )
-        duration_s = float(
-            params.get("duration_s", DEFAULT_RECORDING_DURATION_S),
-        )
-        cart_mass = float(params.get("cart_mass_kg", DEFAULT_CART_MASS_KG))
-        spring_k = float(params.get("spring_constant_nm", DEFAULT_SPRING_CONSTANT_NM))
-
-        actions: list[str] = [
-            (
-                "Configured Smart Cart Wireless Position sensor sampling "
-                f"rate to {pos_rate} Hz"
-            ),
-            "Configured Smart Cart Force sensor sampling rate to 25 Hz",
-            (
-                "Configured automatic recording stop condition: "
-                f"type='time_duration', duration={duration_s} s"
-            ),
-            (
-                "Configured Digital Ch 1: Photogate Pendulum Timer "
-                "(Driver Frequency monitor)"
-            ),
-            (
-                "Configured two-page display layout: Position vs Time graph "
-                "& Amplitude vs Frequency graph"
-            ),
-            "Zeroed Smart Cart force sensor and verified magnetic damping gap",
-        ]
-
-        details: dict[str, Any] = {
-            "sensors": {
-                "smart_cart_position_rate_hz": pos_rate,
-                "smart_cart_force_rate_hz": 25.0,
-                "photogate_timer_channel": "Digital 1",
-            },
-            "recording_condition": {
-                "condition_type": "time_duration",
-                "duration_s": duration_s,
-            },
-            "system_parameters": {
-                "cart_mass_kg": cart_mass,
-                "spring_constant_nm": spring_k,
-                "theoretical_omega_0_rad_s": math.sqrt(spring_k / cart_mass),
-                "theoretical_f_0_hz": math.sqrt(spring_k / cart_mass) / (2.0 * math.pi),
-            },
-            "actions": actions,
-            "app_attached": app is not None,
-        }
-
+        """Report that automatic hardware configuration is not implemented."""
+        del parameters, app
         return RecipePhaseResult(
             phase="setup",
-            status="completed",
-            message=(
-                f"Smart Cart configured at {pos_rate} Hz position sampling with "
-                f"{duration_s} s automatic stop condition."
-            ),
-            details=details,
+            status="failed",
+            message="Automatic hardware setup is not implemented. Configure the "
+            "experiment manually and provide recorded data for analysis.",
         )
 
     def acquire(
@@ -121,8 +68,6 @@ class ForcedOscillationRecipe(ExperimentRecipe):
         params = parameters or {}
         m = float(params.get("cart_mass_kg", DEFAULT_CART_MASS_KG))
         k = float(params.get("spring_constant_nm", DEFAULT_SPRING_CONSTANT_NM))
-        b = float(params.get("damping_coefficient", DEFAULT_DAMPING_COEFF))
-        f_0_drive = float(params.get("drive_force_n", DEFAULT_DRIVE_FORCE_N))
 
         # Check for caller-provided resonance curve data
         if "driver_frequencies_hz" in params and "amplitudes_m" in params:
@@ -132,29 +77,23 @@ class ForcedOscillationRecipe(ExperimentRecipe):
             freqs = [float(f) for f in params["frequencies_hz"]]
             amps = [float(a) for a in params["amplitudes_m"]]
         else:
-            # Deterministic simulation of driven damped resonance response
-            omega_0 = math.sqrt(k / m)
-            f_0_nat = omega_0 / (2.0 * math.pi)
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Live acquisition is not implemented. Provide recorded "
+                "measurement arrays; synthetic data is not generated.",
+            )
 
-            f_min = max(0.2, f_0_nat * 0.4)
-            f_max = f_0_nat * 1.8
-            num_points = int(params.get("num_points", 35))
-            step = (f_max - f_min) / (num_points - 1)
-            freqs = [f_min + i * step for i in range(num_points)]
-
-            # Ensure resonant frequency is explicitly present
-            omega_res = math.sqrt(max(0.0, omega_0**2 - 2 * (b / (2 * m)) ** 2))
-            f_res_calc = omega_res / (2.0 * math.pi)
-            if not any(abs(f - f_res_calc) < FREQUENCY_TOLERANCE_HZ for f in freqs):
-                freqs.append(f_res_calc)
-                freqs.sort()
-
-            amps = []
-            for f in freqs:
-                omega = 2.0 * math.pi * f
-                denom = math.sqrt((omega**2 - omega_0**2) ** 2 + (omega * b / m) ** 2)
-                amp = (f_0_drive / m) / denom if denom > 0 else 0.0
-                amps.append(amp)
+        if (
+            not freqs
+            or len(freqs) != len(amps)
+            or not all(math.isfinite(v) for v in (*freqs, *amps))
+        ):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Provide nonempty, matching, finite measurement arrays.",
+            )
 
         details: dict[str, Any] = {
             "data": {
@@ -170,7 +109,7 @@ class ForcedOscillationRecipe(ExperimentRecipe):
         return RecipePhaseResult(
             phase="acquire",
             status="completed",
-            message=f"Acquired resonance curve across {len(freqs)} frequencies.",
+            message=f"Accepted {len(freqs)} caller-provided resonance samples.",
             details=details,
         )
 
@@ -193,11 +132,6 @@ class ForcedOscillationRecipe(ExperimentRecipe):
             or data.get("amplitudes_m")
         )
 
-        if not freqs_raw or not amps_raw:
-            default_data = self.acquire(params).details.get("data", {})
-            freqs_raw = default_data.get("driver_frequencies_hz")
-            amps_raw = default_data.get("amplitudes_m")
-
         m = float(
             params.get("cart_mass_kg")
             or data.get("cart_mass_kg")
@@ -219,6 +153,14 @@ class ForcedOscillationRecipe(ExperimentRecipe):
 
         freqs = [float(f) for f in freqs_raw]
         amps = [float(a) for a in amps_raw]
+
+        if len(freqs) != len(amps) or not all(
+            math.isfinite(v) for v in (*freqs, *amps)
+        ):
+            return RecipePhaseResult(
+                phase="analyze", status="failed",
+                message="Frequency and response require matching finite samples.",
+            )
 
         if len(freqs) < MIN_OSCILLATION_POINTS:
             return RecipePhaseResult(

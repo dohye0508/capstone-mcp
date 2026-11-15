@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 from datetime import UTC, datetime
@@ -48,6 +47,17 @@ MAX_ASCII_HEIGHT: Final[int] = 30
 AXIS_PADDING_RATIO: Final[float] = 0.05
 
 
+def _require_finite(values: Sequence[float]) -> None:
+    try:
+        finite = all(math.isfinite(value) for value in values)
+    except OverflowError as exc:
+        msg = "Report values exceed the floating-point range."
+        raise ValueError(msg) from exc
+    if not finite:
+        msg = "Report data and derived values must be finite."
+        raise ValueError(msg)
+
+
 def compute_data_summary(
     values: Sequence[float],
     variable_name: str,
@@ -67,6 +77,7 @@ def compute_data_summary(
             samples_preview=[],
         )
 
+    _require_finite(values)
     summary = compute_series_summary(values)
     preview = [float(v) for v in values[:MIN_PREVIEW_POINTS]]
 
@@ -110,6 +121,8 @@ def compute_linear_regression(
         )
         raise ValueError(msg)
 
+    _require_finite(x)
+    _require_finite(y)
     fit = fit_linear_series(x, y)
     slope = fit.slope
     intercept = fit.intercept
@@ -152,12 +165,14 @@ def compute_error_analysis(
     unit: str = "",
 ) -> ErrorAnalysisRow:
     """Calculate error against accepted physical constant."""
+    _require_finite((accepted_value, experimental_value))
     absolute_error = abs(experimental_value - accepted_value)
     if accepted_value != 0.0:
         relative_error_percent = (absolute_error / abs(accepted_value)) * 100.0
     else:
         relative_error_percent = 0.0
 
+    _require_finite((absolute_error, relative_error_percent))
     return ErrorAnalysisRow(
         parameter_name=parameter_name,
         symbol=symbol,
@@ -209,13 +224,14 @@ def _draw_canvas(
         for col in range(grid_w):
             cur_x = x_lo + (col / (grid_w - 1)) * (x_hi - x_lo)
             cur_y = slope * cur_x + intercept
+            _require_finite((cur_y, cur_y - y_lo))
             row = round((grid_h - 1) * (1.0 - (cur_y - y_lo) / (y_hi - y_lo)))
             if 0 <= row < grid_h:
                 canvas[row][col] = "·"
 
     if (x_hi - x_lo) > 0 and (y_hi - y_lo) > 0:
         for px, py in zip(x, y, strict=True):
-            col = round((grid_w - 1) * (px - x_lo) / (x_hi - x_lo))
+            col = round((grid_w - 1) * ((px - x_lo) / (x_hi - x_lo)))
             row = round((grid_h - 1) * (1.0 - (py - y_lo) / (y_hi - y_lo)))
             if 0 <= row < grid_h and 0 <= col < grid_w:
                 canvas[row][col] = "*"
@@ -235,7 +251,13 @@ def generate_ascii_plot(
     if not x or not y or len(x) != len(y):
         return "[Insufficient data for ASCII plot]"
 
+    _require_finite(x)
+    _require_finite(y)
+    if fit is not None:
+        _require_finite(fit)
     bounds = _plot_bounds(x, y, fit)
+    _require_finite(bounds)
+    _require_finite((bounds[1] - bounds[0], bounds[3] - bounds[2]))
     x_lo, x_hi, y_lo, y_hi = bounds
     width, height = size
     x_label, y_label = labels
@@ -270,34 +292,33 @@ def _load_csv_data(path: Path) -> dict[str, list[float]]:
 
 
 def _load_cap_data(path: Path) -> tuple[dict[str, list[float]], dict[str, str]]:
-    with contextlib.suppress(Exception):
-        return read_capfile_all_series(path)
-    return {}, {}
+    return read_capfile_all_series(path)
 
 
 def _load_json_data(path: Path) -> dict[str, list[float]]:
-    series: dict[str, list[float]] = {}
-    with contextlib.suppress(Exception), path.open("r", encoding="utf-8") as f:
-        loaded = json.load(f)
-        if isinstance(loaded, dict):
-            for k, v in loaded.items():
-                if isinstance(v, list) and all(
-                    isinstance(n, (int, float)) for n in v
-                ):
-                    series[k] = [float(n) for n in v]
-    return series
+    return _load_json_string(path.read_text(encoding="utf-8"))
 
 
 def _load_json_string(text: str) -> dict[str, list[float]]:
+    loaded = json.loads(text)
+    if not isinstance(loaded, dict):
+        msg = "Report JSON must be an object mapping names to numeric arrays."
+        raise ValueError(msg)  # noqa: TRY004 - malformed JSON data, not a caller type
     series: dict[str, list[float]] = {}
-    with contextlib.suppress(Exception):
-        loaded = json.loads(text)
-        if isinstance(loaded, dict):
-            for k, v in loaded.items():
-                if isinstance(v, list) and all(
-                    isinstance(n, (int, float)) for n in v
-                ):
-                    series[k] = [float(n) for n in v]
+    for key, values in loaded.items():
+        if not isinstance(values, list) or not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in values
+        ):
+            msg = f"Report series {key!r} must contain only numeric samples."
+            raise ValueError(msg)
+        try:
+            numbers = [float(value) for value in values]
+        except OverflowError as exc:
+            msg = f"Report series {key!r} exceeds the floating-point range."
+            raise ValueError(msg) from exc
+        _require_finite(numbers)
+        series[key] = numbers
     return series
 
 
@@ -307,6 +328,9 @@ def _load_data_from_file_or_string(
     """Parse numeric series and channel metadata from a path, JSON, or CSV."""
     if not file_path_or_run:
         return {}, {}
+
+    if file_path_or_run.lstrip().startswith(("{", "[")):
+        return _load_json_string(file_path_or_run), {}
 
     # Strict check for file paths
     is_path_like = (
@@ -328,13 +352,9 @@ def _load_data_from_file_or_string(
         if suffix == ".cap":
             return _load_cap_data(path)
         if suffix in [".csv", ".tsv"]:
-            with contextlib.suppress(Exception):
-                return _load_csv_data(path), {}
+            return _load_csv_data(path), {}
         if suffix == ".json":
             return _load_json_data(path), {}
-
-    if file_path_or_run.startswith("{") and file_path_or_run.endswith("}"):
-        return _load_json_string(file_path_or_run), {}
 
     return {}, {}
 
@@ -567,6 +587,9 @@ def _fit_adiabatic(
     x_vals: list[float],
     y_vals: list[float],
 ) -> tuple[RegressionSummary, list[ErrorAnalysisRow], str]:
+    if not all(math.isfinite(v) and v > 0 for v in (*x_vals, *y_vals)):
+        msg = "Adiabatic fitting requires finite positive volume and absolute pressure."
+        raise ValueError(msg)
     ln_v = [math.log(v) for v in x_vals]
     ln_p = [math.log(p) for p in y_vals]
     reg = compute_linear_regression(
@@ -632,11 +655,7 @@ def _compute_fit(
     if len(x_vals) < MIN_REGRESSION_POINTS or len(x_vals) != len(y_vals):
         return None, [], ""
 
-    if (
-        experiment_id == "adiabatic_gas"
-        and all(v > 0 for v in x_vals)
-        and all(p > 0 for p in y_vals)
-    ):
+    if experiment_id == "adiabatic_gas":
         return _fit_adiabatic(x_vals, y_vals)
 
     return _fit_general(experiment_id, x_key, y_key, active_series, units_map)
@@ -676,9 +695,8 @@ def generate_report(
     final_channels = {**cur_channels, **parsed_channels}
 
     if not active_series:
-        is_sample = (
-            file_path_or_run in ("sample", None)
-            or (file_path_or_run is not None and file_path_or_run.endswith("_sample"))
+        is_sample = file_path_or_run == "sample" or (
+            file_path_or_run is not None and file_path_or_run.endswith("_sample")
         )
         if is_sample and experiment_id in _CANONICAL_EXPERIMENT_METADATA:
             active_series = _canonical_fallback_series(experiment_id)
@@ -722,7 +740,10 @@ def generate_report(
         units_map,
     )
 
-    is_file = file_path_or_run and Path(file_path_or_run).is_file()
+    is_json = bool(
+        file_path_or_run and file_path_or_run.lstrip().startswith(("{", "[")),
+    )
+    is_file = file_path_or_run and not is_json and Path(file_path_or_run).is_file()
     run_name = file_path_or_run if file_path_or_run and not is_file else None
 
     metadata = ExperimentMetadata(

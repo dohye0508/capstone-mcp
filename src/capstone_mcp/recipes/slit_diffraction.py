@@ -2,6 +2,7 @@
 """Light Interference and Slit Diffraction experiment automation recipe."""
 
 import math
+from itertools import pairwise
 from typing import Any, Final
 
 from capstone_mcp.desktop import Capstone
@@ -64,10 +65,11 @@ def _derive_slit_width(
     elif left_minima:
         first_min_delta_mm = x_center_mm - left_minima[0]
 
-    slit_width_a_m = DEFAULT_SLIT_WIDTH_M
-    if first_min_delta_mm > 0:
-        delta_x_m = first_min_delta_mm * 1e-3
-        slit_width_a_m = (1.0 * wl * l_dist) / delta_x_m
+    if first_min_delta_mm <= 0:
+        msg = "No resolvable diffraction minimum; slit width cannot be measured."
+        raise ValueError(msg)
+    delta_x_m = first_min_delta_mm * 1e-3
+    slit_width_a_m = (wl * l_dist) / delta_x_m
 
     return first_min_delta_mm, slit_width_a_m
 
@@ -86,8 +88,7 @@ def _derive_slit_separation(
         return None
 
     spacings = [
-        abs(side_maxima[i + 1] - side_maxima[i])
-        for i in range(len(side_maxima) - 1)
+        abs(side_maxima[i + 1] - side_maxima[i]) for i in range(len(side_maxima) - 1)
     ]
     fringe_spacing_mm = math.fsum(spacings) / len(spacings)
     if fringe_spacing_mm <= 0:
@@ -95,6 +96,42 @@ def _derive_slit_separation(
 
     delta_d_m = fringe_spacing_mm * 1e-3
     return (1.0 * wl * l_dist) / delta_d_m
+
+
+def _verify_peak_symmetry(
+    positions: list[float],
+    center: float,
+    left: list[float],
+    right: list[float],
+) -> None:
+    """Require bracketing minima consistent with the measured spatial resolution."""
+    if not left or not right:
+        msg = "A minimum on each side is required to verify the central peak."
+        raise ValueError(msg)
+    resolution = max(b - a for a, b in pairwise(positions))
+    if abs((center - left[0]) - (right[0] - center)) > resolution:
+        msg = "Central peak and minima are asymmetric beyond sampling resolution."
+        raise ValueError(msg)
+
+
+def _central_peak(positions: list[float], values: list[float]) -> tuple[float, float]:
+    """Locate a contiguous maximum plateau and reject unresolved isolated spikes."""
+    if any(b <= a for a, b in pairwise(positions)):
+        msg = "Diffraction positions must be strictly increasing."
+        raise ValueError(msg)
+    peak = max(values)
+    indices = [i for i, value in enumerate(values) if value == peak]
+    first, last = indices[0], indices[-1]
+    if peak <= 0 or first == 0 or last == len(values) - 1:
+        msg = "Central peak is not resolved inside the diffraction scan."
+        raise ValueError(msg)
+    if last - first + 1 != len(indices):
+        msg = "Several disconnected maxima make the central peak ambiguous."
+        raise ValueError(msg)
+    if first == last and max(values[first - 1], values[last + 1]) <= peak * 0.1:
+        msg = "Isolated intensity spike is not a resolved diffraction peak."
+        raise ValueError(msg)
+    return (positions[first] + positions[last]) / 2.0, peak
 
 
 class SlitDiffractionRecipe(ExperimentRecipe):
@@ -113,60 +150,13 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         parameters: dict[str, Any] | None = None,
         app: Capstone | None = None,
     ) -> RecipePhaseResult:
-        """Configure optics bench, diode laser, translator, and light sensor."""
-        params = parameters or {}
-        wl_nm = float(
-            params.get("wavelength_nm", DEFAULT_LASER_WAVELENGTH_M * 1e9),
-        )
-        distance_m = float(
-            params.get("screen_distance_m", DEFAULT_SCREEN_DISTANCE_M),
-        )
-        slit_type = str(params.get("slit_type", "single_slit"))
-
-        actions: list[str] = [
-            (
-                f"Aligned Red Diode Laser ({wl_nm} nm) on 1.2 m Optics "
-                "Bench OS-8441"
-            ),
-            (
-                f"Configured Slit Wheel Accessory: type='{slit_type}' at "
-                f"distance L={distance_m} m"
-            ),
-            "Configured High Sensitivity Light Sensor CI-6504 (Gain: 10x)",
-            (
-                "Configured Rotary Motion Sensor for Linear Translation scan "
-                "(0.01 mm resolution)"
-            ),
-            (
-                "Created Light Intensity vs Position Graph display with peak "
-                "readout tools"
-            ),
-        ]
-
-        details: dict[str, Any] = {
-            "optics": {
-                "wavelength_nm": wl_nm,
-                "wavelength_m": wl_nm * 1e-9,
-                "screen_distance_m": distance_m,
-                "slit_type": slit_type,
-            },
-            "sensors": {
-                "light_sensor": "High Sensitivity Light Sensor (Analog A)",
-                "translation_sensor": "Rotary Motion Sensor (Digital 1 & 2)",
-            },
-            "display": "Intensity vs Position Graph",
-            "actions": actions,
-            "app_attached": app is not None,
-        }
-
+        """Report that automatic hardware configuration is not implemented."""
+        del parameters, app
         return RecipePhaseResult(
             phase="setup",
-            status="completed",
-            message=(
-                f"Configured optics bench for {slit_type} diffraction scan at "
-                f"L={distance_m} m with {wl_nm} nm laser."
-            ),
-            details=details,
+            status="failed",
+            message="Automatic hardware setup is not implemented. Configure the "
+            "experiment manually and provide recorded data for analysis.",
         )
 
     def acquire(
@@ -188,33 +178,23 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             pos_mm = [float(p) * 1000.0 for p in params["positions_m"]]
             intensities = [float(i) for i in params["intensities"]]
         else:
-            # Deterministic simulation of Fraunhofer diffraction pattern
-            a = float(params.get("slit_width_m", DEFAULT_SLIT_WIDTH_M))
-            d = float(params.get("slit_separation_m", DEFAULT_SLIT_SEPARATION_M))
-            num_points = int(params.get("num_points", 161))
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Live acquisition is not implemented. Provide recorded "
+                "measurement arrays; synthetic data is not generated.",
+            )
 
-            span_mm = 50.0  # -25 mm to +25 mm scan
-            step_mm = span_mm / (num_points - 1)
-            pos_mm = [-span_mm / 2.0 + i * step_mm for i in range(num_points)]
-            intensities = []
-
-            for x_val in pos_mm:
-                x_m = x_val * 1e-3
-                sin_theta = x_m / math.sqrt(x_m * x_m + l_dist * l_dist)
-
-                beta = (math.pi * a / wl) * sin_theta
-                diff_fac = (
-                    (math.sin(beta) / beta) ** 2 if abs(beta) > EPSILON_BETA else 1.0
-                )
-
-                if slit_type == "double_slit":
-                    alpha = (math.pi * d / wl) * sin_theta
-                    interf_fac = (math.cos(alpha)) ** 2
-                    intensity = 5.0 * interf_fac * diff_fac
-                else:
-                    intensity = 5.0 * diff_fac
-
-                intensities.append(round(intensity, 4))
+        if (
+            not pos_mm
+            or len(pos_mm) != len(intensities)
+            or not all(math.isfinite(v) for v in (*pos_mm, *intensities))
+        ):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Provide nonempty, matching, finite measurement arrays.",
+            )
 
         details: dict[str, Any] = {
             "data": {
@@ -232,7 +212,7 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         return RecipePhaseResult(
             phase="acquire",
             status="completed",
-            message=f"Acquired diffraction scan across {len(pos_mm)} positions.",
+            message=f"Accepted {len(pos_mm)} caller-provided diffraction samples.",
             details=details,
         )
 
@@ -251,11 +231,6 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         )
         int_raw = params.get("intensities") or data.get("intensities")
 
-        if not pos_raw or not int_raw:
-            default_data = self.acquire(params).details.get("data", {})
-            pos_raw = default_data.get("positions_mm")
-            int_raw = default_data.get("intensities")
-
         wl = float(
             params.get("wavelength_m")
             or data.get("wavelength_m")
@@ -267,9 +242,7 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             or DEFAULT_SCREEN_DISTANCE_M,
         )
         slit_type = str(
-            params.get("slit_type")
-            or data.get("slit_type")
-            or "single_slit",
+            params.get("slit_type") or data.get("slit_type") or "single_slit",
         )
 
         if not pos_raw or not int_raw:
@@ -281,25 +254,34 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             )
 
         positions_mm = [float(p) for p in pos_raw]
+        if "positions_m" in params and not (
+            params.get("positions_mm") or data.get("positions_mm")
+        ):
+            positions_mm = [p * 1000.0 for p in positions_mm]
         intensities = [float(i) for i in int_raw]
-
-        if len(positions_mm) < MIN_DIFFRACTION_POINTS:
+        if (
+            len(positions_mm) < MIN_DIFFRACTION_POINTS
+            or len(positions_mm) != len(intensities)
+            or not all(math.isfinite(v) for v in (*positions_mm, *intensities))
+        ):
             return RecipePhaseResult(
                 phase="analyze",
                 status="failed",
-                message="At least 5 points required for diffraction profile analysis.",
-                details={"points_count": len(positions_mm)},
+                message="Need 5 matching finite position/intensity samples.",
             )
 
-        # 1. Central peak
-        max_idx = 0
-        max_i = intensities[0]
-        for i, val in enumerate(intensities):
-            if val > max_i:
-                max_i = val
-                max_idx = i
+        if slit_type != "single_slit":
+            return RecipePhaseResult(
+                phase="analyze",
+                status="failed",
+                message="Double-slit envelope fitting is not implemented; "
+                "interference minima cannot determine slit width.",
+            )
 
-        x_center_mm = positions_mm[max_idx]
+        try:
+            x_center_mm, max_i = _central_peak(positions_mm, intensities)
+        except ValueError as exc:
+            return RecipePhaseResult(phase="analyze", status="failed", message=str(exc))
 
         # 2. Local extrema detection
         maxima_pts, minima_pts = _find_local_extrema(positions_mm, intensities)
@@ -310,21 +292,20 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         )
         right_minima = sorted([p for p, _ in minima_pts if p > x_center_mm])
 
-        first_min_delta_mm, slit_width_a_m = _derive_slit_width(
-            left_minima,
-            right_minima,
-            x_center_mm,
-            wl,
-            l_dist,
-        )
-
-        slit_separation_d_m: float | None = None
-        if slit_type == "double_slit":
-            slit_separation_d_m = _derive_slit_separation(
-                maxima_pts,
+        try:
+            _verify_peak_symmetry(positions_mm, x_center_mm, left_minima, right_minima)
+            first_min_delta_mm, slit_width_a_m = _derive_slit_width(
+                left_minima,
+                right_minima,
                 x_center_mm,
                 wl,
                 l_dist,
+            )
+        except ValueError as exc:
+            return RecipePhaseResult(
+                phase="analyze",
+                status="failed",
+                message=str(exc),
             )
 
         nominal_a = float(
@@ -348,29 +329,11 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             "slit_type": slit_type,
         }
 
-        if slit_separation_d_m is not None:
-            nominal_d = float(
-                params.get(
-                    "nominal_slit_separation_m",
-                    DEFAULT_SLIT_SEPARATION_M,
-                ),
-            )
-            d_diff = abs(slit_separation_d_m - nominal_d)
-            d_error_pct = (d_diff / nominal_d) * 100.0
-            details["derived_slit_separation_mm"] = round(
-                slit_separation_d_m * 1000.0,
-                4,
-            )
-            details["nominal_slit_separation_mm"] = round(nominal_d * 1000.0, 4)
-            details["slit_separation_error_pct"] = round(d_error_pct, 2)
-
         msg = (
             f"Central peak at {x_center_mm:.2f} mm (I={max_i:.2f}), "
             f"Slit width a = {slit_width_a_m * 1000.0:.3f} mm "
             f"(Nominal: {nominal_a * 1000.0:.3f} mm, Error: {a_error_pct:.1f}%)"
         )
-        if slit_separation_d_m is not None:
-            msg += f", Slit separation d = {slit_separation_d_m * 1000.0:.3f} mm"
 
         return RecipePhaseResult(
             phase="analyze",
