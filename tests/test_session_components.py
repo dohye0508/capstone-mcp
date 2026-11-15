@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from capstone_mcp import bridge
@@ -99,6 +101,58 @@ def test_telemetry_buffer_ring_and_stats() -> None:
     buf.clear(euid)
     assert buf.get_samples(euid) == []
     assert buf.get_latest(euid) is None
+
+
+def test_telemetry_limits_and_snapshot_are_explicit() -> None:
+    buf = TelemetryBuffer()
+    buf.push_sample("force", 1.0, timestamp=0.0)
+    assert buf.get_samples("force", limit=0) == []
+    with pytest.raises(ValueError, match="nonnegative"):
+        _ = buf.get_samples("force", limit=-1)
+    snapshot = buf.get_samples("force")
+    assert buf.sample_count("force") == 1
+    buf.clear()
+    assert snapshot == [(0.0, 1.0)]
+    assert buf.sample_count("force") == 0
+
+
+@pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf"), 1.0])
+def test_telemetry_invalid_timestamps_leave_buffer_unchanged(timestamp: float) -> None:
+    buf = TelemetryBuffer()
+    buf.push_sample("force", 9.8, timestamp=2.0)
+    with pytest.raises(ValueError, match=r"finite|must not decrease"):
+        buf.push_sample("force", 1.2, timestamp=timestamp)
+    assert buf.get_samples("force") == [(2.0, 9.8)]
+
+
+def test_telemetry_equal_timestamps_keep_arrival_order_and_clear_resets_epoch() -> None:
+    buf = TelemetryBuffer()
+    buf.push_sample("force", 9.8, timestamp=2.0)
+    buf.push_sample("force", 1.2, timestamp=2.0)
+    assert buf.get_samples("force") == [(2.0, 9.8), (2.0, 1.2)]
+    buf.clear("force")
+    buf.push_sample("force", 3.0, timestamp=0.0)
+    assert buf.get_samples("force") == [(0.0, 3.0)]
+
+
+def test_telemetry_concurrent_writers_and_snapshots() -> None:
+    buf = TelemetryBuffer(capacity=1000)
+
+    def write_samples(offset: int) -> None:
+        for index in range(200):
+            buf.push_sample("force", float(offset + index))
+            assert buf.compute_stats("force")["count"] > 0
+            assert buf.get_latest("force") is not None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(write_samples, offset) for offset in (0, 200, 400, 600)]
+        for future in futures:
+            future.result(timeout=10)
+    samples = buf.get_samples("force")
+    assert buf.sample_count("force") == 800
+    assert {value for _, value in samples} == set(range(800))
+    timestamps = [timestamp for timestamp, _ in samples]
+    assert timestamps == sorted(timestamps)
 
 
 def test_condition_watcher_evaluation_and_monitoring() -> None:

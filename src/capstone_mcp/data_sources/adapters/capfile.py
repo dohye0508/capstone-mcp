@@ -1,7 +1,11 @@
 # Copyright 2026 Capstone MCP contributors.
 """Adapter for reading data series from PASCO Capstone .cap archives."""
 
-from pathlib import Path
+from __future__ import annotations
+
+import math
+import unicodedata
+from typing import TYPE_CHECKING
 
 from capstone_mcp.capfiles import read_cap_file
 from capstone_mcp.data_sources.models import (
@@ -9,6 +13,47 @@ from capstone_mcp.data_sources.models import (
     DatasetMetadata,
     ExperimentSeries,
 )
+
+if TYPE_CHECKING:
+    from decimal import Decimal
+    from pathlib import Path
+
+    from capstone_mcp.capfile_models import CapDataSet
+
+
+def _finite_float(value: Decimal) -> float:
+    result = float(value)
+    if not math.isfinite(result) or (result == 0.0 and value != 0):
+        msg = "Saved numeric value is outside the nonzero finite floating-point range."
+        raise ValueError(msg)
+    return result
+
+
+def _resolve_dataset(datasets: list[CapDataSet], name: str) -> CapDataSet:
+    target = unicodedata.normalize("NFC", name.strip()).casefold()
+    if not target:
+        msg = "Dataset name must not be empty."
+        raise ValueError(msg)
+    exact: list[CapDataSet] = []
+    partial: list[CapDataSet] = []
+    for dataset in datasets:
+        names = [
+            unicodedata.normalize("NFC", value).casefold()
+            for value in (dataset.name, dataset.source_name)
+            if value
+        ]
+        if target in names:
+            exact.append(dataset)
+        elif any(target in value for value in names):
+            partial.append(dataset)
+    matches = exact or partial
+    if not matches:
+        msg = f"Dataset '{name}' not found in the selected run."
+        raise ValueError(msg)
+    if len(matches) > 1:
+        msg = f"Dataset '{name}' is ambiguous; specify a unique name and run_id."
+        raise ValueError(msg)
+    return matches[0]
 
 
 def read_capfile_datasets(path: Path) -> list[DatasetMetadata]:
@@ -22,9 +67,7 @@ def read_capfile_datasets(path: Path) -> list[DatasetMetadata]:
             f"Run #{d.run_number}" if d.run_number is not None else None
         )
         count = (
-            len(d.numeric_values)
-            if d.numeric_values is not None
-            else len(d.raw_values)
+            len(d.numeric_values) if d.numeric_values is not None else len(d.raw_values)
         )
         ds_name = (
             d.name
@@ -43,12 +86,15 @@ def read_capfile_datasets(path: Path) -> list[DatasetMetadata]:
 
 
 def read_capfile_series(
-    path: Path, x_name: str, y_name: str, run_id: str | None = None,
+    path: Path,
+    x_name: str,
+    y_name: str,
+    run_id: str | None = None,
 ) -> ExperimentSeries:
-    """Extract paired x and y series from a .cap archive."""
+    """Extract paired series; @independent selects saved coordinates without units."""
     archive = read_cap_file(path)
 
-    # Filter by run_id if specified, or pick first matching run
+    # An unspecified run must not silently select among repeated measurements.
     datasets = archive.datasets
     if run_id:
         datasets = [
@@ -56,49 +102,50 @@ def read_capfile_series(
             for d in datasets
             if (
                 d.run_name == run_id
-                or (
-                    d.run_number is not None
-                    and f"Run #{d.run_number}" == run_id
-                )
+                or (d.run_number is not None and f"Run #{d.run_number}" == run_id)
             )
         ]
 
-    # Find x and y datasets
-    x_ds = next(
-        (
-            d
-            for d in datasets
-            if (d.name and x_name.lower() in d.name.lower())
-            or (d.source_name and x_name.lower() in d.source_name.lower())
-        ),
-        None,
-    )
-    y_ds = next(
-        (
-            d
-            for d in datasets
-            if (d.name and y_name.lower() in d.name.lower())
-            or (d.source_name and y_name.lower() in d.source_name.lower())
-        ),
-        None,
-    )
-
-    if not x_ds and datasets:
-        x_ds = datasets[0]
-    if not y_ds and len(datasets) > 1:
-        y_ds = datasets[1]
-    elif not y_ds:
-        y_ds = x_ds
-
-    if not x_ds or not y_ds:
-        msg = f"Could not find datasets matching '{x_name}' and '{y_name}' in {path}"
+    y_ds = _resolve_dataset(datasets, y_name)
+    if x_name == "@independent":
+        if y_ds.numeric_values is None:
+            msg = "Selected dataset must contain numeric values."
+            raise ValueError(msg)
+        return ExperimentSeries(
+            x=DataSeries(
+                name="@independent",
+                units="",
+                values=[
+                    _finite_float(v) if v is not None else None
+                    for v in y_ds.independent_values
+                ],
+            ),
+            y=DataSeries(
+                name=y_ds.name or y_ds.source_name or y_name,
+                units=str(y_ds.unit_id) if y_ds.unit_id is not None else "",
+                values=[
+                    _finite_float(v) if v is not None else None
+                    for v in y_ds.numeric_values
+                ],
+            ),
+            run_id=y_ds.run_name
+            or (f"Run #{y_ds.run_number}" if y_ds.run_number is not None else None),
+            metadata={
+                "source": str(path),
+                "format": "cap",
+                "independent_kind": y_ds.independent_kind,
+            },
+        )
+    x_ds = _resolve_dataset(datasets, x_name)
+    if x_ds.numeric_values is None or y_ds.numeric_values is None:
+        msg = "Selected datasets must contain numeric values."
         raise ValueError(msg)
 
     # Extract numeric values (which can contain None for sparse cells)
     x_raw = x_ds.numeric_values or []
     y_raw = y_ds.numeric_values or []
-    x_vals = [float(v) if v is not None else None for v in x_raw]
-    y_vals = [float(v) if v is not None else None for v in y_raw]
+    x_vals = [_finite_float(v) if v is not None else None for v in x_raw]
+    y_vals = [_finite_float(v) if v is not None else None for v in y_raw]
 
     x_run_id = x_ds.run_name or (
         f"Run #{x_ds.run_number}" if x_ds.run_number is not None else None
@@ -106,6 +153,14 @@ def read_capfile_series(
     y_run_id = y_ds.run_name or (
         f"Run #{y_ds.run_number}" if y_ds.run_number is not None else None
     )
+    if x_run_id != y_run_id or (
+        x_run_id is not None and x_ds.data_set_id != y_ds.data_set_id
+    ):
+        msg = "Selected datasets belong to different runs."
+        raise ValueError(msg)
+    if len(x_vals) != len(y_vals):
+        msg = "Selected datasets have different sample counts."
+        raise ValueError(msg)
 
     return ExperimentSeries(
         x=DataSeries(
@@ -139,9 +194,18 @@ def read_capfile_all_series(
     for ds in datasets:
         name = ds.name or ds.source_name or f"Series_{ds.data_set_id}"
         if ds.numeric_values:
-            nums = [float(v) for v in ds.numeric_values if v is not None]
-            if nums:
-                series[name] = nums
+            if any(value is None for value in ds.numeric_values):
+                msg = (
+                    f"Series '{name}' contains missing samples; "
+                    "explicit alignment is required."
+                )
+                raise ValueError(msg)
+            if name in series:
+                msg = f"Series '{name}' occurs more than once; select an explicit run."
+                raise ValueError(msg)
+            series[name] = [
+                _finite_float(v) for v in ds.numeric_values if v is not None
+            ]
 
     cfg = read_cap_configuration(path)
     for iface in cfg.hardware_interfaces:
@@ -150,4 +214,3 @@ def read_capfile_all_series(
         )
 
     return series, channels
-

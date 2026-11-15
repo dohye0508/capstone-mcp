@@ -1,11 +1,12 @@
 # Copyright 2026 Capstone MCP contributors.
-"""Adapter for reading data series from CSV table files."""
+"""Read validated CSV data without inventing channels or shifting missing rows."""
 
-import contextlib
-import csv
+import math
 import re
+import unicodedata
 from pathlib import Path
 
+from capstone_mcp.csv_data import CsvDataError, parse_csv_number, read_csv_table
 from capstone_mcp.data_sources.models import (
     DataSeries,
     DatasetMetadata,
@@ -14,101 +15,106 @@ from capstone_mcp.data_sources.models import (
 
 
 def _parse_col_header(header: str) -> tuple[str, str]:
-    """Parse column header into name and optional unit (e.g. 'Time (s)')."""
     match = re.search(r"^(.+?)\s*\((.*?)\)$", header.strip())
     if match:
         return match.group(1).strip(), match.group(2).strip()
     return header.strip(), ""
 
 
+def _normalized(name: str) -> str:
+    return unicodedata.normalize("NFC", name.strip()).casefold()
+
+
+def _column_index(columns: list[tuple[str, str]], query: str) -> int:
+    target = _normalized(query)
+    exact = [i for i, (name, _) in enumerate(columns) if _normalized(name) == target]
+    partial = [i for i, (name, _) in enumerate(columns) if target in _normalized(name)]
+    matches = exact or partial
+    if not target or not matches:
+        msg = f"CSV column {query!r} was not found."
+        raise CsvDataError(msg)
+    if len(matches) != 1:
+        msg = f"CSV column {query!r} is ambiguous; use a unique header."
+        raise CsvDataError(msg)
+    return matches[0]
+
+
+class CsvNumberRangeError(CsvDataError):
+    """A numeric cell cannot be represented without overflow or zero underflow."""
+
+
+def _numeric_cell(value: str) -> float | None:
+    number = parse_csv_number(value)
+    if number is None:
+        return None
+    result = float(number)
+    if not math.isfinite(result) or (result == 0.0 and number != 0):
+        msg = "CSV number is outside the nonzero finite floating-point range."
+        raise CsvNumberRangeError(msg)
+    return result
+
+
 def read_csv_datasets(path: Path) -> list[DatasetMetadata]:
-    """Inspect CSV file and return dataset metadata for each column."""
-    with path.open("r", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        header = next(reader, None)
-        if not header:
-            return []
-        rows = list(reader)
-
-    metadata: list[DatasetMetadata] = []
-    for col_idx, col_name in enumerate(header):
-        name, unit = _parse_col_header(col_name)
-        count = sum(
-            1 for r in rows if col_idx < len(r) and r[col_idx].strip()
+    """Inspect bounded CSV metadata without claiming text cells are numeric."""
+    table = read_csv_table(path)
+    return [
+        DatasetMetadata(
+            name=_parse_col_header(header)[0],
+            units=_parse_col_header(header)[1],
+            run_id=None,
+            sample_count=sum(bool(row[index].strip()) for row in table.rows),
         )
-        metadata.append(
-            DatasetMetadata(
-                name=name,
-                units=unit,
-                run_id=None,
-                sample_count=count,
-            ),
-        )
-    return metadata
+        for index, header in enumerate(table.header)
+    ]
 
 
-def read_csv_series(
-    path: Path, x_name: str, y_name: str,
-) -> ExperimentSeries:
-    """Read paired x and y series from a CSV table."""
-    with path.open("r", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        header = next(reader, None)
-        if not header:
-            msg = f"Empty CSV file: {path}"
-            raise ValueError(msg)
-        rows = list(reader)
-
-    parsed_cols = [_parse_col_header(h) for h in header]
-
-    x_idx: int | None = None
-    y_idx: int | None = None
-
-    for i, (name, _) in enumerate(parsed_cols):
-        if x_name.lower() in name.lower() and x_idx is None:
-            x_idx = i
-        if y_name.lower() in name.lower() and y_idx is None:
-            y_idx = i
-
-    if x_idx is None:
-        x_idx = 0
-    if y_idx is None:
-        y_idx = 1 if len(parsed_cols) > 1 else 0
-
-    x_col_name, x_unit = parsed_cols[x_idx]
-    y_col_name, y_unit = parsed_cols[y_idx]
-
-    x_vals: list[float | None] = []
-    y_vals: list[float | None] = []
-
-    for r in rows:
-        xv = float(r[x_idx]) if x_idx < len(r) and r[x_idx].strip() else None
-        yv = float(r[y_idx]) if y_idx < len(r) and r[y_idx].strip() else None
-        x_vals.append(xv)
-        y_vals.append(yv)
-
+def read_csv_series(path: Path, x_name: str, y_name: str) -> ExperimentSeries:
+    """Select unique columns and retain blanks in their original sample positions."""
+    table = read_csv_table(path)
+    columns = [_parse_col_header(header) for header in table.header]
+    x_index = _column_index(columns, x_name)
+    y_index = _column_index(columns, y_name)
+    x_label, x_unit = columns[x_index]
+    y_label, y_unit = columns[y_index]
     return ExperimentSeries(
-        x=DataSeries(name=x_col_name, units=x_unit, values=x_vals),
-        y=DataSeries(name=y_col_name, units=y_unit, values=y_vals),
+        x=DataSeries(
+            name=x_label,
+            units=x_unit,
+            values=[_numeric_cell(row[x_index]) for row in table.rows],
+        ),
+        y=DataSeries(
+            name=y_label,
+            units=y_unit,
+            values=[_numeric_cell(row[y_index]) for row in table.rows],
+        ),
         metadata={"source": str(path), "format": "csv"},
     )
 
 
 def read_csv_all_columns(path: Path) -> dict[str, list[float]]:
-    """Read all numeric columns from a CSV table."""
+    """Read complete numeric columns; refuse ambiguous or silently shortened series."""
+    table = read_csv_table(path)
     series: dict[str, list[float]] = {}
-    with path.open("r", encoding="utf-8-sig") as f:
-        reader = csv.reader(f)
-        headers = next(reader, None)
-        if headers:
-            cols: list[list[float]] = [[] for _ in headers]
-            for row in reader:
-                for i, val in enumerate(row):
-                    if i < len(cols):
-                        with contextlib.suppress(ValueError):
-                            cols[i].append(float(val.strip()))
-            for h, col_data in zip(headers, cols, strict=False):
-                if col_data:
-                    series[h.strip()] = col_data
+    names: set[str] = set()
+    for index, header in enumerate(table.header):
+        values: list[float | None] = []
+        invalid = False
+        for row in table.rows:
+            try:
+                values.append(_numeric_cell(row[index]))
+            except CsvNumberRangeError:
+                raise
+            except CsvDataError:
+                invalid = True
+        if not any(value is not None for value in values):
+            continue
+        if invalid or any(value is None for value in values):
+            msg = f"CSV column {header!r} contains missing or invalid samples."
+            raise CsvDataError(msg)
+        name = header.strip()
+        if _normalized(name) in names:
+            msg = f"Duplicate numeric CSV column: {name!r}."
+            raise CsvDataError(msg)
+        names.add(_normalized(name))
+        series[name] = [value for value in values if value is not None]
     return series
-
