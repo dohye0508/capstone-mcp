@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 from typing import TYPE_CHECKING, Final
 
 import httpx2
@@ -47,8 +48,7 @@ class LiveMeasurementAdapter:
             TimeoutError,
         ) as exc:
             msg = (
-                "Capstone is not running for live source: "
-                f"live://measurements ({exc})"
+                f"Capstone is not running for live source: live://measurements ({exc})"
             )
             raise ValueError(msg) from exc
 
@@ -56,13 +56,16 @@ class LiveMeasurementAdapter:
         for m in inventory.measurements:
             if isinstance(m, dict):
                 name = str(
-                    m.get("name")
+                    m.get("MeasurementName")
+                    or m.get("name")
                     or m.get("Name")
                     or m.get("euid")
                     or "Measurement",
                 )
-                units = str(m.get("units") or m.get("Units") or "")
-                euid = str(m.get("euid") or m.get("EUID") or "").strip()
+                units = str(m.get("Unit") or m.get("units") or m.get("Units") or "")
+                euid = str(
+                    m.get("MeasurementEUID") or m.get("euid") or m.get("EUID") or "",
+                ).strip()
                 datasets.append(
                     DatasetMetadata(
                         name=name,
@@ -94,15 +97,15 @@ class LiveMeasurementAdapter:
             TimeoutError,
         ) as exc:
             msg = (
-                "Capstone is not running for live source: "
-                f"live://measurements ({exc})"
+                f"Capstone is not running for live source: live://measurements ({exc})"
             )
             raise ValueError(msg) from exc
 
         x_euid, x_units = self._resolve_measurement(inventory, x_name)
         y_euid, y_units = self._resolve_measurement(inventory, y_name)
 
-        if x_euid is None and x_name.strip().lower() in {"index", "sample"}:
+        index_name = unicodedata.normalize("NFC", x_name.strip()).casefold()
+        if x_euid is None and index_name in {"index", "sample", "인덱스", "샘플"}:
             x_val = 0.0
             x_units = ""
         elif x_euid is not None:
@@ -143,7 +146,7 @@ class LiveMeasurementAdapter:
         target_name: str,
     ) -> tuple[str | None, str]:
         """Search inventory measurements for a matching name or euid."""
-        target_lower = target_name.strip().casefold()
+        target_lower = unicodedata.normalize("NFC", target_name.strip()).casefold()
         if not target_lower:
             msg = "Measurement name must not be empty."
             raise ValueError(msg)
@@ -151,9 +154,19 @@ class LiveMeasurementAdapter:
         partial: list[tuple[str, str]] = []
         for m in inventory.measurements:
             if isinstance(m, dict):
-                name = str(m.get("name") or m.get("Name") or "").strip()
-                euid = str(m.get("euid") or m.get("EUID") or "").strip()
-                units = str(m.get("units") or m.get("Units") or "").strip()
+                name = unicodedata.normalize(
+                    "NFC",
+                    str(
+                        m.get("MeasurementName")
+                        or m.get("name") or m.get("Name") or "",
+                    ).strip(),
+                )
+                euid = str(
+                    m.get("MeasurementEUID") or m.get("euid") or m.get("EUID") or "",
+                ).strip()
+                units = str(
+                    m.get("Unit") or m.get("units") or m.get("Units") or "",
+                ).strip()
                 if not euid:
                     continue
                 if target_lower in {name.casefold(), euid.casefold()}:
