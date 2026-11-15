@@ -110,6 +110,7 @@ def test_worker_crash_attaches_stderr_to_native_session_error(
     script = tmp_path / "crashing_worker.py"
     script.write_text(
         "import sys\n"
+        "sys.stdin.readline()\n"
         "sys.stderr.write('Traceback (most recent call last):\\n')\n"
         "sys.stderr.write('  File \"worker.py\", line 42, in crash\\n')\n"
         "sys.stderr.write('RuntimeError: Fatal COM exception 0x80004005\\n')\n"
