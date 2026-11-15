@@ -102,3 +102,5 @@ These DEFECT-NUM IDs are distinct from P0-NUM01 (linear SI-scale regression) and
 - DEFECT-REP10: fixed-now by report finite source/fit/span validation; explicit ValueError rather than integer-conversion crash.
 - DEFECT-REP01: previously-fixed synthesis opt-in; loader error suppression removed now.
 - DEFECT-REP04: previously-fixed report computation/file I/O offloaded to thread; root verifies actual MCP wire handling.
+
+Final numerical review: original-basis coefficients are additionally evaluated with Horner at input samples and compared with the normalized fit in y-scaled units. Error tolerance is sqrt(machine epsilon) times polynomial size/normalized signal magnitude plus residual RMS; this reserves roughly half binary precision for conversion. The x=1e12+i, y=i² case now raises explicit numerical-instability ValueError instead of returning coefficients whose float predictions disagree despite normalized R²=1. Moderate translation and extreme representable scaling continue to pass. This is a fail-closed restriction, not a promise of stable extrapolation outside observed coordinates.
