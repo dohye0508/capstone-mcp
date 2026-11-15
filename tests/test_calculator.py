@@ -8,11 +8,44 @@ import pytest
 from capstone_mcp.calculator import (
     CreateCalculationRequest,
     CreateCalculationResult,
+    _find_editor_controls,
     _parse_calculation_name,
     create_calculation,
 )
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.models import Bounds, Control, Snapshot, Window
+
+
+def _editor(ref: str, name: str, *, enabled: bool = True) -> Control:
+    return Control(ref=ref, parent=None, name=name, control_type="Edit",
+                   automation_id="", enabled=enabled, visible=True,
+                   bounds=Bounds(left=0, top=0, right=100, bottom=30))
+
+
+def test_unrelated_edit_is_never_used_as_formula_or_unit() -> None:
+    assert _find_editor_controls([_editor("search", "Search")]) == (None, None)
+
+
+def test_ambiguous_formula_editors_are_not_selected_by_order() -> None:
+    with pytest.raises(AutomationError, match="ambiguous"):
+        _find_editor_controls([_editor("a", "Formula"), _editor("b", "Formula")])
+
+
+def test_disabled_formula_editor_is_not_mutated() -> None:
+    assert _find_editor_controls([_editor("a", "Formula", enabled=False)]) == (None, None)
+
+
+def test_truncated_calculator_snapshot_is_rejected_before_input() -> None:
+    app = MagicMock(spec=Capstone)
+    app.snapshot.return_value = Snapshot(
+        window=Window(handle=1, title="Capstone", process_id=1,
+                      bounds=Bounds(left=0, top=0, right=800, bottom=600)),
+        controls=[], truncated=True,
+    )
+    with pytest.raises(AutomationError, match="truncated"):
+        create_calculation(app, CreateCalculationRequest(handle=1, expression="a = 1"))
+    app.click.assert_not_called()
+    app.keys.assert_not_called()
 
 
 def test_create_calculation_rejects_empty_expression() -> None:

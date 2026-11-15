@@ -7,7 +7,7 @@ import sys
 from typing import Final, Literal
 
 from capstone_mcp.desktop import AutomationError, Capstone
-from capstone_mcp.models import Control, Model
+from capstone_mcp.models import Control, Model, Snapshot
 
 CALCULATOR_TOGGLE_SUFFIX: Final = ".ObjNameCalculator"
 CALCULATOR_NAME: Final = "Calculator"
@@ -104,11 +104,11 @@ def _find_editor_controls(
     controls: list[Control],
 ) -> tuple[Control | None, Control | None]:
     """Find the formula editor and unit editor controls in the calculator drawer."""
-    formula_ctrl: Control | None = None
-    unit_ctrl: Control | None = None
+    formulas: list[Control] = []
+    units: list[Control] = []
 
     for ctrl in controls:
-        if not ctrl.visible or ctrl.control_type != "Edit":
+        if not ctrl.visible or not ctrl.enabled or ctrl.control_type != "Edit":
             continue
         aid_lower = ctrl.automation_id.lower()
         name_lower = ctrl.name.lower()
@@ -117,18 +117,14 @@ def _find_editor_controls(
             or "formula" in name_lower
             or aid_lower.endswith(".calc")
         ):
-            formula_ctrl = ctrl
+            formulas.append(ctrl)
         elif "unit" in aid_lower or "unit" in name_lower:
-            unit_ctrl = ctrl
+            units.append(ctrl)
 
-    if not formula_ctrl:
-        edits = [c for c in controls if c.visible and c.control_type == "Edit"]
-        if edits:
-            formula_ctrl = edits[0]
-            if len(edits) > 1:
-                unit_ctrl = edits[1]
-
-    return formula_ctrl, unit_ctrl
+    if len(formulas) > 1 or len(units) > 1:
+        msg = "Calculator editor identity is ambiguous; no editor was selected."
+        raise AutomationError(msg)
+    return (formulas[0] if formulas else None, units[0] if units else None)
 
 
 def _set_editor_value(app: Capstone, handle: int, control: Control, value: str) -> None:
@@ -151,8 +147,16 @@ def _restore_calculator(app: Capstone, handle: int, *, failing: bool) -> None:
             raise
 
 
-def _write_unit(app: Capstone, handle: int, unit: str) -> None:
+def _calculator_snapshot(app: Capstone, handle: int) -> Snapshot:
     snapshot = app.snapshot(handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Calculator snapshot is truncated; editor identity cannot be verified."
+        raise AutomationError(msg)
+    return snapshot
+
+
+def _write_unit(app: Capstone, handle: int, unit: str) -> None:
+    snapshot = _calculator_snapshot(app, handle)
     _, unit_control = _find_editor_controls(snapshot.controls)
     if unit_control is None:
         msg = "Calculator unit editor disappeared after formula entry."
@@ -182,7 +186,7 @@ def create_calculation(
     calc_name = _parse_calculation_name(raw_expr)
 
     # 1. Inspect window and locate Calculator toggle
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    snapshot = _calculator_snapshot(app, request.handle)
     toggle_ctrl = _find_calculator_toggle(snapshot.controls)
     was_open = _is_calculator_open(app, toggle_ctrl)
 
@@ -194,7 +198,7 @@ def create_calculation(
 
     try:
         if opened_by_tool:
-            snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+            snapshot = _calculator_snapshot(app, request.handle)
         # 2. Locate formula editor and unit editor controls
         formula_ctrl, unit_ctrl = _find_editor_controls(snapshot.controls)
         if not formula_ctrl:
