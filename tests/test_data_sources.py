@@ -19,6 +19,7 @@ from capstone_mcp.data_sources import (
 )
 from capstone_mcp.data_sources.adapters.csv_file import read_csv_all_columns
 from capstone_mcp.displays import ReadTableResult
+from tests.test_capfiles import _payload, _write_cap, _xml
 
 
 def test_data_series_creation() -> None:
@@ -115,16 +116,16 @@ def test_live_session_adapter() -> None:
     assert series.y.clean_floats() == [10.0, 15.0]
 
 
-def test_cap_file_adapter_real_download_if_present() -> None:
-    """Test reading series from a real .cap file if available."""
-    dl_dir = Path(r"C:\Users\Jio\Downloads\(2026)캡스톤 실험별 파일")
-    sample_cap = dl_dir / "[열역학]단열 기체 법칙(TD-8565, 850)[13].cap"
-    if sample_cap.exists():
-        adapter = CapArchiveAdapter(sample_cap)
-        datasets = adapter.list_datasets()
-        assert len(datasets) > 0
-        series = adapter.get_series("부피", "압력")
-        assert series.x is not None
+def test_cap_file_adapter_reads_saved_samples(tmp_path: Path) -> None:
+    """Exercise archive adapter unconditionally; private corpus has separate tests."""
+    sample_cap = tmp_path / "samples.cap"
+    _write_cap(sample_cap, xml=_xml(2), payload=_payload(["1.25", "2.50"]))
+    adapter = CapArchiveAdapter(sample_cap)
+    datasets = adapter.list_datasets()
+    assert len(datasets) == 1
+    series = adapter.get_series("Observed Value", "Observed Value")
+    assert series.x.values == [1.25, 2.5]
+    assert series.y.values == [1.25, 2.5]
 
 
 def test_live_measurement_adapter_class() -> None:
