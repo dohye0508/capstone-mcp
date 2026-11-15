@@ -7,9 +7,28 @@ import math
 import time
 from collections import deque
 from threading import Lock
-from typing import Final
+from typing import Final, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_BUFFER_CAPACITY: Final = 1000
+
+
+class TelemetryClock(BaseModel):
+    """Caller-declared timestamp identity; no implicit clock conversion occurs."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+    clock_id: str = Field(min_length=1)
+    unit: Literal["seconds", "milliseconds", "microseconds", "nanoseconds", "ticks"]
+    origin: str = Field(min_length=1)
+
+
+class TelemetrySnapshot(BaseModel):
+    """Atomic copy of sample values and the clock needed to interpret timestamps."""
+
+    clock: TelemetryClock | None
+    samples: list[tuple[float, float]]
 
 
 class TelemetryBuffer:
@@ -19,6 +38,11 @@ class TelemetryBuffer:
         """Initialize telemetry buffer with bounded capacity per measurement."""
         self._capacity = max(1, capacity)
         self._buffers: dict[str, deque[tuple[float, float]]] = {}
+        self._clocks: dict[str, TelemetryClock] = {}
+        self._host_clock = TelemetryClock(
+            clock_id=f"host-monotonic:{uuid4().hex}", unit="seconds",
+            origin="unspecified monotonic epoch; not a hardware acquisition clock",
+        )
         self._lock = Lock()
 
     def push_sample(
@@ -26,20 +50,52 @@ class TelemetryBuffer:
         euid: str,
         value: float,
         timestamp: float | None = None,
+        *,
+        clock: TelemetryClock | None = None,
     ) -> None:
-        """Record a single timestamped measurement sample."""
+        """Record a sample, rejecting missing or mixed timestamp provenance."""
+        if timestamp is not None and clock is None:
+            msg = (
+                "Explicit telemetry timestamps require a clock identity, "
+                "unit and origin."
+            )
+            raise ValueError(msg)
+        if timestamp is None and clock is not None:
+            msg = "A declared external clock requires an explicit timestamp."
+            raise ValueError(msg)
+        selected_clock = self._host_clock if clock is None else clock
         with self._lock:
             ts = timestamp if timestamp is not None else time.monotonic()
             if not math.isfinite(ts):
                 msg = "Telemetry timestamp must be finite."
                 raise ValueError(msg)
             buf = self._buffers.get(euid)
+            if euid in self._clocks and self._clocks[euid] != selected_clock:
+                msg = (
+                    "Telemetry clock domain, unit or origin changed; "
+                    "clear before reuse."
+                )
+                raise ValueError(msg)
             if buf and ts < buf[-1][0]:
                 msg = "Telemetry timestamps must not decrease within a measurement."
                 raise ValueError(msg)
             if buf is None:
                 buf = self._buffers[euid] = deque(maxlen=self._capacity)
+                self._clocks[euid] = selected_clock
             buf.append((ts, value))
+
+    def get_clock(self, euid: str) -> TelemetryClock | None:
+        """Return immutable timestamp provenance for retained channel samples."""
+        with self._lock:
+            return self._clocks.get(euid)
+
+    def get_snapshot(self, euid: str) -> TelemetrySnapshot:
+        """Export timestamps with their provenance under the same buffer lock."""
+        with self._lock:
+            return TelemetrySnapshot(
+                clock=self._clocks.get(euid),
+                samples=list(self._buffers.get(euid, ())),
+            )
 
     def get_samples(
         self,
@@ -74,8 +130,10 @@ class TelemetryBuffer:
         with self._lock:
             if euid is not None:
                 self._buffers.pop(euid, None)
+                self._clocks.pop(euid, None)
             else:
                 self._buffers.clear()
+                self._clocks.clear()
 
     def compute_stats(self, euid: str) -> dict[str, float]:
         """Compute basic summary statistics for buffered samples."""

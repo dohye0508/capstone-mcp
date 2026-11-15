@@ -11,7 +11,7 @@ from capstone_mcp import bridge
 from capstone_mcp.bridge import NativeInventory
 from capstone_mcp.session.cdp_client import SessionCdpClient
 from capstone_mcp.session.lifecycle import SessionLifecycleManager
-from capstone_mcp.session.telemetry import TelemetryBuffer
+from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
 from capstone_mcp.session.watcher import (
     ConditionWatcher,
     StopCondition,
@@ -73,7 +73,7 @@ def test_telemetry_buffer_ring_and_stats() -> None:
 
     # Push 6 samples to trigger ring-buffer overflow (capacity=5)
     for i in range(1, 7):
-        buf.push_sample(euid, float(i), timestamp=100.0 + float(i))
+        buf.push_sample(euid, float(i), timestamp=100.0 + float(i), clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
 
     samples = buf.get_samples(euid)
     assert len(samples) == 5
@@ -105,7 +105,7 @@ def test_telemetry_buffer_ring_and_stats() -> None:
 
 def test_telemetry_limits_and_snapshot_are_explicit() -> None:
     buf = TelemetryBuffer()
-    buf.push_sample("force", 1.0, timestamp=0.0)
+    buf.push_sample("force", 1.0, timestamp=0.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     assert buf.get_samples("force", limit=0) == []
     with pytest.raises(ValueError, match="nonnegative"):
         _ = buf.get_samples("force", limit=-1)
@@ -119,19 +119,19 @@ def test_telemetry_limits_and_snapshot_are_explicit() -> None:
 @pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), float("-inf"), 1.0])
 def test_telemetry_invalid_timestamps_leave_buffer_unchanged(timestamp: float) -> None:
     buf = TelemetryBuffer()
-    buf.push_sample("force", 9.8, timestamp=2.0)
+    buf.push_sample("force", 9.8, timestamp=2.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     with pytest.raises(ValueError, match=r"finite|must not decrease"):
-        buf.push_sample("force", 1.2, timestamp=timestamp)
+        buf.push_sample("force", 1.2, timestamp=timestamp, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     assert buf.get_samples("force") == [(2.0, 9.8)]
 
 
 def test_telemetry_equal_timestamps_keep_arrival_order_and_clear_resets_epoch() -> None:
     buf = TelemetryBuffer()
-    buf.push_sample("force", 9.8, timestamp=2.0)
-    buf.push_sample("force", 1.2, timestamp=2.0)
+    buf.push_sample("force", 9.8, timestamp=2.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
+    buf.push_sample("force", 1.2, timestamp=2.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     assert buf.get_samples("force") == [(2.0, 9.8), (2.0, 1.2)]
     buf.clear("force")
-    buf.push_sample("force", 3.0, timestamp=0.0)
+    buf.push_sample("force", 3.0, timestamp=0.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     assert buf.get_samples("force") == [(0.0, 3.0)]
 
 

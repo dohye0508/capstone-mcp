@@ -137,6 +137,9 @@ class LiveMeasurementAdapter:
                 "uri": "live://measurements",
                 "x_euid": x_euid or "sample_index",
                 "y_euid": y_euid,
+                "sampling": "sequential_instantaneous",
+                "synchronized": "false",
+                "timestamps_exported": "false",
             },
         )
 
