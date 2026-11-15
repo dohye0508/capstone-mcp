@@ -80,7 +80,7 @@ class ExperimentRecipe(ABC):
         # 1. Setup Phase
         setup_res = self.setup(params, app=app)
         phase_results["setup"] = setup_res
-        if setup_res.status == "failed":
+        if setup_res.status != "completed":
             return ExperimentMacroResult(
                 success=False,
                 experiment_id=self.experiment_id,
@@ -93,7 +93,7 @@ class ExperimentRecipe(ABC):
         # 2. Acquire Phase
         acquire_res = self.acquire(params, app=app)
         phase_results["acquire"] = acquire_res
-        if acquire_res.status == "failed":
+        if acquire_res.status != "completed":
             return ExperimentMacroResult(
                 success=False,
                 experiment_id=self.experiment_id,
@@ -113,7 +113,7 @@ class ExperimentRecipe(ABC):
         # 3. Analyze Phase
         analyze_res = self.analyze(params)
         phase_results["analyze"] = analyze_res
-        if analyze_res.status == "failed":
+        if analyze_res.status != "completed":
             return ExperimentMacroResult(
                 success=False,
                 experiment_id=self.experiment_id,
@@ -224,37 +224,37 @@ def run_experiment_macro(
     if normalized_action == "setup":
         res = recipe.setup(params, app=app)
         return ExperimentMacroResult(
-            success=res.status != "failed",
+            success=res.status == "completed",
             experiment_id=recipe.experiment_id,
             action="setup",
             phase_results={"setup": res},
             summary=res.message,
             data=res.details,
-            error=res.message if res.status == "failed" else None,
+            error=res.message if res.status != "completed" else None,
         )
 
     if normalized_action == "acquire":
         res = recipe.acquire(params, app=app)
         return ExperimentMacroResult(
-            success=res.status != "failed",
+            success=res.status == "completed",
             experiment_id=recipe.experiment_id,
             action="acquire",
             phase_results={"acquire": res},
             summary=res.message,
             data=res.details,
-            error=res.message if res.status == "failed" else None,
+            error=res.message if res.status != "completed" else None,
         )
 
     if normalized_action == "analyze":
         res = recipe.analyze(params)
         return ExperimentMacroResult(
-            success=res.status != "failed",
+            success=res.status == "completed",
             experiment_id=recipe.experiment_id,
             action="analyze",
             phase_results={"analyze": res},
             summary=res.message,
             data=res.details,
-            error=res.message if res.status == "failed" else None,
+            error=res.message if res.status != "completed" else None,
         )
 
     msg = (

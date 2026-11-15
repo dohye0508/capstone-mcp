@@ -203,8 +203,7 @@ def test_generate_report_photoelectric_effect() -> None:
 
     assert report.metadata.experiment_id == "photoelectric_effect"
     is_match = (
-        "Photoelectric" in report.metadata.title
-        or "광전 효과" in report.metadata.title
+        "Photoelectric" in report.metadata.title or "광전 효과" in report.metadata.title
     )
     assert is_match
     assert report.regression is not None
@@ -321,3 +320,21 @@ async def test_capstone_generate_lab_report_tool(tmp_path: Path) -> None:
     assert out_file.exists()
     saved_text = out_file.read_text(encoding="utf-8")
     assert "Laboratory Report" in saved_text
+
+
+@pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
+def test_adiabatic_report_rejects_invalid_absolute_pressure(invalid: float) -> None:
+    with pytest.raises(ValueError, match="finite positive"):
+        generate_report(
+            experiment_id="adiabatic_gas",
+            data_series={"Volume": [1.0, 2.0, 3.0], "Pressure": [100.0, invalid, 50.0]},
+        )
+
+
+def test_report_requires_explicit_sample_request() -> None:
+    with pytest.raises(ValueError, match="No experimental data"):
+        generate_report(experiment_id="photoelectric_effect")
+    report = generate_report(
+        file_path_or_run="sample", experiment_id="photoelectric_effect",
+    )
+    assert "Sample / Demonstration" in report.metadata.title

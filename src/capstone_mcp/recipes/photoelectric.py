@@ -49,49 +49,13 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
         parameters: dict[str, Any] | None = None,
         app: Capstone | None = None,
     ) -> RecipePhaseResult:
-        """Configure hardware channels, table displays, and keep sample mode."""
-        params = parameters or {}
-        wavelengths = params.get("wavelengths_nm", CANONICAL_WAVELENGTHS_NM)
-
-        actions_performed: list[str] = [
-            "Configured Analog Ch A: DC Current Amplifier SE-9622 (Range: 10^-13 A)",
-            "Configured Analog Ch B: DC Power Supply SE-9644 (-4.5 V to 0.0 V)",
-            "Set sampling mode to 'keep_sample' for manual stopping voltage points",
-            (
-                "Created Table display with columns: Wavelength, Frequency, "
-                "Stopping Potential, Current"
-            ),
-            (
-                "Initialized optical bench geometry and mercury light "
-                "source SE-6609 guidance"
-            ),
-        ]
-
-        details: dict[str, Any] = {
-            "channels": {
-                "analog_a": "DC Current Amplifier (Photocurrent)",
-                "analog_b": "DC Power Supply (Stopping Potential)",
-            },
-            "sampling_mode": "keep_sample",
-            "wavelengths_nm": wavelengths,
-            "actions": actions_performed,
-            "table_columns": [
-                "Wavelength (nm)",
-                "Frequency (Hz)",
-                "Stopping Potential (V)",
-                "Photocurrent (A)",
-            ],
-            "app_attached": app is not None,
-        }
-
+        """Report that automatic hardware configuration is not implemented."""
+        del parameters, app
         return RecipePhaseResult(
             phase="setup",
-            status="completed",
-            message=(
-                f"Photoelectric apparatus configured for {len(wavelengths)} "
-                "spectral lines with Keep Sample stopping potential acquisition."
-            ),
-            details=details,
+            status="failed",
+            message="Automatic hardware setup is not implemented. Configure the "
+            "experiment manually and provide recorded data for analysis.",
         )
 
     def acquire(
@@ -112,14 +76,12 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
         elif "stopping_voltages" in params:
             voltages = [float(v) for v in params["stopping_voltages"]]
         else:
-            # Deterministic simulation based on photoelectric equation
-            voltages = list(DEFAULT_STOPPING_VOLTAGES_V[: len(wavelengths)])
-            if len(voltages) < len(wavelengths):
-                work_func_ev = 1.95
-                voltages = [
-                    max(0.0, (SPEED_OF_LIGHT / (w * 1e-9) * HE_ACCEPTED) - work_func_ev)
-                    for w in wavelengths
-                ]
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Live acquisition is not implemented. Provide recorded "
+                "measurement arrays; synthetic data is not generated.",
+            )
 
         if len(voltages) != len(wavelengths):
             return RecipePhaseResult(
@@ -135,6 +97,23 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
                 },
             )
 
+        if (
+            not wavelengths
+            or len(wavelengths) != len(voltages)
+            or not all(math.isfinite(v) for v in (*wavelengths, *voltages))
+        ):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Provide nonempty, matching, finite measurement arrays.",
+            )
+
+        if not all(math.isfinite(w) and w > 0 for w in wavelengths):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Wavelengths must be finite and positive.",
+            )
         frequencies = [SPEED_OF_LIGHT / (w * 1e-9) for w in wavelengths]
 
         records: list[dict[str, float]] = [
@@ -146,7 +125,7 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
             for w, f, v in zip(wavelengths, frequencies, voltages, strict=True)
         ]
 
-        acq_mode = "user_provided" if "stopping_voltages_v" in params else "simulated"
+        acq_mode = "user_provided"
         details: dict[str, Any] = {
             "records": records,
             "data": {
@@ -161,7 +140,7 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
         return RecipePhaseResult(
             phase="acquire",
             status="completed",
-            message=f"Acquired stopping potential data across {len(records)} lines.",
+            message=f"Accepted {len(records)} caller-provided stopping voltages.",
             details=details,
         )
 
@@ -181,8 +160,11 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
         )
 
         if not wavelengths_raw or not voltages_raw:
-            wavelengths_raw = CANONICAL_WAVELENGTHS_NM
-            voltages_raw = DEFAULT_STOPPING_VOLTAGES_V
+            return RecipePhaseResult(
+                phase="analyze",
+                status="failed",
+                message="Provide wavelength and stopping voltage measurements.",
+            )
 
         wavelengths = [float(w) for w in wavelengths_raw]
         voltages = [float(v) for v in voltages_raw]
@@ -209,6 +191,14 @@ class PhotoelectricEffectRecipe(ExperimentRecipe):
                 },
             )
 
+        if not all(math.isfinite(w) and w > 0 for w in wavelengths) or not all(
+            math.isfinite(v) for v in voltages
+        ):
+            return RecipePhaseResult(
+                phase="analyze",
+                status="failed",
+                message="Provide positive finite wavelengths and finite voltages.",
+            )
         frequencies = [SPEED_OF_LIGHT / (w * 1e-9) for w in wavelengths]
 
         # OLS regression: V = (h/e)*f - (phi/e)

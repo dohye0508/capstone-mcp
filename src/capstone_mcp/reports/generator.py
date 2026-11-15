@@ -567,6 +567,9 @@ def _fit_adiabatic(
     x_vals: list[float],
     y_vals: list[float],
 ) -> tuple[RegressionSummary, list[ErrorAnalysisRow], str]:
+    if not all(math.isfinite(v) and v > 0 for v in (*x_vals, *y_vals)):
+        msg = "Adiabatic fitting requires finite positive volume and absolute pressure."
+        raise ValueError(msg)
     ln_v = [math.log(v) for v in x_vals]
     ln_p = [math.log(p) for p in y_vals]
     reg = compute_linear_regression(
@@ -632,11 +635,7 @@ def _compute_fit(
     if len(x_vals) < MIN_REGRESSION_POINTS or len(x_vals) != len(y_vals):
         return None, [], ""
 
-    if (
-        experiment_id == "adiabatic_gas"
-        and all(v > 0 for v in x_vals)
-        and all(p > 0 for p in y_vals)
-    ):
+    if experiment_id == "adiabatic_gas":
         return _fit_adiabatic(x_vals, y_vals)
 
     return _fit_general(experiment_id, x_key, y_key, active_series, units_map)
@@ -676,9 +675,8 @@ def generate_report(
     final_channels = {**cur_channels, **parsed_channels}
 
     if not active_series:
-        is_sample = (
-            file_path_or_run in ("sample", None)
-            or (file_path_or_run is not None and file_path_or_run.endswith("_sample"))
+        is_sample = file_path_or_run == "sample" or (
+            file_path_or_run is not None and file_path_or_run.endswith("_sample")
         )
         if is_sample and experiment_id in _CANONICAL_EXPERIMENT_METADATA:
             active_series = _canonical_fallback_series(experiment_id)

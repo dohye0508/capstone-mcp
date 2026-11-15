@@ -48,66 +48,13 @@ class RLCResonanceRecipe(ExperimentRecipe):
         parameters: dict[str, Any] | None = None,
         app: Capstone | None = None,
     ) -> RecipePhaseResult:
-        """Configure 850 sweep, Scope/FFT, and analog voltage channels."""
-        params = parameters or {}
-        start_f = float(params.get("start_freq_hz", DEFAULT_SWEEP_START_HZ))
-        stop_f = float(params.get("stop_freq_hz", DEFAULT_SWEEP_STOP_HZ))
-        amplitude_v = float(params.get("amplitude_v", DEFAULT_AMPLITUDE_V))
-        waveform = str(params.get("waveform", "Sine"))
-
-        res_ohm = float(params.get("resistance_ohm", DEFAULT_RESISTANCE_OHM))
-        ind_h = float(params.get("inductance_h", DEFAULT_INDUCTANCE_H))
-        cap_f = float(params.get("capacitance_f", DEFAULT_CAPACITANCE_F))
-
-        actions: list[str] = [
-            (
-                f"Configured 850 Signal Generator Output 1: Waveform={waveform}, "
-                f"Amplitude={amplitude_v} V, Sweep={start_f} Hz to {stop_f} Hz"
-            ),
-            "Configured Analog Ch A: Resistor Voltage V_R",
-            "Configured Analog Ch B: Inductor Voltage V_L",
-            "Configured Analog Ch C: Capacitor Voltage V_C",
-            (
-                "Created Oscilloscope display with edge trigger on Ch A "
-                "(Rising edge, 0.0 V)"
-            ),
-            (
-                "Created FFT Frequency Spectrum display with Hann windowing for "
-                "harmonic peak detection"
-            ),
-        ]
-
-        details: dict[str, Any] = {
-            "signal_generator": {
-                "output": 1,
-                "waveform": waveform,
-                "amplitude_v": amplitude_v,
-                "sweep_start_hz": start_f,
-                "sweep_stop_hz": stop_f,
-            },
-            "channels": {
-                "analog_a": "Resistor Voltage (V_R)",
-                "analog_b": "Inductor Voltage (V_L)",
-                "analog_c": "Capacitor Voltage (V_C)",
-            },
-            "displays": ["Scope", "FFT Spectrum"],
-            "circuit_components": {
-                "resistance_ohm": res_ohm,
-                "inductance_h": ind_h,
-                "capacitance_f": cap_f,
-            },
-            "actions": actions,
-            "app_attached": app is not None,
-        }
-
+        """Report that automatic hardware configuration is not implemented."""
+        del parameters, app
         return RecipePhaseResult(
             phase="setup",
-            status="completed",
-            message=(
-                f"Configured 850 signal generator sweep ({start_f} Hz - {stop_f} Hz) "
-                "and Scope/FFT monitoring channels for RLC resonance."
-            ),
-            details=details,
+            status="failed",
+            message="Automatic hardware setup is not implemented. Configure the "
+            "experiment manually and provide recorded data for analysis.",
         )
 
     def acquire(
@@ -121,39 +68,18 @@ class RLCResonanceRecipe(ExperimentRecipe):
         r_val = float(params.get("resistance_ohm", DEFAULT_RESISTANCE_OHM))
         l_val = float(params.get("inductance_h", DEFAULT_INDUCTANCE_H))
         c_val = float(params.get("capacitance_f", DEFAULT_CAPACITANCE_F))
-        v_in = float(params.get("amplitude_v", DEFAULT_AMPLITUDE_V))
 
         # Check for user-provided dataset
         if "frequencies_hz" in params and "voltages_v" in params:
             freqs = [float(f) for f in params["frequencies_hz"]]
             volts = [float(v) for v in params["voltages_v"]]
         else:
-            # Deterministic simulation of frequency sweep response
-            start_f = float(params.get("start_freq_hz", DEFAULT_SWEEP_START_HZ))
-            stop_f = float(params.get("stop_freq_hz", DEFAULT_SWEEP_STOP_HZ))
-            num_points = int(params.get("num_points", 80))
-
-            log_start = math.log10(start_f)
-            log_stop = math.log10(stop_f)
-            step = (log_stop - log_start) / (num_points - 1)
-            freqs = [10.0 ** (log_start + i * step) for i in range(num_points)]
-
-            # Also ensure theoretical f0 is included for precision
-            f0_th = 1.0 / (2.0 * math.pi * math.sqrt(l_val * c_val))
-            if start_f <= f0_th <= stop_f and not any(
-                abs(f - f0_th) < 1.0 for f in freqs
-            ):
-                freqs.append(f0_th)
-                freqs.sort()
-
-            volts = []
-            for f in freqs:
-                omega = 2.0 * math.pi * f
-                x_l = omega * l_val
-                x_c = 1.0 / (omega * c_val)
-                z = math.sqrt(r_val * r_val + (x_l - x_c) ** 2)
-                v_r = (v_in / z) * r_val
-                volts.append(v_r)
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Live acquisition is not implemented. Provide recorded "
+                "measurement arrays; synthetic data is not generated.",
+            )
 
         if len(freqs) != len(volts):
             return RecipePhaseResult(
@@ -164,6 +90,17 @@ class RLCResonanceRecipe(ExperimentRecipe):
                     "frequencies_count": len(freqs),
                     "voltages_count": len(volts),
                 },
+            )
+
+        if (
+            not freqs
+            or len(freqs) != len(volts)
+            or not all(math.isfinite(v) for v in (*freqs, *volts))
+        ):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Provide nonempty, matching, finite measurement arrays.",
             )
 
         details: dict[str, Any] = {
@@ -182,7 +119,7 @@ class RLCResonanceRecipe(ExperimentRecipe):
         return RecipePhaseResult(
             phase="acquire",
             status="completed",
-            message=f"Acquired frequency sweep data across {len(freqs)} points.",
+            message=f"Accepted {len(freqs)} caller-provided frequency sweep points.",
             details=details,
         )
 
@@ -196,11 +133,6 @@ class RLCResonanceRecipe(ExperimentRecipe):
 
         freqs_raw = params.get("frequencies_hz") or data.get("frequencies_hz")
         volts_raw = params.get("voltages_v") or data.get("voltages_v")
-
-        if not freqs_raw or not volts_raw:
-            default_data = self.acquire(params).details.get("data", {})
-            freqs_raw = default_data.get("frequencies_hz")
-            volts_raw = default_data.get("voltages_v")
 
         r_val = float(
             params.get("resistance_ohm")
@@ -228,6 +160,14 @@ class RLCResonanceRecipe(ExperimentRecipe):
 
         freqs = [float(f) for f in freqs_raw]
         volts = [float(v) for v in volts_raw]
+
+        if len(freqs) != len(volts) or not all(
+            math.isfinite(v) for v in (*freqs, *volts)
+        ):
+            return RecipePhaseResult(
+                phase="analyze", status="failed",
+                message="Frequency and response require matching finite samples.",
+            )
 
         if len(freqs) < MIN_RESONANCE_POINTS:
             return RecipePhaseResult(

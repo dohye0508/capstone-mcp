@@ -117,55 +117,6 @@ def test_custom_recipe_registry_isolation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_photoelectric_setup_phase() -> None:
-    """Verify Photoelectric Effect setup phase hardware configuration."""
-    recipe = PhotoelectricEffectRecipe()
-    res = recipe.setup()
-    assert res.phase == "setup"
-    assert res.status == "completed"
-    assert "wavelengths_nm" in res.details
-    assert len(res.details["wavelengths_nm"]) == 5
-    assert res.details["sampling_mode"] == "keep_sample"
-    assert "DC Current Amplifier" in res.details["channels"]["analog_a"]
-    assert "DC Power Supply" in res.details["channels"]["analog_b"]
-
-
-def test_photoelectric_acquire_phase_simulation() -> None:
-    """Verify Photoelectric Effect acquisition phase with simulated lines."""
-    recipe = PhotoelectricEffectRecipe()
-    res = recipe.acquire()
-    assert res.phase == "acquire"
-    assert res.status == "completed"
-    assert res.details["sample_count"] == 5
-    data = res.details["data"]
-    assert len(data["frequencies_hz"]) == 5
-    assert len(data["stopping_voltages_v"]) == 5
-    # Shorter wavelength (higher frequency) should require higher stopping voltage
-    assert data["stopping_voltages_v"][0] > data["stopping_voltages_v"][-1]
-
-
-def test_photoelectric_analyze_h_over_e_fit() -> None:
-    """Verify Planck's constant extraction and linear fit convergence."""
-    recipe = PhotoelectricEffectRecipe()
-    acquire_res = recipe.acquire()
-    res = recipe.analyze(acquire_res.details)
-
-    assert res.phase == "analyze"
-    assert res.status == "completed"
-    det = res.details
-
-    # Physical convergence checks (Planck's constant order ~10^-34 J*s)
-    h_exp = det["planck_constant_exp_js"]
-    assert 6.0e-34 < h_exp < 7.2e-34
-    assert det["planck_constant_error_pct"] < 5.0  # within 5% of theoretical
-
-    # Work function and cutoff frequency
-    assert 1.5 < det["work_function_ev"] < 2.5
-    assert det["cutoff_frequency_hz"] > 0
-    assert 400 < det["cutoff_wavelength_nm"] < 800
-    assert det["r_squared"] > 0.98
-
-
 def test_photoelectric_analyze_user_supplied_data() -> None:
     """Verify Photoelectric analysis with explicit user data points."""
     recipe = PhotoelectricEffectRecipe()
@@ -192,55 +143,9 @@ def test_photoelectric_insufficient_data_error() -> None:
     assert "At least 3 data points required" in res.message
 
 
-def test_photoelectric_run_end_to_end() -> None:
-    """Verify full end-to-end execution of PhotoelectricEffectRecipe."""
-    macro_res = run_experiment_macro("photoelectric_effect", action="run")
-    assert macro_res.success is True
-    assert "setup" in macro_res.phase_results
-    assert "acquire" in macro_res.phase_results
-    assert "analyze" in macro_res.phase_results
-    assert "Planck's constant" in macro_res.summary
-
-
 # ---------------------------------------------------------------------------
 # 2. RLCResonanceRecipe Tests
 # ---------------------------------------------------------------------------
-
-
-def test_rlc_resonance_setup_phase() -> None:
-    """Verify RLC resonance setup phase configuration."""
-    recipe = RLCResonanceRecipe()
-    res = recipe.setup()
-    assert res.phase == "setup"
-    assert res.status == "completed"
-    sg = res.details["signal_generator"]
-    assert sg["sweep_start_hz"] == 10.0
-    assert sg["sweep_stop_hz"] == 10000.0
-    assert sg["waveform"] == "Sine"
-    assert "Scope" in res.details["displays"]
-    assert "FFT Spectrum" in res.details["displays"]
-
-
-def test_rlc_resonance_acquire_and_analyze() -> None:
-    """Verify RLC resonance frequency sweep acquisition and Q factor analysis."""
-    recipe = RLCResonanceRecipe()
-    acquire_res = recipe.acquire()
-    assert acquire_res.status == "completed"
-    assert acquire_res.details["sweep_points"] >= 80
-
-    res = recipe.analyze(acquire_res.details)
-    assert res.status == "completed"
-    det = res.details
-
-    # Resonant frequency for L=8.2mH, C=10uF: f0 ~ 556.1 Hz
-    assert 540.0 < det["resonant_frequency_exp_hz"] < 575.0
-    assert det["resonant_frequency_error_pct"] < 3.0
-
-    # Quality factor Q = (1/R)*sqrt(L/C) ~ 2.86
-    assert 2.0 < det["q_factor_exp"] < 4.0
-    assert det["bandwidth_hz"] > 0
-    f0 = det["resonant_frequency_exp_hz"]
-    assert det["f1_lower_cutoff_hz"] < f0 < det["f2_upper_cutoff_hz"]
 
 
 def test_rlc_resonance_user_supplied_sweep() -> None:
@@ -255,89 +160,14 @@ def test_rlc_resonance_user_supplied_sweep() -> None:
     assert res.details["peak_voltage_v"] == 1.00
 
 
-def test_rlc_resonance_run_end_to_end() -> None:
-    """Verify full end-to-end execution of RLCResonanceRecipe."""
-    macro_res = run_experiment_macro("rlc_resonance", action="run")
-    assert macro_res.success is True
-    assert "Resonance f_0" in macro_res.summary
-
-
 # ---------------------------------------------------------------------------
 # 3. ForcedOscillationRecipe Tests
 # ---------------------------------------------------------------------------
 
 
-def test_forced_oscillation_setup_phase() -> None:
-    """Verify Forced Oscillation setup parameters (100Hz position, 480s stop)."""
-    recipe = ForcedOscillationRecipe()
-    res = recipe.setup()
-    assert res.phase == "setup"
-    assert res.status == "completed"
-    assert res.details["sensors"]["smart_cart_position_rate_hz"] == 100.0
-    assert res.details["recording_condition"]["duration_s"] == 480.0
-    assert res.details["recording_condition"]["condition_type"] == "time_duration"
-
-
-def test_forced_oscillation_acquire_and_analyze() -> None:
-    """Verify Forced Oscillation resonance curve peak and damping extraction."""
-    recipe = ForcedOscillationRecipe()
-    acquire_res = recipe.acquire()
-    assert acquire_res.status == "completed"
-    assert acquire_res.details["frequencies_count"] >= 30
-
-    res = recipe.analyze(acquire_res.details)
-    assert res.status == "completed"
-    det = res.details
-
-    # Natural frequency f0 = sqrt(k/m) / (2*pi) ~ 1.007 Hz
-    assert 0.90 < det["resonant_frequency_hz"] < 1.15
-    assert det["frequency_error_pct"] < 5.0
-    assert det["max_amplitude_m"] > 0
-    assert det["q_factor"] > 0
-    assert det["damping_coefficient_b_ns_m"] > 0
-
-
-def test_forced_oscillation_run_end_to_end() -> None:
-    """Verify full end-to-end execution of ForcedOscillationRecipe."""
-    macro_res = run_experiment_macro("forced_harmonic_oscillation", action="run")
-    assert macro_res.success is True
-    assert "Resonance peak f_res" in macro_res.summary
-
-
 # ---------------------------------------------------------------------------
 # 4. AdiabaticGasRecipe Tests
 # ---------------------------------------------------------------------------
-
-
-def test_adiabatic_gas_setup_phase() -> None:
-    """Verify Adiabatic Gas setup parameters (1000Hz sampling, P vs V area tool)."""
-    recipe = AdiabaticGasRecipe()
-    res = recipe.setup()
-    assert res.phase == "setup"
-    assert res.status == "completed"
-    assert res.details["sampling_rate_hz"] == 1000.0
-    assert "Area Integral" in res.details["display"]
-
-
-def test_adiabatic_gas_acquire_and_analyze_cyclic_work() -> None:
-    """Verify 1000Hz sampling, cyclic work oint P dV, and gamma index fit."""
-    recipe = AdiabaticGasRecipe()
-    acquire_res = recipe.acquire()
-    assert acquire_res.status == "completed"
-    assert acquire_res.details["sample_count"] >= 100
-
-    res = recipe.analyze(acquire_res.details)
-    assert res.status == "completed"
-    det = res.details
-
-    # Positive clockwise work integration: oint P dV > 0
-    assert det["cyclic_work_joules"] > 0.0
-    assert det["cyclic_work_mj"] > 0.0
-
-    # Adiabatic index gamma fit near 1.40 (diatomic air)
-    assert 1.30 < det["adiabatic_index_gamma_exp"] < 1.50
-    assert det["gamma_error_pct"] < 5.0
-    assert det["compression_ratio"] > 1.5
 
 
 def test_adiabatic_gas_user_data_cycle() -> None:
@@ -354,78 +184,9 @@ def test_adiabatic_gas_user_data_cycle() -> None:
     assert abs(res.details["cyclic_work_mj"] - 3000.0) < 1e-1
 
 
-def test_adiabatic_gas_run_end_to_end() -> None:
-    """Verify full end-to-end execution of AdiabaticGasRecipe."""
-    macro_res = run_experiment_macro("adiabatic_gas", action="run")
-    assert macro_res.success is True
-    assert "Cyclic Work oint P dV" in macro_res.summary
-
-
 # ---------------------------------------------------------------------------
 # 5. SlitDiffractionRecipe Tests
 # ---------------------------------------------------------------------------
-
-
-def test_slit_diffraction_setup_phase() -> None:
-    """Verify Slit Diffraction setup parameters (optics bench, 650nm laser)."""
-    recipe = SlitDiffractionRecipe()
-    res = recipe.setup()
-    assert res.phase == "setup"
-    assert res.status == "completed"
-    assert res.details["optics"]["wavelength_nm"] == 650.0
-    assert res.details["optics"]["screen_distance_m"] == 1.0
-
-
-def test_slit_diffraction_acquire_and_analyze_single_slit() -> None:
-    """Verify single slit diffraction minima detection and slit width extraction."""
-    recipe = SlitDiffractionRecipe()
-    acquire_res = recipe.acquire({
-        "slit_type": "single_slit",
-        "slit_width_m": 4.0e-5,
-    })
-    assert acquire_res.status == "completed"
-    assert acquire_res.details["points_count"] >= 100
-
-    res = recipe.analyze(acquire_res.details)
-    assert res.status == "completed"
-    det = res.details
-
-    # Central maximum at center
-    assert abs(det["central_maximum"]["position_mm"]) < 1.0
-    assert det["diffraction_minima_count"] >= 2
-
-    # Slit width derivation near 0.04 mm
-    derived_a_mm = det["derived_slit_width_mm"]
-    assert 0.035 < derived_a_mm < 0.045
-    assert det["slit_width_error_pct"] < 5.0
-
-
-def test_slit_diffraction_acquire_and_analyze_double_slit() -> None:
-    """Verify double slit interference fringes and slit separation derivation."""
-    recipe = SlitDiffractionRecipe()
-    acquire_res = recipe.acquire({
-        "slit_type": "double_slit",
-        "slit_width_m": 4.0e-5,
-        "slit_separation_m": 2.5e-4,
-    })
-    assert acquire_res.status == "completed"
-
-    res = recipe.analyze(acquire_res.details)
-    assert res.status == "completed"
-    det = res.details
-
-    # Slit separation derivation near 0.25 mm
-    assert "derived_slit_separation_mm" in det
-    derived_d_mm = det["derived_slit_separation_mm"]
-    assert 0.20 < derived_d_mm < 0.30
-    assert det["slit_separation_error_pct"] < 10.0
-
-
-def test_slit_diffraction_run_end_to_end() -> None:
-    """Verify full end-to-end execution of SlitDiffractionRecipe."""
-    macro_res = run_experiment_macro("slit_diffraction", action="run")
-    assert macro_res.success is True
-    assert "Slit width a" in macro_res.summary
 
 
 # ---------------------------------------------------------------------------
@@ -434,57 +195,168 @@ def test_slit_diffraction_run_end_to_end() -> None:
 
 
 @pytest.mark.anyio
-async def test_capstone_run_experiment_macro_all_experiments() -> None:
-    """Verify the FastMCP server tool across all 5 canonical recipes."""
-    canonical_ids = [
-        "photoelectric_effect",
-        "rlc_resonance",
-        "forced_harmonic_oscillation",
-        "adiabatic_gas",
-        "slit_diffraction",
-    ]
-
-    for exp_id in canonical_ids:
-        # 1. Test setup action
-        setup_result = await capstone_run_experiment_macro(
-            experiment_id=exp_id,
-            action="setup",
-        )
-        assert setup_result.success is True
-        assert setup_result.action == "setup"
-        assert "setup" in setup_result.phase_results
-
-        # 2. Test acquire action
-        acq_result = await capstone_run_experiment_macro(
-            experiment_id=exp_id,
-            action="acquire",
-        )
-        assert acq_result.success is True
-        assert acq_result.action == "acquire"
-        assert "acquire" in acq_result.phase_results
-
-        # 3. Test analyze action
-        ana_result = await capstone_run_experiment_macro(
-            experiment_id=exp_id,
-            action="analyze",
-        )
-        assert ana_result.success is True
-        assert ana_result.action == "analyze"
-        assert "analyze" in ana_result.phase_results
-
-        # 4. Test run action (sequential 3 phases)
-        run_result = await capstone_run_experiment_macro(
-            experiment_id=exp_id,
-            action="run",
-        )
-        assert run_result.success is True
-        assert run_result.action == "run"
-        assert len(run_result.phase_results) == 3
-        assert len(run_result.summary) > 0
-
-
-@pytest.mark.anyio
 async def test_capstone_run_experiment_macro_unknown_exp_raises() -> None:
     """Verify FastMCP server tool raises KeyError on unknown experiment."""
     with pytest.raises(KeyError, match="Unknown experiment recipe"):
         await capstone_run_experiment_macro(experiment_id="nonexistent_phys_exp")
+
+
+RECIPE_IDS = [r["experiment_id"] for r in list_recipes()]
+
+
+@pytest.mark.parametrize("recipe_id", RECIPE_IDS)
+@pytest.mark.parametrize("action", ["setup", "acquire", "analyze", "run"])
+def test_recipes_without_measurements_never_claim_success(
+    recipe_id: str, action: str,
+) -> None:
+    result = run_experiment_macro(recipe_id, action=action)
+    assert result.success is False
+    assert all(r.status == "failed" for r in result.phase_results.values())
+    assert not result.data
+    if action == "run":
+        assert list(result.phase_results) == ["setup"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("recipe_id", RECIPE_IDS)
+async def test_mcp_recipe_no_data_fails(recipe_id: str) -> None:
+    result = await capstone_run_experiment_macro(recipe_id, action="acquire")
+    assert result.success is False
+    assert "not implemented" in result.summary
+
+
+@pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
+def test_adiabatic_invalid_pressure_fails(invalid: float) -> None:
+    result = AdiabaticGasRecipe().analyze(
+        {
+            "pressure_kpa": [100.0, invalid, 200.0, 250.0],
+            "volume_cm3": [40.0, 30.0, 20.0, 10.0],
+        },
+    )
+    assert result.status == "failed"
+    assert "finite positive" in result.message
+    assert not result.details
+
+
+def test_adiabatic_constant_volume_does_not_return_theory() -> None:
+    result = AdiabaticGasRecipe().analyze(
+        {
+            "pressure_kpa": [100.0, 150.0, 200.0, 250.0],
+            "volume_cm3": [10.0] * 4,
+        },
+    )
+    assert result.status == "failed"
+    assert "nonconstant" in result.message
+
+
+def test_adiabatic_measured_power_law() -> None:
+    volumes = [50.0, 40.0, 30.0, 20.0, 10.0]
+    pressures = [1000.0 / v**1.25 for v in volumes]
+    result = AdiabaticGasRecipe().analyze(
+        {"pressure_kpa": pressures, "volume_cm3": volumes},
+    )
+    assert result.status == "completed"
+    assert result.details["adiabatic_index_gamma_exp"] == pytest.approx(1.25)
+    assert result.details["gamma_error_pct"] > 0
+
+
+def test_photoelectric_acquire_alias_is_caller_data() -> None:
+    result = PhotoelectricEffectRecipe().acquire(
+        {"stopping_voltages": [1.45, 1.11, 0.89, 0.32, 0.20]},
+    )
+    assert result.status == "completed"
+    assert result.details["acquisition_mode"] == "user_provided"
+
+
+def test_diffraction_without_minima_does_not_return_nominal_width() -> None:
+    result = SlitDiffractionRecipe().analyze(
+        {"positions_mm": [-2, -1, 0, 1, 2], "intensities": [1, 2, 3, 2, 1]},
+    )
+    assert result.status == "failed"
+    assert "minimum" in result.message
+    assert not result.details
+
+
+def test_double_slit_does_not_misidentify_interference_minima() -> None:
+    result = SlitDiffractionRecipe().analyze(
+        {
+            "slit_type": "double_slit",
+            "positions_mm": [-2, -1, 0, 1, 2],
+            "intensities": [2, 0, 3, 0, 2],
+        },
+    )
+    assert result.status == "failed"
+    assert "envelope" in result.message
+
+
+def test_single_slit_input_units_match() -> None:
+    recipe = SlitDiffractionRecipe()
+    positions = [-20, -16.25, -8, 0, 8, 16.25, 20]
+    intensity = [0.1, 0, 2, 5, 2, 0, 0.1]
+    mm = recipe.analyze({"positions_mm": positions, "intensities": intensity})
+    metres = recipe.analyze(
+        {"positions_m": [x / 1000 for x in positions], "intensities": intensity},
+    )
+    assert mm.status == metres.status == "completed"
+    assert mm.details == metres.details
+    assert mm.details["derived_slit_width_mm"] == pytest.approx(0.04)
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "parameters"),
+    [
+        ("adiabatic_gas", {"pressure_kpa": [], "volume_cm3": []}),
+        (
+            "forced_harmonic_oscillation",
+            {"driver_frequencies_hz": [1], "amplitudes_m": []},
+        ),
+        ("rlc_resonance", {"frequencies_hz": [1], "voltages_v": [float("inf")]}),
+        ("slit_diffraction", {"positions_mm": [0], "intensities": [float("nan")]}),
+        ("photoelectric_effect", {"wavelengths_nm": [0], "stopping_voltages_v": [1]}),
+    ],
+)
+def test_acquisition_rejects_invalid_supplied_data(
+    recipe_id: str, parameters: dict[str, Any],
+) -> None:
+    assert get_recipe(recipe_id).acquire(parameters).status == "failed"
+
+
+def test_forced_oscillation_uses_supplied_resonance_curve() -> None:
+    result = ForcedOscillationRecipe().analyze({
+        "driver_frequencies_hz": [0.4, 0.7, 0.9, 1.0, 1.1, 1.3, 1.6],
+        "amplitudes_m": [0.01, 0.04, 0.08, 0.1, 0.08, 0.04, 0.01],
+    })
+    assert result.status == "completed"
+    assert result.details["resonant_frequency_hz"] == 1.0
+    assert result.details["q_factor"] > 0
+
+
+def test_pending_setup_does_not_execute_later_phases(monkeypatch: pytest.MonkeyPatch) -> None:
+    recipe = get_recipe("photoelectric_effect")
+
+    def pending_setup(parameters: dict[str, Any] | None = None, app: Capstone | None = None) -> RecipePhaseResult:
+        del parameters, app
+        return RecipePhaseResult(phase="setup", status="pending", message="Awaiting configuration")
+
+    monkeypatch.setattr(recipe, "setup", pending_setup)
+    result = run_experiment_macro("photoelectric_effect", action="run")
+    assert result.success is False
+    assert list(result.phase_results) == ["setup"]
+    assert run_experiment_macro("photoelectric_effect", action="setup").success is False
+
+@pytest.mark.parametrize(("recipe_id", "response_key"), [
+    ("rlc_resonance", "voltages_v"),
+    ("forced_harmonic_oscillation", "amplitudes_m"),
+])
+@pytest.mark.parametrize("response", [[1.0], [1.0, 2.0, float("nan"), 2.0, 1.0]])
+def test_resonance_analysis_rejects_incomplete_or_nonfinite_data(
+    recipe_id: str,
+    response_key: str,
+    response: list[float],
+) -> None:
+    result = get_recipe(recipe_id).analyze({
+        "frequencies_hz": [1, 2, 3, 4, 5], response_key: response,
+    })
+    assert result.status == "failed"
+    assert "matching finite" in result.message
+

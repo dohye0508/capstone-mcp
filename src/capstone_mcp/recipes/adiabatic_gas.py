@@ -41,9 +41,13 @@ def _fit_adiabatic_index(
     Returns:
         tuple of (gamma_exp, r_squared, gamma_error_pct).
     """
-    valid_pairs = [
-        (p, v) for p, v in zip(pressures, volumes, strict=True) if p > 0 and v > 0
-    ]
+    if not all(math.isfinite(v) and v > 0 for v in (*pressures, *volumes)):
+        msg = "Adiabatic fitting requires finite positive pressure and volume."
+        raise ValueError(msg)
+    valid_pairs = list(zip(pressures, volumes, strict=True))
+    if len(valid_pairs) < MIN_CYCLE_POINTS:
+        msg = "Adiabatic fitting requires at least three measured pairs."
+        raise ValueError(msg)
     compression_pairs = [
         valid_pairs[i]
         for i in range(len(valid_pairs) - 1)
@@ -73,8 +77,8 @@ def _fit_adiabatic_index(
         gamma_exp = -slope
         r_squared = (sxy * sxy) / (sxx * syy) if syy > 0 else 0.0
     else:
-        gamma_exp = GAMMA_AIR_THEORY
-        r_squared = 1.0
+        msg = "Adiabatic fitting requires nonconstant volume measurements."
+        raise ValueError(msg)
 
     err_diff = abs(gamma_exp - GAMMA_AIR_THEORY)
     gamma_error_pct = (err_diff / GAMMA_AIR_THEORY) * 100.0
@@ -96,41 +100,13 @@ class AdiabaticGasRecipe(ExperimentRecipe):
         parameters: dict[str, Any] | None = None,
         app: Capstone | None = None,
     ) -> RecipePhaseResult:
-        """Configure 1000Hz sampling rate, pressure/volume sensors, and displays."""
-        params = parameters or {}
-        sample_rate = float(
-            params.get("sampling_rate_hz", DEFAULT_SAMPLING_RATE_HZ),
-        )
-
-        actions: list[str] = [
-            f"Configured high-speed sampling rate to {sample_rate} Hz",
-            "Configured Analog Ch A: Absolute Pressure Sensor (0 - 700 kPa)",
-            "Configured Analog Ch B: Linear Position / Volume Sensor (0 - 100 cm^3)",
-            "Configured Analog Ch C: Fast-response Temperature Sensor (K)",
-            "Set recording trigger to fast compression burst mode",
-            "Created P vs V Graph display with Capstone Area Integral tool enabled",
-        ]
-
-        details: dict[str, Any] = {
-            "sampling_rate_hz": sample_rate,
-            "sensors": {
-                "pressure_kpa": "Absolute Pressure Sensor",
-                "volume_cm3": "Linear Position Sensor",
-                "temperature_k": "Fast Thermocouple Sensor",
-            },
-            "display": "P vs V Graph with Area Integral Tool",
-            "actions": actions,
-            "app_attached": app is not None,
-        }
-
+        """Report that automatic hardware configuration is not implemented."""
+        del parameters, app
         return RecipePhaseResult(
             phase="setup",
-            status="completed",
-            message=(
-                f"Configured high-speed {sample_rate} Hz sampling for adiabatic "
-                "gas compression and thermodynamic cycle integration."
-            ),
-            details=details,
+            status="failed",
+            message="Automatic hardware setup is not implemented. Configure the "
+            "experiment manually and provide recorded data for analysis.",
         )
 
     def acquire(
@@ -146,47 +122,23 @@ class AdiabaticGasRecipe(ExperimentRecipe):
             p_data = [float(p) for p in params["pressure_kpa"]]
             v_data = [float(v) for v in params["volume_cm3"]]
         else:
-            # Deterministic simulation of a 4-stroke heat engine P-V cycle
-            num_points = int(params.get("num_points", 200))
-            p_data = []
-            v_data = []
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Live acquisition is not implemented. Provide recorded "
+                "measurement arrays; synthetic data is not generated.",
+            )
 
-            # 4 legs of thermodynamic cycle
-            points_per_leg = num_points // 4
-
-            # Leg 1: Adiabatic compression A -> B (v: 60 -> 30)
-            const_comp = 101.3 * (60.0**GAMMA_AIR_THEORY)
-            for i in range(points_per_leg):
-                frac = i / points_per_leg
-                v = 60.0 - frac * 30.0
-                p = const_comp / (v**GAMMA_AIR_THEORY)
-                v_data.append(v)
-                p_data.append(p)
-
-            # Leg 2: Heat addition B -> C (v: 30 -> 45)
-            for i in range(points_per_leg):
-                frac = i / points_per_leg
-                v = 30.0 + frac * 15.0
-                p = 267.3 + frac * 52.7
-                v_data.append(v)
-                p_data.append(p)
-
-            # Leg 3: Adiabatic expansion C -> D (v: 45 -> 65)
-            const_exp = 320.0 * (45.0**GAMMA_AIR_THEORY)
-            for i in range(points_per_leg):
-                frac = i / points_per_leg
-                v = 45.0 + frac * 20.0
-                p = const_exp / (v**GAMMA_AIR_THEORY)
-                v_data.append(v)
-                p_data.append(p)
-
-            # Leg 4: Heat rejection D -> A (v: 65 -> 60)
-            for i in range(points_per_leg):
-                frac = i / points_per_leg
-                v = 65.0 - frac * 5.0
-                p = 185.0 - frac * 83.7
-                v_data.append(v)
-                p_data.append(p)
+        if (
+            not p_data
+            or len(p_data) != len(v_data)
+            or not all(math.isfinite(v) for v in (*p_data, *v_data))
+        ):
+            return RecipePhaseResult(
+                phase="acquire",
+                status="failed",
+                message="Provide nonempty, matching, finite measurement arrays.",
+            )
 
         details: dict[str, Any] = {
             "data": {
@@ -203,7 +155,7 @@ class AdiabaticGasRecipe(ExperimentRecipe):
         return RecipePhaseResult(
             phase="acquire",
             status="completed",
-            message=f"Acquired {len(p_data)} samples of 1000Hz P-V data.",
+            message=f"Accepted caller-provided {len(p_data)} P-V samples.",
             details=details,
         )
 
@@ -217,11 +169,6 @@ class AdiabaticGasRecipe(ExperimentRecipe):
 
         p_raw = params.get("pressure_kpa") or data.get("pressure_kpa")
         v_raw = params.get("volume_cm3") or data.get("volume_cm3")
-
-        if not p_raw or not v_raw:
-            default_data = self.acquire(params).details.get("data", {})
-            p_raw = default_data.get("pressure_kpa")
-            v_raw = default_data.get("volume_cm3")
 
         if not p_raw or not v_raw:
             return RecipePhaseResult(
@@ -255,10 +202,17 @@ class AdiabaticGasRecipe(ExperimentRecipe):
         work_joules = work_mj * 1e-3
 
         # 2. Adiabatic Index Gamma Fit: ln(P) = -gamma * ln(V) + ln(C)
-        gamma_exp, r_squared, gamma_error_pct = _fit_adiabatic_index(
-            pressures,
-            volumes,
-        )
+        try:
+            gamma_exp, r_squared, gamma_error_pct = _fit_adiabatic_index(
+                pressures,
+                volumes,
+            )
+        except ValueError as exc:
+            return RecipePhaseResult(
+                phase="analyze",
+                status="failed",
+                message=str(exc),
+            )
 
         p_max = max(pressures)
         p_min = min(pressures)
