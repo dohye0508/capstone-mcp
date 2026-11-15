@@ -346,7 +346,9 @@ def _backup_clipboard() -> dict[int, Any]:
 
 
 def _restore_clipboard(
-    backup: dict[int, Any], *, expected_sequence: int | None = None,
+    backup: dict[int, Any],
+    *,
+    expected_sequence: int | None = None,
 ) -> None:
     """Restore only while the clipboard still contains this operation's copy."""
     if win32clipboard is None or expected_sequence is None:
@@ -364,7 +366,8 @@ def _restore_clipboard(
 
 
 def _copied_graph_payload(
-    sequence: int, process_id: int,
+    sequence: int,
+    process_id: int,
 ) -> tuple[object, int] | None:
     if win32clipboard is None or win32process is None:
         return None
@@ -403,6 +406,8 @@ def read_graph(  # noqa: PLR0915
     handle: int,
     *,
     allow_foreground: bool = True,
+    display_menu_label: str = "Display",
+    copy_display_label: str = "Copy Display",
 ) -> GraphState:
     """Read selected graph state via native Copy Display, preserving user clipboard."""
     if not allow_foreground:
@@ -432,12 +437,15 @@ def read_graph(  # noqa: PLR0915
         with WindowEvents(pid, clipboard=True) as events:
             _ = app.focus_window(handle)
             release_menu_bar(app, handle)
-            snapshot = app.snapshot(handle, 3, 400)
+            snapshot = app.snapshot(handle, 16, 10_000)
+            if snapshot.truncated:
+                msg = "Graph menu selection requires a complete snapshot."
+                raise AutomationError(msg)
             menus = [
                 c
                 for c in snapshot.controls
                 if c.control_type == "MenuItem"
-                and c.name == "Display"
+                and c.name == display_menu_label
                 and c.visible
                 and c.enabled
             ]
@@ -447,7 +455,9 @@ def read_graph(  # noqa: PLR0915
             _ = app.control(menus[0].ref).expand()
             try:
                 popup = events.changes.until(
-                    lambda: _display_popup(app, handle),
+                    lambda: _display_popup(
+                        app, handle, copy_display_label, before=baseline_handles,
+                    ),
                     TRANSITION_SECONDS,
                     description="Display menu popup window",
                 )
@@ -457,7 +467,7 @@ def read_graph(  # noqa: PLR0915
             copies = [
                 c
                 for c in popup.controls
-                if c.name == "Copy Display"
+                if c.name == copy_display_label
                 and c.control_type == "MenuItem"
                 and c.enabled
                 and c.visible
@@ -494,28 +504,41 @@ def read_graph(  # noqa: PLR0915
         _restore_clipboard(clipboard_backup, expected_sequence=copied_sequence)
 
 
-def _display_popup(app: Capstone, main_handle: int) -> Snapshot | None:
+def _display_popup(
+    app: Capstone,
+    main_handle: int,
+    copy_label: str = "Copy Display",
+    *,
+    before: set[int] | None = None,
+) -> Snapshot | None:
+    candidates: list[int] = []
     for window in app.windows():
-        if window.handle == main_handle:
+        if window.handle == main_handle or (before and window.handle in before):
             continue
         try:
             snapshot = app.snapshot(window.handle, 3, 100)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "Failed to snapshot window handle %s: %s",
-                window.handle,
-                e,
-            )
+        except Exception as error:  # noqa: BLE001
+            logger.debug("Failed to snapshot window %s: %s", window.handle, error)
             continue
-        if any(
-            c.name == "Copy Display"
+        if not snapshot.truncated and any(
+            c.name == copy_label
             and c.control_type == "MenuItem"
             and c.visible
             and c.enabled
             for c in snapshot.controls
         ):
-            return snapshot
-    return None
+            candidates.append(window.handle)
+    if len(candidates) > 1:
+        msg = "Multiple Copy Display popups match the observed label."
+        raise AutomationError(msg)
+    if not candidates:
+        return None
+    current = app.snapshot(candidates[0], 3, 100)
+    valid = not current.truncated and any(
+        c.name == copy_label and c.control_type == "MenuItem"
+        and c.visible and c.enabled for c in current.controls
+    )
+    return current if valid else None
 
 
 def close_menus(app: Capstone, handle: int) -> None:
