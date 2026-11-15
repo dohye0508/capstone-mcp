@@ -274,7 +274,7 @@ def create_graph(
     )
     return CreateGraphResult(
         detail="Graph inserted; inspect a fresh screenshot before selecting axes.",
-        verified=True,
+        verified=False,
     )
 
 
@@ -282,7 +282,7 @@ def fit_graph(
     app: Capstone,
     request: FitGraphRequest | None = None,
 ) -> FitGraphResult:
-    """Adjust graph axes using IDA-discovered toolbar action coordinates."""
+    """Dispatch an explicitly observed graph action offset without claiming readback."""
     if request is None:
         request = FitGraphRequest()
     if request.mode not in SUPPORTED_FIT_MODES:
@@ -293,9 +293,21 @@ def fit_graph(
     if not request.allow_foreground:
         msg = "Graph scaling requires allow_foreground=true."
         raise AutomationError(msg)
+    if request.offset is None:
+        msg = "Provide an observed toolbar offset; no default graph click is safe."
+        raise AutomationError(msg)
 
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Graph scaling requires a complete snapshot."
+        raise AutomationError(msg)
     target_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
+    if not (
+        0 <= request.offset.x < target_ctrl.bounds.right - target_ctrl.bounds.left
+        and 0 <= request.offset.y < target_ctrl.bounds.bottom - target_ctrl.bounds.top
+    ):
+        msg = "Observed toolbar offset must be inside the selected graph."
+        raise AutomationError(msg)
 
     target_x = target_ctrl.bounds.left + request.offset.x
     target_y = target_ctrl.bounds.top + request.offset.y
@@ -310,13 +322,14 @@ def fit_graph(
 
     detail = (
         f"Dispatched {request.mode} click at ({target_x}, {target_y}) "
-        f"on graph '{target_ctrl.name or target_ctrl.ref}'."
+        f"on graph '{target_ctrl.name or target_ctrl.ref}'; "
+        "axis bounds have not been verified."
     )
     return FitGraphResult(
         mode=request.mode,
         target_ref=target_ctrl.ref,
         clicked_point=(target_x, target_y),
-        verified=True,
+        verified=False,
         detail=detail,
     )
 
@@ -535,7 +548,7 @@ class GraphManager:
             request.path,
             allow_foreground=request.allow_foreground,
         )
-        return SelectMeasurementResult(detail=res.detail, verified=True)
+        return SelectMeasurementResult(detail=res.detail, verified=False)
 
     def toolbox_delta(self, request: GraphDeltaRequest) -> GraphDeltaResult:
         """Toggle delta tool and read coordinate offsets."""
