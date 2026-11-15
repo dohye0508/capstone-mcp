@@ -49,7 +49,6 @@ EXECUTABLE: Final = find_capstone_executable()
 DEFAULT_DEBUG_PORT: Final = 9222
 CHROMIUM_DEBUG_FLAGS: Final = (
     f"--remote-debugging-port={DEFAULT_DEBUG_PORT}",
-    "--remote-allow-origins=*",
 )
 CROP_COORDINATE_COUNT: Final = 4
 SHADOW_CLASS: Final = "SysShadow"
@@ -407,8 +406,11 @@ class Capstone:
         return self.act(ref, Action.INVOKE, allow_foreground=allow_foreground)
 
     def type_text(self, text: str) -> None:
-        """Send virtual keyboard text to the active focused control."""
-        keyboard_send_keys(text, with_spaces=True)
+        """Type literal text without interpreting keyboard shortcut syntax."""
+        escaped = "".join(
+            "{" + char + "}" if char in "+^%(){}~" else char for char in text
+        )
+        keyboard_send_keys(escaped, with_spaces=True)
 
     def screenshot(
         self, handle: int, *, scale: float = 1.0,

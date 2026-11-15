@@ -22,21 +22,17 @@ if TYPE_CHECKING:
 
 HAS_CAPSTONE = EXECUTABLE.exists()
 pytestmark = pytest.mark.skipif(
-    not HAS_CAPSTONE,
-    reason="Live Capstone installation required for E2E smoke tests",
+    not HAS_CAPSTONE or os.environ.get("CAPSTONE_RUN_LIVE_TESTS") != "1",
+    reason="Installed Capstone and CAPSTONE_RUN_LIVE_TESTS=1 required",
 )
 
 
-def _cleanup_dangling_processes() -> None:
-    """Terminate any lingering Capstone processes."""
+def _skip_if_capstone_running() -> None:
+    """Leave existing user processes and their unsaved experiments untouched."""
     for proc in psutil.process_iter():
         try:
             if proc.name().lower() == EXECUTABLE.name.lower():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+                pytest.skip("An existing Capstone process must remain untouched")
         except psutil.Error:
             pass
 
@@ -44,14 +40,13 @@ def _cleanup_dangling_processes() -> None:
 @pytest.fixture(scope="module")
 def live_capstone_process() -> Generator[int, None, None]:
     """Launch Capstone with debugging flags and guarantee clean termination after tests."""
-    _cleanup_dangling_processes()
+    _skip_if_capstone_running()
 
     env = os.environ.copy()
     env["QTWEBENGINE_REMOTE_DEBUGGING"] = str(DEFAULT_DEBUG_PORT)
     cmd = [
         str(EXECUTABLE),
         f"--remote-debugging-port={DEFAULT_DEBUG_PORT}",
-        "--remote-allow-origins=*",
     ]
 
     process = subprocess.Popen(  # noqa: S603

@@ -121,7 +121,7 @@ def test_attach_launch_injects_remote_debugging_port(
     start.assert_called_once()
     called_cmd = start.call_args[0][0]
     assert "--remote-debugging-port=9222" in called_cmd
-    assert "--remote-allow-origins=*" in called_cmd
+    assert "--remote-allow-origins" not in called_cmd
 
 
 

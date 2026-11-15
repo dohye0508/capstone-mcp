@@ -183,6 +183,9 @@ def read_inventory(port: int = DEFAULT_PORT) -> NativeInventory:
 
 def read_measurement(port: int, measurement_euid: str, unit_type: int) -> float:
     """Read a current value, refusing the provider's unavailable-value sentinel."""
+    if type(unit_type) is not int:
+        msg = "Measurement unit_type must be an integer."
+        raise BridgeError(msg)
     expression = (
         "window.app.mSenseAndControlView.mServices.RequestReadMeasurement("
         + json.dumps(measurement_euid) + "," + str(unit_type) + ")"

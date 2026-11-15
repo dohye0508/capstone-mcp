@@ -2,6 +2,8 @@
 """Tool router for physical calculations, numerical fitting, and lab reports."""
 
 from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,16 +44,30 @@ def _write_report_file(
     html_text: str | None,
 ) -> None:
     p = Path(out_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     if format_type == "html":
-        p.write_text(html_text or "", encoding="utf-8")
+        outputs = [(p, html_text or "")]
     elif format_type == "both":
-        if md_text:
-            p.write_text(md_text, encoding="utf-8")
-        if html_text:
-            p.with_suffix(".html").write_text(html_text, encoding="utf-8")
+        outputs = [(p, md_text or ""), (p.with_suffix(".html"), html_text or "")]
     else:
-        p.write_text(md_text or "", encoding="utf-8")
+        outputs = [(p, md_text or "")]
+    if len({path for path, _ in outputs}) != len(outputs):
+        msg = "Markdown and HTML report destinations must be different."
+        raise ValueError(msg)
+    created: list[Path] = []
+    try:
+        with ExitStack() as stack:
+            streams = []
+            for path, text in outputs:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                stream = stack.enter_context(path.open("x", encoding="utf-8"))
+                created.append(path)
+                streams.append((stream, text))
+            for stream, text in streams:
+                _ = stream.write(text)
+    except OSError:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
 
 
 def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
@@ -183,17 +199,22 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             experiment_id: Canonical experiment identifier ('photoelectric_effect',
                 'rlc_resonance', 'forced_harmonic_oscillation', 'adiabatic_gas',
                 'slit_diffraction', or 'generic').
-            output_path: Optional path to save the generated report file.
+            output_path: Optional new path; existing report files are never overwritten.
             format: Output format ('markdown', 'html', or 'both').
 
         Returns:
             GenerateLabReportResult containing report model, rendered text, and status.
         """
-        report = generate_report(
-            file_path_or_run=file_path_or_run,
-            experiment_id=experiment_id,
+        report = await anyio.to_thread.run_sync(
+            partial(
+                generate_report,
+                file_path_or_run=file_path_or_run,
+                experiment_id=experiment_id,
+            ),
         )
-        rendered = render_report(report, report_format=format)
+        rendered = await anyio.to_thread.run_sync(
+            partial(render_report, report, report_format=format),
+        )
         md_text = rendered.get("markdown")
         html_text = rendered.get("html")
 
@@ -259,10 +280,13 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
         - 'run': Sequentially execute setup, acquire, and analyze phases.
         """
         params = dict(parameters or {})
-        return run_experiment_macro(
-            experiment_id=experiment_id,
-            action=action,
-            parameters=params,
+        return await anyio.to_thread.run_sync(
+            partial(
+                run_experiment_macro,
+                experiment_id=experiment_id,
+                action=action,
+                parameters=params,
+            ),
         )
 
     return {
