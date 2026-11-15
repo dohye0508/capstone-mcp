@@ -359,4 +359,3 @@ def test_resonance_analysis_rejects_incomplete_or_nonfinite_data(
     })
     assert result.status == "failed"
     assert "matching finite" in result.message
-
