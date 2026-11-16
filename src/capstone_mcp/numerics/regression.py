@@ -189,6 +189,31 @@ def _original_polynomial_basis(
         return converted
 
 
+def _validate_original_polynomial(  # noqa: PLR0913, PLR0917
+    xs: list[float], normalized_x: list[float], coefficients: list[float],
+    original: list[float], y_scale: float, residual: float,
+) -> None:
+    """Reject coefficient output that loses the fitted curve when evaluated."""
+    # Compare in y-normalized units. sqrt(epsilon) reserves half the binary
+    # precision for the basis conversion; residual RMS scales the noise floor.
+    precision = math.sqrt(math.ulp(1.0))
+    residual_rms = math.sqrt(residual / len(xs))
+    for x_value, normalized in zip(xs, normalized_x, strict=True):
+        expected = 0.0
+        for coefficient in reversed(coefficients):
+            expected = expected * normalized + coefficient
+        observed = 0.0
+        for coefficient in reversed(original):
+            observed = observed * x_value + coefficient
+        observed /= y_scale
+        tolerance = precision * (
+            len(original) * max(1.0, abs(expected)) + residual_rms
+        )
+        if not math.isfinite(observed) or abs(observed - expected) > tolerance:
+            msg = "Original-basis polynomial coefficients are numerically unstable."
+            raise ValueError(msg)
+
+
 def fit_polynomial_series(
     x: Sequence[float],
     y: Sequence[float],
@@ -224,6 +249,9 @@ def fit_polynomial_series(
     residual = math.fsum(
         (yi - math.fsum(c * xi**p for p, c in enumerate(coefficients))) ** 2
         for xi, yi in zip(normalized_x, normalized_y, strict=True)
+    )
+    _validate_original_polynomial(
+        xs, normalized_x, coefficients, original, y_scale, residual,
     )
     r_squared = max(0.0, min(1.0, 1 - residual / total)) if total else 1.0
     return PolynomialRegressionResult(

@@ -70,3 +70,10 @@ def test_constant_polynomial_y_is_representable() -> None:
     result = fit_polynomial_series([0, 1, 2], [0, 0, 0])
     assert result.coefficients == [0, 0, 0]
     assert all(math.isfinite(value) for value in result.coefficients)
+
+
+def test_polynomial_rejects_unstable_original_basis_despite_perfect_normalized_fit() -> None:
+    x = [1e12 + index for index in range(7)]
+    y = [float(index**2) for index in range(7)]
+    with pytest.raises(ValueError, match=r"Original-basis.*unstable"):
+        fit_polynomial_series(x, y, degree=2)
