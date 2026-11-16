@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from capstone_mcp import bridge, desktop, resources, server, ui_events
 from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.graphs import GraphOperationError
+from capstone_mcp.models import Point
 from capstone_mcp.native.errors import classify_native_error
 from capstone_mcp.native.runtime import NativeDesktop, _json
 
@@ -44,6 +45,25 @@ def test_focus_failure_has_recovery_instead_of_coordinate_rewrite() -> None:
     code, remediation = classify_native_error(RuntimeError("Foreground check failed"))
     assert code == "AUTOMATION_ERROR"
     assert "do not change input coordinates" in remediation
+
+
+def test_native_drag_translates_coordinates_and_releases_once() -> None:
+    runtime = NativeDesktop()
+    window = Mock()
+    window.rectangle.return_value = SimpleNamespace(
+        left=-250, top=100, right=150, bottom=500,
+    )
+    runtime.app.focus_window = Mock(return_value=window)
+
+    _ = runtime.dispatch(NativeRequest(
+        operation="drag", handle=42,
+        point=Point(x=20, y=30), end=Point(x=100, y=200),
+    ))
+
+    window.drag_mouse_input.assert_called_once_with(
+        src=(-230, 130), dst=(-150, 300), absolute=True,
+    )
+    window.release_mouse_input.assert_not_called()
 
 
 @pytest.mark.parametrize("message", ["Graph timed out", "Page load timed out", "File read timed out"])

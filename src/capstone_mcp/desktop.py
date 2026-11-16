@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Capstone-scoped Windows UI Automation adapter."""
 
+import contextlib
 import ctypes
 import os
 from _ctypes import COMError
@@ -425,6 +426,19 @@ class Capstone:
         return self.act(
             ref, Action.INVOKE, allow_foreground=allow_foreground, double=double,
         )
+
+    def drag_mouse(
+        self, window: UIAWrapper, source: tuple[int, int], target: tuple[int, int],
+    ) -> None:
+        """Send a guarded drag in screen coordinates and invalidate control refs."""
+        try:
+            _ = window.drag_mouse_input(src=source, dst=target, absolute=True)
+        except Exception:
+            with contextlib.suppress(Exception):
+                _ = window.release_mouse_input(coords=target, absolute=True)
+            raise
+        finally:
+            self.refs.clear()
 
     def type_text(self, text: str) -> None:
         """Type literal text without interpreting keyboard shortcut syntax."""

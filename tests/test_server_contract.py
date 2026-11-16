@@ -262,6 +262,18 @@ async def test_interact_ui_requires_point_before_sending_mouse_input(action: str
 
 
 @pytest.mark.anyio
+async def test_ui_value_write_requires_explicit_value_but_allows_clearing() -> None:
+    with patch.object(server.WORKER, "call", return_value={"detail": "value written"}) as call:
+        with pytest.raises(ValueError, match="explicit value"):
+            await server.capstone_interact_ui("set_value", ref="editor")
+        call.assert_not_called()
+
+        await server.capstone_interact_ui("set_value", ref="editor", value="")
+        request = call.call_args.args[0]
+        assert (request.operation, request.ref, request.value) == ("set_value", "editor", "")
+
+
+@pytest.mark.anyio
 async def test_capstone_interact_ui_dispatch() -> None:
     """Verify capstone_interact_ui correctly dispatches all UI action types."""
     with patch.object(server, "_native", new_callable=AsyncMock) as mock_native:

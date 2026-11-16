@@ -98,33 +98,52 @@ def test_click_failure_does_not_retry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_drag_via_app_drag() -> None:
+@pytest.mark.parametrize("fails", [False, True])
+def test_drag_uses_current_geometry_without_click_fallback(*, fails: bool) -> None:
     app = Capstone()
-    app.drag = MagicMock()
+    source = _make_control("ref:src", "Palette Item")
+    target = _make_control("ref:dst", "Layout Area")
+    source_node, target_node, window = MagicMock(), MagicMock(), MagicMock()
+    source_node.rectangle.return_value = Bounds(left=100, top=10, right=200, bottom=40)
+    target_node.rectangle.return_value = Bounds(left=200, top=200, right=400, bottom=400)
+    window.rectangle.return_value = Bounds(left=0, top=0, right=500, bottom=500)
+    app.refs.update({source.ref: source_node, target.ref: target_node})
+    app.control = MagicMock(side_effect=app.refs.__getitem__)
+    app.owning_window = MagicMock(return_value=100)
+    app.focus_window = MagicMock(return_value=window)
+    app.require_uncovered = MagicMock()
+    app.click = MagicMock()
+
+    if fails:
+        window.drag_mouse_input.side_effect = AutomationError("drag failed")
+        with pytest.raises(AutomationError, match="drag failed"):
+            drag_control(app, 100, source, target)
+        window.release_mouse_input.assert_called_once_with(
+            coords=(300, 300), absolute=True,
+        )
+    else:
+        drag_control(app, 100, source, target)
+        window.release_mouse_input.assert_not_called()
+
+    window.drag_mouse_input.assert_called_once_with(
+        src=(150, 25), dst=(300, 300), absolute=True,
+    )
+    assert app.refs == {}
+    app.click.assert_not_called()
+
+
+def test_drag_with_foreground_disabled_stops_before_input() -> None:
+    app = Capstone()
+    app.focus_window = MagicMock()
+    app.click = MagicMock()
     source = _make_control("ref:src", "Palette Item")
     target = _make_control("ref:dst", "Layout Area")
 
-    drag_control(app, 100, source, target)
+    with pytest.raises(AutomationError, match="allow_foreground"):
+        drag_control(app, 100, source, target, allow_foreground=False)
 
-    app.drag.assert_called_once_with(
-        100, "ref:src", "ref:dst", allow_foreground=True,
-    )
-
-
-def test_drag_fallback_to_drag_mouse() -> None:
-    app = Capstone()
-    mock_node = MagicMock()
-    app.control = MagicMock(return_value=mock_node)
-    source = _make_control("ref:src", "Palette Item")
-    target = _make_control(
-        "ref:dst",
-        "Layout Area",
-        bounds=Bounds(left=200, top=200, right=400, bottom=400),
-    )
-
-    drag_control(app, 100, source, target)
-
-    mock_node.drag_mouse.assert_called_once_with((300, 300))
+    app.focus_window.assert_not_called()
+    app.click.assert_not_called()
 
 
 def test_set_control_value_via_iface_value() -> None:

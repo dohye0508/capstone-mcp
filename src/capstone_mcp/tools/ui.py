@@ -266,7 +266,10 @@ async def _dispatch_control_ui(  # noqa: PLR0913
     if action == "read_value":
         detail = await capstone_read_value(native, ref)
         return Result(detail=detail, delivered=True)
-    return await capstone_set_value(native, ref, value or "")
+    if value is None:
+        msg = "Action 'set_value' requires an explicit value."
+        raise ValueError(msg)
+    return await capstone_set_value(native, ref, value)
 
 
 def register_ui_tools(

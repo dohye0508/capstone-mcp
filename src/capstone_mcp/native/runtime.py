@@ -901,18 +901,11 @@ class NativeDesktop:
             ):
                 msg = "Both drag endpoints must be inside the window."
                 raise AutomationError(msg)
-        try:
-            _ = window.drag_mouse_input(
-                src=(rect.left + request.point.x, rect.top + request.point.y),
-                dst=(rect.left + request.end.x, rect.top + request.end.y),
-                absolute=True,
-            )
-        finally:
-            _ = window.release_mouse_input(
-                coords=(rect.left + request.end.x, rect.top + request.end.y),
-                absolute=True,
-            )
-            self.app.refs.clear()
+        self.app.drag_mouse(
+            window,
+            (rect.left + request.point.x, rect.top + request.point.y),
+            (rect.left + request.end.x, rect.top + request.end.y),
+        )
         return Result(detail="Drag delivered; inspect to verify.")
 
     def _scroll(self, request: NativeRequest) -> Result:

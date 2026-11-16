@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import contextlib
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
-from capstone_mcp.desktop import AutomationError, Capstone
+from capstone_mcp.desktop import AutomationError, Capstone, bounds
 
 if TYPE_CHECKING:
     from capstone_mcp.models import Bounds, Control
@@ -75,24 +75,22 @@ def drag_control(
     allow_foreground: bool = True,
 ) -> None:
     """Drag a palette item to a target layout container or page region."""
-    with contextlib.suppress(Exception):
-        app.focus_window(handle)
-
-    if hasattr(app, "drag"):
-        drag_fn: Any = getattr(app, "drag")  # noqa: B009
-        drag_fn(handle, source.ref, target.ref, allow_foreground=allow_foreground)
-        return
-
-    with contextlib.suppress(Exception):
-        node = app.control(source.ref)
-        if hasattr(node, "drag_mouse"):
-            dst_coords = center_coords(target.bounds)
-            drag_mouse_fn: Any = getattr(node, "drag_mouse")  # noqa: B009
-            drag_mouse_fn(dst_coords)
-            return
-
-    # Fallback to double-click placement if drag is unhandled by mock/backend
-    double_click_control(app, handle, source)
+    if not allow_foreground:
+        msg = "Dragging requires allow_foreground=true."
+        raise AutomationError(msg)
+    source_node, target_node = app.control(source.ref), app.control(target.ref)
+    if {app.owning_window(source_node), app.owning_window(target_node)} != {handle}:
+        msg = "Both drag controls must belong to the selected Capstone window."
+        raise AutomationError(msg)
+    window = app.focus_window(handle)
+    rect = bounds(window)
+    src, dst = center_coords(bounds(source_node)), center_coords(bounds(target_node))
+    for x, y in (src, dst):
+        if not (rect.left <= x < rect.right and rect.top <= y < rect.bottom):
+            msg = "Both drag endpoints must be inside the selected Capstone window."
+            raise AutomationError(msg)
+        app.require_uncovered(handle, (x, y))
+    app.drag_mouse(window, src, dst)
 
 
 def set_control_value(
