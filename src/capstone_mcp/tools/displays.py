@@ -2,11 +2,16 @@
 """Tool router for graphs, tables, digits displays, and workbook pages."""
 
 from collections.abc import Awaitable, Callable
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
 from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.types import (
+    CallToolResult,
+    ImageContent,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import JsonValue, TypeAdapter
 
 from capstone_mcp.automation_models import NativeRequest
@@ -17,6 +22,7 @@ from capstone_mcp.displays import (
 )
 from capstone_mcp.graphs import (
     GraphAction,
+    GraphCapture,
     GraphFailure,
     GraphRequest,
     GraphResult,
@@ -35,6 +41,43 @@ def register_display_tools(
     """Register all graph, table, digits, and display layout tools."""
     del get_last_failure
 
+    async def manage_graph(request: GraphRequest) -> GraphResult | CallToolResult:
+        if request.action == GraphAction.OBSERVE:
+            observe = request.observe
+            if observe is None or not observe.allow_foreground:
+                msg = "Graph observation requires a handle and allow_foreground=true."
+                raise ValueError(msg)
+            capture = GraphCapture.model_validate(await native(
+                NativeRequest(operation="observe_graph", handle=observe.handle),
+                mutates=True,
+            ))
+            result = GraphResult(action=request.action, observe=capture.frame)
+            return CallToolResult(
+                content=[
+                    ImageContent(type="image", data=capture.png_base64, mimeType="image/png"),
+                    TextContent(type="text", text=result.model_dump_json()),
+                ],
+                structuredContent=result.model_dump(mode="json"),
+            )
+        if (
+            request.action == GraphAction.READ
+            and request.read is not None
+            and request.read.cap_file is not None
+        ):
+            saved = await to_thread.run_sync(
+                read_saved_graph, request.read.cap_file, request.read.graph_index,
+            )
+            return GraphResult(action=request.action, read=saved)
+        return GraphResult.model_validate(
+            await native(
+                NativeRequest(
+                    operation="manage_graph",
+                    graph_request=JSON_VALUE.validate_json(request.model_dump_json()),
+                ),
+                mutates=request.action != GraphAction.READ,
+            ),
+        )
+
     @mcp.tool(
         annotations=ToolAnnotations(
             title="Unified graph management seam",
@@ -46,7 +89,7 @@ def register_display_tools(
     )
     async def capstone_manage_graph(
         request: GraphRequest,
-    ) -> GraphResult:
+    ) -> Annotated[CallToolResult, GraphResult]:
         """Unified entry point for all Capstone graph display operations.
 
         Supported actions (request.action):
@@ -54,9 +97,11 @@ def register_display_tools(
         - read: Read graph curves, fits, and data signatures (request.read)
           Set request.read.cap_file to read a saved archive without the desktop.
           Set request.read.graph_index (zero-based workbook order) for multiple graphs.
-        - fit: Scale graph axes to fit all data (request.fit)
+        - observe: Capture a fresh screenshot and one-use frame_id
+          (request.observe, requires allow_foreground=true)
+        - fit: Scale graph axes using an observed offset and frame_id (request.fit)
         - select_measurement: Select axis measurement via popup menu path
-          (request.select_measurement)
+          (request.select_measurement, requires a fresh frame_id)
         - toolbox_delta: Measure coordinates difference with delta crosshair
           (request.toolbox_delta)
         - toolbox_area: Integrate area under curve with area tool
@@ -66,25 +111,12 @@ def register_display_tools(
         - analyze: Set axes, fit curves, and compile analytical report
           (request.analyze)
         """
-        if (
-            request.action == GraphAction.READ
-            and request.read is not None
-            and request.read.cap_file is not None
-        ):
-            result = await to_thread.run_sync(
-                read_saved_graph, request.read.cap_file, request.read.graph_index,
-            )
-            return GraphResult(action=request.action, read=result)
-        return GraphResult.model_validate(
-            await native(
-                NativeRequest(
-                    operation="manage_graph",
-                    graph_request=JSON_VALUE.validate_json(
-                        request.model_dump_json(),
-                    ),
-                ),
-                mutates=request.action != GraphAction.READ,
-            ),
+        result = await manage_graph(request)
+        if isinstance(result, CallToolResult):
+            return result
+        return CallToolResult(
+            content=[TextContent(type="text", text=result.model_dump_json())],
+            structuredContent=result.model_dump(mode="json"),
         )
 
     @mcp.tool(
@@ -130,6 +162,6 @@ def register_display_tools(
 
     return {
         "capstone_manage_display": capstone_manage_display,
-        "capstone_manage_graph": capstone_manage_graph,
+        "capstone_manage_graph": manage_graph,
     }
 

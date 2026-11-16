@@ -58,9 +58,8 @@ ALWAYS
   the error names the dialog. Handle that dialog first, deliberately.
 - Type only into a field you just focused. With no editor focused, keys reach
   the experiment window as shortcuts.
-- Native fitting order: capstone_read_graph, capstone_observe_graph, then
-  capstone_set_graph_fits. A frame_id is single-use; observe again before the
-  next graph input. On graph errors call capstone_graph_recovery.
+- Use capstone_manage_graph actions read, observe, then analyze for native
+  fitting. Observe returns a single-use frame_id; observe again before input.
 - Saving and exporting write only NEW paths and never overwrite. Save As
   changes the active document path.
 - Get the user's authorization before operating physical hardware. Read
@@ -112,13 +111,14 @@ NATIVE GRAPHS AND FITTING
 1. Attach and inspect the current experiment. Preserve existing displays; use
    the observed Add Page button if a separate analysis page is appropriate.
    capstone_create_graph inserts a real graph into the active page.
-2. Get a fresh capstone_observe_graph. Custom graph controls are not in the UIA
-   tree. Supply client-area screenshot pixel coordinates, not desktop points,
-   to capstone_select_graph_measurement(axis_point, menu_path, frame_id).
+2. Use capstone_manage_graph(action=observe) with the window handle and
+   allow_foreground=true in observe. Use pixels from that image for
+   select_measurement.point and pass observe.frame_id into the request.
    Choose each axis by its exact measurement menu labels, including units.
    Use screenshot scaling correctly and reacquire anchors after layout changes.
    observe_graph returns both the original PNG and a one-use frame_id. Supply it
-   as request.frame_id for fitting or request.fitting.frame_id for analysis.
+   to fit.frame_id or analyze.fitting.frame_id. For fit, pass an observed
+   toolbar offset relative to the selected graph, measured from its top-left.
    Capture again before the next graph input, even if the prior request was a no-op.
    Observation activates the graph and captures its visible client-area pixels.
 3. capstone_read_graph uses native Copy Display to read the selected graph's
@@ -150,7 +150,7 @@ NATIVE GRAPHS AND FITTING
 """,
     "graph_contract": """
 TOOL CALL CONTRACT
-- For native fitting use this order: capstone_read_graph, capstone_observe_graph,
+- For native fitting use this order: capstone_manage_graph actions read, observe,
   capstone_fit_models when needed, then capstone_set_graph_fits. Use the observed
   handle, original screenshot pixels, returned model enum names, and signature.
 - The frame guard compares window bounds and exact screenshot pixels BEFORE the

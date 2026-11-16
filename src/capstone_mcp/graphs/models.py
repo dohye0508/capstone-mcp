@@ -26,6 +26,7 @@ class GraphAction(StrEnum):
 
     CREATE = "create"
     READ = "read"
+    OBSERVE = "observe"
     FIT = "fit"
     SELECT_MEASUREMENT = "select_measurement"
     TOOLBOX_DELTA = "toolbox_delta"
@@ -337,6 +338,13 @@ class GraphFrame(Model):
     height: int
 
 
+class ObserveGraphRequest(Model):
+    """Capture a fresh graph frame after explicitly allowing activation."""
+
+    handle: int = Field(gt=0)
+    allow_foreground: bool = False
+
+
 class GraphCapture(Model):
     """Private worker envelope containing screenshot and frame metadata."""
 
@@ -635,6 +643,7 @@ class GraphRequest(Model):
     action: GraphAction
     create: CreateGraphRequest | None = None
     read: ReadGraphRequest | None = None
+    observe: ObserveGraphRequest | None = None
     fit: FitGraphRequest | None = None
     select_measurement: SelectMeasurementRequest | None = None
     toolbox_delta: GraphDeltaRequest | None = None
@@ -660,6 +669,7 @@ class GraphResult(Model):
     action: GraphAction
     create: CreateGraphResult | None = None
     read: ReadGraphResult | None = None
+    observe: GraphFrame | None = None
     fit: FitGraphResult | None = None
     select_measurement: SelectMeasurementResult | None = None
     toolbox_delta: GraphDeltaResult | None = None

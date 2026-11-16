@@ -3,6 +3,7 @@
 
 import pytest
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, ImageContent
 
 from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.displays import (
@@ -167,6 +168,35 @@ async def test_manage_graph_tool_delegation() -> None:
     assert len(captured_requests) == 1
     assert captured_requests[0].operation == "manage_graph"
     assert captured_requests[0].graph_request["action"] == "create"
+
+
+@pytest.mark.anyio
+async def test_manage_graph_observe_returns_image_and_frame_receipt() -> None:
+    captured_requests: list[tuple[NativeRequest, bool]] = []
+
+    async def mock_native(req: NativeRequest, *, mutates: bool) -> dict[str, object]:
+        captured_requests.append((req, mutates))
+        return {
+            "frame": {
+                "frame_id": "fresh", "handle": 42, "width": 100, "height": 80,
+                "bounds": {"left": 0, "top": 0, "right": 100, "bottom": 80},
+            },
+            "png_base64": "cG5n",
+        }
+
+    mcp = FastMCP("test-observe-graph")
+    register_display_tools(mcp, mock_native)
+
+    result = await mcp.call_tool("capstone_manage_graph", {
+        "request": {"action": "observe", "observe": {"handle": 42, "allow_foreground": True}},
+    })
+
+    assert isinstance(result, CallToolResult)
+    graph = GraphResult.model_validate(result.structuredContent)
+    assert graph.observe is not None
+    assert graph.observe.frame_id == "fresh"
+    assert any(isinstance(part, ImageContent) for part in result.content)
+    assert captured_requests == [(NativeRequest(operation="observe_graph", handle=42), True)]
 
 
 @pytest.mark.anyio

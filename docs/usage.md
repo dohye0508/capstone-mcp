@@ -89,18 +89,18 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
 그래프 작업을 요청하면 AI가 Capstone의 실제 페이지를 조작합니다. 좌표는 사용자가 외워서 입력하는 값이 아니라 AI가 현재 스크린샷에서 확인하는 위치입니다.
 
 1. 현재 페이지를 확인합니다. 기존 표시를 보존하려면 `Add Page` 버튼으로 분석용 페이지를 추가합니다.
-2. `capstone_create_graph(handle)`로 실제 그래프를 삽입합니다.
-3. `capstone_observe_graph(handle)`이 반환한 이미지에서 축 선택 위치를 확인한 뒤, `capstone_select_graph_measurement(handle, axis_point, menu_path, frame_id)`를 호출합니다. `menu_path`는 `["Index"]`, `["Init. Red v (m/s)"]`처럼 화면에서 확인한 정확한 메뉴 이름의 목록입니다. 다음 축을 조작하기 전에는 다시 관찰합니다.
+2. `capstone_manage_graph(action="create")`로 실제 그래프를 삽입합니다.
+3. `capstone_manage_graph`의 `observe`이 반환한 이미지에서 축 선택 위치를 확인한 뒤, `capstone_manage_graph(action="select_measurement")`를 호출합니다. `select_measurement`에 `handle`, `point`, `path`, `frame_id`를 전달합니다. `path`는 `["Index"]`, `["Init. Red v (m/s)"]`처럼 화면에서 확인한 정확한 메뉴 이름의 목록입니다. 다음 축을 조작하기 전에는 다시 관찰합니다.
 4. `capstone_read_graph(handle)`으로 선택한 그래프의 실제 축 입력·회차·피팅 상태를 읽습니다. `capstone_fit_models()`로 지원 모델 이름을 조회합니다.
-5. 새로 `capstone_observe_graph`를 호출하고, `capstone_set_graph_fits(handle, request)`에 반환된 `frame_id`, `models` 목록과 `menu_point`(피팅 드롭다운 화살표), `master_point`(피팅 아이콘) 위치를 전달합니다. `["linear", "quadratic"]`는 두 모델만 남기는 요청이고, `[]`는 모두 제거하는 요청입니다. 이미 원하는 상태이면 모델을 다시 클릭하지 않습니다.
+5. 새로 `capstone_manage_graph(action="observe")`를 호출하고, `capstone_manage_graph(action="analyze")`에 반환된 `frame_id`, `models` 목록과 `menu_point`(피팅 드롭다운 화살표), `master_point`(피팅 아이콘) 위치를 전달합니다. `["linear", "quadratic"]`는 두 모델만 남기는 요청이고, `[]`는 모두 제거하는 요청입니다. 이미 원하는 상태이면 모델을 다시 클릭하지 않습니다.
 6. `fits_successful`과 `after.series[].fits[]`를 확인합니다. 모델 선택 성공과 수치 계산 성공은 다릅니다. 각 결과에는 Capstone의 `error_status`, 계수·불확도, 유효한 r·MSE·RMSE 등이 들어 있습니다. 실패한 피팅이나 유효하지 않은 통계값은 사용할 수 있는 숫자로 반환하지 않습니다.
 7. 새 스크린샷에서 그래프와 주석을 확인합니다. 저장이 필요하면 `capstone_save_experiment`로 새 경로에 저장합니다.
 
-축과 피팅 위치는 현재 클라이언트 영역 스크린샷의 원본 픽셀 좌표입니다. `capstone_observe_graph`는 창을 활성화하고 실제 보이는 화면을 캡처합니다. 창이나 그래프를 이동·크기 변경한 뒤에는 다시 확인해야 합니다. 그래프 내부 컨트롤은 UIA 트리에 나타나지 않으므로 고정 좌표를 재사용하지 않습니다.
+축과 피팅 위치는 현재 클라이언트 영역 스크린샷의 원본 픽셀 좌표입니다. `fit`의 `offset`은 선택한 그래프의 왼쪽 위를 기준으로 계산합니다. 응답의 `observe.frame_id`는 다음 그래프 조작에 한 번만 사용할 수 있습니다. `observe`에 `{"handle": 123, "allow_foreground": true}`를 전달하면 창을 활성화하고 실제 보이는 화면을 캡처합니다. 창이나 그래프를 이동·크기 변경한 뒤에는 다시 확인해야 합니다. 그래프 내부 컨트롤은 UIA 트리에 나타나지 않으므로 고정 좌표를 재사용하지 않습니다.
 
 비례·선형·가중 선형·2차·3차·다항식·멱함수·역함수·지수·로그·사인·감쇠 사인·가우시안 계열 등 **23개 내장 모델**을 선택할 수 있습니다. 사용자 정의 식 편집은 포함하지 않습니다. 전체 24행이 보이는 네이티브 메뉴를 기준으로 하므로 메뉴가 잘리지 않게 창을 충분히 크게 사용하세요. 특정 데이터에서 모든 모델이 수렴하는 것은 아니며, 네이티브 오류 상태를 그대로 확인해야 합니다.
 
-`capstone_analyze_graph(handle, request)`는 이미 생성·선택한 그래프의 축 선택과 피팅·결과 읽기를 한 호출로 연결합니다. `request.x`와 `request.y`는 각각 `point`, `menu_path`를 가지며, 바꾸지 않을 축은 생략합니다. `request.fitting`에는 위 피팅 요청을 넣습니다. 그래프 생성 후 달라진 배치를 먼저 확인해야 하므로 이전 페이지 좌표로 바로 분석하지 않습니다.
+`capstone_manage_graph(action="analyze")`는 이미 생성·선택한 그래프의 축 선택과 피팅·결과 읽기를 한 호출로 연결합니다. `request.x`와 `request.y`는 각각 `point`, `menu_path`를 가지며, 바꾸지 않을 축은 생략합니다. `request.fitting`에는 위 피팅 요청을 넣습니다. 그래프 생성 후 달라진 배치를 먼저 확인해야 하므로 이전 페이지 좌표로 바로 분석하지 않습니다.
 
 그래프 상태는 저장 파일이나 외부 회귀 계산이 아니라 **Capstone의 Copy Display XML**에서 읽습니다. 이 과정에서 Windows 클립보드는 선택한 그래프로 바뀌지만 실험 파일은 저장되지 않습니다. `after.series[].inputs[]`는 각 렌더러의 소스·회차·단위 ID를 보존하며, 계수의 소수 문자열을 임의로 반올림하지 않습니다. 메뉴 동작 후 읽은 상태가 요청과 다르면 중단하고 불확실한 입력을 자동 재전송하지 않습니다.
 
@@ -108,7 +108,7 @@ MCP 연결을 마쳤다면 AI 클라이언트의 채팅창에서 작업을 요�
 
 ### AI 클라이언트의 호출 순서와 확인 기준
 
-- `capstone_read_graph` → 최신 `capstone_observe_graph` → 필요하면 `capstone_fit_models` → `capstone_set_graph_fits` 순서로 호출합니다.
+- `capstone_read_graph` → 최신 `capstone_manage_graph(action="observe")` → 필요하면 `capstone_fit_models` → `capstone_manage_graph(action="analyze")` 순서로 호출합니다.
 - 비교 보고서도 화면 관찰 전에 읽습니다. `capstone_read_graph`와 `capstone_graph_report`의 메뉴 조작은 이미 발급된 화면을 바꿀 수 있습니다.
 - `frame_id`는 한 요청에만 사용할 수 있습니다. 요청 시작 전 창 위치·크기와 이미지 픽셀이 달라지면 `STALE_FRAME`으로 차단합니다. 실시간 데이터나 애니메이션도 변경으로 판정되므로 오래된 좌표로 강행하지 않습니다. 실행 도중의 사용자 조작까지 잠그는 기능은 아니며, 일반 저수준 클릭 도구에는 이 가드가 적용되지 않습니다.
 - 실패하면 `capstone_graph_recovery()`에서 실패 단계, 확인된 단계, 입력이 전달됐을 가능성, 다음 행동을 읽습니다. 일부 입력이 전달됐을 수 있으면 상태부터 확인하고 새 프레임을 받습니다. `request_id`로 마지막 실패를 구분하며, 나중에 성공한 호출의 현재 상태와 혼동하지 않습니다. 워커 시간 초과처럼 실행 내역을 받지 못한 경우에는 단계 목록이 비어 있어도 아무 작업도 하지 않았다는 뜻이 아닙니다.
