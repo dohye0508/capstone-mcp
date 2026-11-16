@@ -68,6 +68,51 @@ def test_create_calculation_raises_when_calculator_toggle_not_found() -> None:
         _ = create_calculation(app, req)
 
 
+@pytest.mark.parametrize(("problem", "error"), [
+    ("formula", "formula editor"),
+    ("unit", "unit editor"),
+    ("toggle", "palette toggle"),
+    ("truncated", "snapshot is incomplete"),
+])
+def test_calculator_refuses_ambiguous_or_incomplete_controls(
+    problem: str, error: str,
+) -> None:
+    bounds = Bounds(left=0, top=0, right=100, bottom=100)
+    window = Window(handle=100, title="Capstone", process_id=1, bounds=bounds)
+    controls = {
+        "toggle": Control(
+            ref="toggle", parent=None, name="Calculator", control_type="CheckBox",
+            automation_id="Palette.ObjNameCalculator", bounds=bounds,
+            enabled=True, visible=True,
+        ),
+        "formula": Control(
+            ref="formula", parent=None, name="Formula", control_type="Edit",
+            automation_id="Calculator.FormulaEditor", bounds=bounds,
+            enabled=True, visible=True,
+        ),
+        "unit": Control(
+            ref="unit", parent=None, name="Units", control_type="Edit",
+            automation_id="Calculator.UnitEditor", bounds=bounds,
+            enabled=True, visible=True,
+        ),
+    }
+    candidates = list(controls.values())
+    if problem in controls:
+        candidates.append(controls[problem].model_copy(update={"ref": "duplicate"}))
+    app = MagicMock(spec=Capstone)
+    app.control.return_value.iface_toggle.CurrentToggleState = 1
+    app.snapshot.return_value = Snapshot(
+        window=window, controls=candidates, truncated=problem == "truncated",
+    )
+
+    with pytest.raises(AutomationError, match=error):
+        _ = create_calculation(app, CreateCalculationRequest(expression="x = 1", unit="V"))
+
+    app.control.return_value.iface_value.SetValue.assert_not_called()
+    app.click.assert_not_called()
+    app.keys.assert_not_called()
+
+
 def test_create_calculation_submission_is_not_verified_success() -> None:
     app = Capstone()
     mock_window = Window(

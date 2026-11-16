@@ -7,7 +7,7 @@ import sys
 from typing import Final, Literal
 
 from capstone_mcp.desktop import AutomationError, Capstone
-from capstone_mcp.models import Control, Model
+from capstone_mcp.models import Control, Model, Snapshot
 
 CALCULATOR_TOGGLE_SUFFIX: Final = ".ObjNameCalculator"
 CALCULATOR_NAME: Final = "Calculator"
@@ -69,20 +69,23 @@ def _validate_delimiters(expression: str) -> None:
         raise AutomationError(msg)
 
 
-def _find_calculator_toggle(controls: list[Control]) -> Control:
+def _find_calculator_toggle(snapshot: Snapshot) -> Control:
     """Find the Calculator palette toggle button in the active window."""
-    for ctrl in controls:
-        if (
-            ctrl.visible
-            and ctrl.control_type == "CheckBox"
-            and (
-                ctrl.automation_id.endswith(CALCULATOR_TOGGLE_SUFFIX)
-                or ctrl.name.strip() == CALCULATOR_NAME
-            )
-        ):
-            return ctrl
-    msg = "Calculator palette toggle button not found in window snapshot."
-    raise AutomationError(msg)
+    if snapshot.truncated:
+        msg = "Calculator window snapshot is incomplete; no toggle can be selected."
+        raise AutomationError(msg)
+    matches = [
+        ctrl for ctrl in snapshot.controls
+        if ctrl.visible and ctrl.enabled and ctrl.control_type == "CheckBox"
+        and (
+            ctrl.automation_id.endswith(CALCULATOR_TOGGLE_SUFFIX)
+            or ctrl.name.strip() == CALCULATOR_NAME
+        )
+    ]
+    if len(matches) != 1:
+        msg = "Expected exactly one enabled Calculator palette toggle."
+        raise AutomationError(msg)
+    return matches[0]
 
 
 def _is_calculator_open(app: Capstone, toggle_ctrl: Control) -> bool:
@@ -101,15 +104,18 @@ def _is_calculator_open(app: Capstone, toggle_ctrl: Control) -> bool:
 
 
 def _find_editor_controls(
-    controls: list[Control],
+    snapshot: Snapshot,
     *,
     require_unit: bool,
 ) -> tuple[Control, Control | None]:
     """Find the formula editor and unit editor controls in the calculator drawer."""
-    formula_ctrl: Control | None = None
-    unit_ctrl: Control | None = None
+    if snapshot.truncated:
+        msg = "Calculator window snapshot is incomplete; no editor can be selected."
+        raise AutomationError(msg)
+    formulas: list[Control] = []
+    units: list[Control] = []
 
-    for ctrl in controls:
+    for ctrl in snapshot.controls:
         if not ctrl.visible or not ctrl.enabled or ctrl.control_type != "Edit":
             continue
         aid_lower = ctrl.automation_id.lower()
@@ -119,17 +125,17 @@ def _find_editor_controls(
             or "formula" in name_lower
             or aid_lower.endswith(".calc")
         ):
-            formula_ctrl = ctrl
+            formulas.append(ctrl)
         elif "unit" in aid_lower or "unit" in name_lower:
-            unit_ctrl = ctrl
+            units.append(ctrl)
 
-    if formula_ctrl is None:
-        msg = "Could not locate the Calculator formula editor in the active drawer."
+    if len(formulas) != 1:
+        msg = "Expected exactly one enabled Calculator formula editor."
         raise AutomationError(msg)
-    if require_unit and unit_ctrl is None:
-        msg = "Could not locate the Calculator unit editor in the active drawer."
+    if require_unit and len(units) != 1:
+        msg = "Expected exactly one enabled Calculator unit editor."
         raise AutomationError(msg)
-    return formula_ctrl, unit_ctrl
+    return formulas[0], units[0] if len(units) == 1 else None
 
 
 def _set_editor_value(app: Capstone, handle: int, control: Control, value: str) -> None:
@@ -145,7 +151,7 @@ def _set_editor_value(app: Capstone, handle: int, control: Control, value: str) 
 def _restore_calculator(app: Capstone, handle: int, *, failing: bool) -> None:
     try:
         fresh = app.snapshot(handle, depth=16, limit=10_000)
-        toggle = _find_calculator_toggle(fresh.controls)
+        toggle = _find_calculator_toggle(fresh)
         app.click(handle, toggle.ref, allow_foreground=True)
     except Exception:
         if not failing:
@@ -154,7 +160,7 @@ def _restore_calculator(app: Capstone, handle: int, *, failing: bool) -> None:
 
 def _write_unit(app: Capstone, handle: int, unit: str) -> None:
     snapshot = app.snapshot(handle, depth=16, limit=10_000)
-    _, unit_control = _find_editor_controls(snapshot.controls, require_unit=True)
+    _, unit_control = _find_editor_controls(snapshot, require_unit=True)
     if unit_control is None:
         msg = "Calculator unit editor disappeared after formula entry."
         raise AutomationError(msg)
@@ -184,7 +190,7 @@ def create_calculation(
 
     # 1. Inspect window and locate Calculator toggle
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    toggle_ctrl = _find_calculator_toggle(snapshot.controls)
+    toggle_ctrl = _find_calculator_toggle(snapshot)
     was_open = _is_calculator_open(app, toggle_ctrl)
 
     opened_by_tool = False
@@ -197,21 +203,15 @@ def create_calculation(
         if opened_by_tool:
             snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
         # 2. Locate formula editor and unit editor controls
-        formula_ctrl, unit_ctrl = _find_editor_controls(
-            snapshot.controls, require_unit=bool(request.unit),
+        formula_ctrl, _ = _find_editor_controls(
+            snapshot, require_unit=bool(request.unit),
         )
-        if not formula_ctrl:
-            msg = "Could not locate the Calculator formula editor in the active drawer."
-            raise AutomationError(msg)
-        if request.unit and unit_ctrl is None:
-            msg = "Could not locate the requested Calculator unit editor."
-            raise AutomationError(msg)
 
         # 3. Enter formula
         _set_editor_value(app, request.handle, formula_ctrl, raw_expr)
 
         # 4. Enter unit if specified
-        if request.unit and unit_ctrl:
+        if request.unit:
             _write_unit(app, request.handle, request.unit)
 
         # Commit formula
