@@ -135,6 +135,50 @@ def _write_cap(
             archive.writestr(payload_name, payload)
 
 
+@pytest.mark.parametrize("storage", [
+    (True, "index"), (True, "interval"), (False, "index"), (False, "interval"),
+], ids=["binary-index", "binary-interval", "text-index", "text-interval"])
+@pytest.mark.parametrize(("x", "y", "slope"), [
+    (("Voltage", 1024, [1, 2, 3, 4]), ("Current", 3584, [2, 4, 6, 8]), 2),
+    (("Time", 3330, [0, 1, 2, 3]), ("Velocity", 2304, [3, 2, 1, 0]), -1),
+    (("Pressure", 770, [100, 110, 120, 130]), ("Volume", 1280, [8, 7, 6, 5]), -0.1),
+    (
+        ("Frequency", 7936, [400, 500, 600, 700]),
+        ("Stopping Voltage", 1024, [0.5, 1.0, 1.5, 2.0]), 0.005,
+    ),
+    (("Angle", 2560, [0, 1, 2, 3]), ("Light Intensity", 5122, [1, 4, 7, 10]), 3),
+], ids=["circuit", "motion", "gas", "photoelectric", "optics"])
+def test_portable_archive_analysis(
+    tmp_path: Path,
+    storage: tuple[bool, Literal["index", "interval"]],
+    x: tuple[str, int, list[int | float]],
+    y: tuple[str, int, list[int | float]],
+    slope: float,
+) -> None:
+    """Use deterministic samples to exercise the full .cap-to-report path in CI."""
+    numeric_cache, axis_kind = storage
+    path = tmp_path / "experiment.cap"
+    _write_cap(path, [
+        _DatasetSpec(
+            "{run}", f"{{axis-{index}}}", name, list(values), unit_id=unit,
+            numeric_cache=numeric_cache, independent_kind=axis_kind,
+            interval_start=0.25, interval_step=0.5,
+        )
+        for index, (name, unit, values) in enumerate((x, y))
+    ], runs={"{run}": 2})
+
+    report = generate_report(str(path), run_id="Run #2", axes=(x[0], y[0]))
+
+    assert report.metadata.run_name == "Run #2"
+    assert report.raw_data_points == {x[0]: x[2], y[0]: y[2]}
+    assert [summary.unit for summary in report.data_summaries] == [
+        f"Capstone unit ID {x[1]}", f"Capstone unit ID {y[1]}",
+    ]
+    assert report.regression is not None
+    assert report.regression.slope == pytest.approx(slope)
+    assert report.regression.r_squared == pytest.approx(1.0)
+
+
 def test_saved_series_requires_named_axes_and_exposes_independent_coordinates(
     tmp_path: Path,
 ) -> None:

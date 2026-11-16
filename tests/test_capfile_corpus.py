@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 from zipfile import ZipFile
 
@@ -18,15 +16,15 @@ from capstone_mcp.capfiles import (
     read_cap_dataset_page,
     read_cap_file,
 )
+from tests.golden_samples import GOLDEN_MASTER_DIR
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from xml.etree.ElementTree import Element
 
     from capstone_mcp.capfile_models import CapDataSet
 
-_DIRECTORY = os.environ.get("CAPSTONE_GOLDEN_MASTER_DIR")
-_ROOT = Path(_DIRECTORY) if _DIRECTORY else None
-_ARCHIVES = sorted(_ROOT.rglob("*.cap")) if _ROOT and _ROOT.is_dir() else []
+_ARCHIVES = sorted(GOLDEN_MASTER_DIR.rglob("*.cap"))
 
 
 def _assert_saved_run_labels(root: Element, dataset: CapDataSet) -> None:
@@ -43,7 +41,7 @@ def _assert_saved_run_labels(root: Element, dataset: CapDataSet) -> None:
 @pytest.mark.parametrize(
     "path",
     _ARCHIVES or [None],
-    ids=[str(path.relative_to(_ROOT)) for path in _ARCHIVES] if _ROOT else None,
+    ids=[str(path.relative_to(GOLDEN_MASTER_DIR)) for path in _ARCHIVES] or None,
 )
 def test_real_archive_arrays_match_native_metadata_without_modification(
     path: Path | None,

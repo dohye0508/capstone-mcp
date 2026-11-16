@@ -7,5 +7,5 @@ from typing import Final
 
 GOLDEN_MASTER_DIR: Final = Path(
     os.environ.get("CAPSTONE_GOLDEN_MASTER_DIR")
-    or Path.home() / "Downloads" / "(2026)캡스톤 실험별 파일",
+    or Path(__file__).parent / "fixtures" / "native-corpus",
 )
