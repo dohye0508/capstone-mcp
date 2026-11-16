@@ -80,6 +80,7 @@ class WindowEvents:
         self.process_id: int = process_id
         self.changes: StateChanges = StateChanges()
         self.ready: Event = Event()
+        self._stop_requested: Event = Event()
         self.thread: Thread = Thread(target=self._pump, daemon=True)
         self.thread_id: int = 0
         self.error: str | None = None
@@ -90,6 +91,7 @@ class WindowEvents:
         """Wait for hook registration before permitting the caller's input."""
         self.thread.start()
         if not self.ready.wait(READY_TIMEOUT):
+            self._stop_requested.set()
             msg = "Native event listener did not start."
             raise AutomationError(msg)
         if self.error is not None:
@@ -101,21 +103,26 @@ class WindowEvents:
         _error: BaseException | None, _traceback: TracebackType | None,
     ) -> None:
         """Stop the message loop; the registering thread removes its own hook."""
-        if not self.thread.is_alive():
-            if self.error is not None and _error is None:
-                raise AutomationError(self.error)
-            return
-        user32 = _User32()
-        user32.PostThreadMessageW.argtypes = (
-            wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
-        )
-        user32.PostThreadMessageW.restype = wintypes.BOOL
-        if not user32.PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0):
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.thread.join(READY_TIMEOUT)
+        self._stop_requested.set()
         if self.thread.is_alive():
-            msg = "Native event listener did not stop."
-            raise AutomationError(msg)
+            user32 = _User32()
+            user32.PostThreadMessageW.argtypes = (
+                wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            )
+            user32.PostThreadMessageW.restype = wintypes.BOOL
+            posted = user32.PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0)
+            post_error = None if posted else ctypes.WinError(ctypes.get_last_error())
+            self.thread.join(READY_TIMEOUT)
+            if self.thread.is_alive():
+                failure = post_error or AutomationError(
+                    "Native event listener did not stop.",
+                )
+                if _error is None:
+                    raise failure
+                _error.add_note(str(failure))
+                return
+        if self.error is not None and _error is None:
+            raise AutomationError(self.error)
 
     def _pump(self) -> None:
         """Receive out-of-context accessibility events without calling UIA here."""
@@ -191,7 +198,7 @@ class WindowEvents:
         user32.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
         user32.DispatchMessageW.restype = ctypes.c_ssize_t
         message = wintypes.MSG()
-        while True:
+        while not self._stop_requested.is_set():
             status = user32.GetMessageW(ctypes.byref(message), None, 0, 0)
             if status <= 0:
                 if status < 0:

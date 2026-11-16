@@ -100,3 +100,48 @@ def test_hook_is_released_after_clipboard_initialization_failure(
         assert events.error
     user32.UnhookWinEvent.assert_called_once_with(123)
     assert events.ready.is_set()
+
+
+def test_exit_tolerates_listener_stopping_during_quit_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user32 = MagicMock()
+    user32.PostThreadMessageW.return_value = False
+    monkeypatch.setattr(ui_events, "_User32", lambda: user32)
+    monkeypatch.setattr(ui_events.ctypes, "get_last_error", lambda: 1444)
+    events = ui_events.WindowEvents(1)
+    events.thread = MagicMock()
+    events.thread.is_alive.side_effect = [True, False]
+
+    events.__exit__(None, None, None)
+
+    events.thread.join.assert_called_once_with(ui_events.READY_TIMEOUT)
+
+
+def test_exit_preserves_command_failure_when_listener_is_stuck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user32 = MagicMock()
+    monkeypatch.setattr(ui_events, "_User32", lambda: user32)
+    events = ui_events.WindowEvents(1)
+    events.thread = MagicMock()
+    events.thread.is_alive.return_value = True
+    original = AutomationError("command failed")
+
+    events.__exit__(type(original), original, None)
+
+    assert original.__notes__ == ["Native event listener did not stop."]
+
+
+def test_startup_timeout_stops_late_listener_before_it_blocks() -> None:
+    events = ui_events.WindowEvents(1)
+    events.thread = MagicMock()
+    events.ready = MagicMock()
+    events.ready.wait.return_value = False
+
+    with pytest.raises(AutomationError, match="listener did not start"):
+        events.__enter__()
+    user32 = MagicMock()
+    events._dispatch_messages(user32)
+
+    user32.GetMessageW.assert_not_called()
