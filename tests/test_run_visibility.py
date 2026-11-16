@@ -84,12 +84,15 @@ def test_set_run_visibility_raises_when_run_control_not_found() -> None:
 
 
 @pytest.mark.parametrize("toggle_applied", [True, False])
-def test_set_run_visibility_success_toggle_pattern(*, toggle_applied: bool) -> None:
+@pytest.mark.parametrize("space", [" ", "\u00a0"])
+def test_set_run_visibility_success_toggle_pattern(
+    space: str, *, toggle_applied: bool,
+) -> None:
     app = Capstone()
     mock_win = _make_window()
 
     ctrl_run1 = Control(
-        ref="ref:run1", parent=None, name="Run #1",
+        ref="ref:run1", parent=None, name=f"First{space}Trial",
         control_type="CheckBox", automation_id="run_1_check",
         enabled=True, visible=True,
         bounds=Bounds(left=10, top=10, right=100, bottom=30),
@@ -129,12 +132,12 @@ def test_set_run_visibility_success_toggle_pattern(*, toggle_applied: bool) -> N
 
     app.control = mock_control
 
-    req = SetRunVisibilityRequest(handle=100, runs=["Run #1", "Run #2"], visible=True)
+    req = SetRunVisibilityRequest(handle=100, runs=["First Trial", "Run #2"], visible=True)
     result = set_run_visibility(app, req)
 
     assert isinstance(result, SetRunVisibilityResult)
     assert result.verified is toggle_applied
-    expected = ["Run #1", "Run #2"] if toggle_applied else ["Run #2"]
+    expected = [ctrl_run1.name, "Run #2"] if toggle_applied else ["Run #2"]
     assert result.visible_runs == expected
     assert node_run1.iface_toggle.Toggle.call_count == 1
     assert node_run2.iface_toggle.Toggle.call_count == 1

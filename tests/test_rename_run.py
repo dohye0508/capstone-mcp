@@ -41,7 +41,8 @@ def test_rename_run_raises_when_run_not_found() -> None:
         _ = rename_run(app, req)
 
 
-def test_rename_run_direct_value_pattern_success() -> None:
+@pytest.mark.parametrize("space", [" ", "\u00a0"])
+def test_rename_run_direct_value_pattern_success(space: str) -> None:
     app = Capstone()
     mock_window = Window(
         handle=100, title="Capstone", process_id=1,
@@ -50,7 +51,7 @@ def test_rename_run_direct_value_pattern_success() -> None:
     app.windows = MagicMock(return_value=[mock_window])
 
     initial_treeitem = Control(
-        ref="ref:run1", parent="sensor-tree", name="Run #1",
+        ref="ref:run1", parent="sensor-tree", name=f"Run{space}#1",
         control_type="TreeItem", automation_id="run_1", enabled=True,
         visible=True, bounds=Bounds(left=10, top=10, right=100, bottom=30),
     )
@@ -129,7 +130,8 @@ def test_rename_routes_literal_name_to_confirmed_inline_editor() -> None:
     assert editor.type_keys.call_args.args == ("{ENTER}",)
 
 
-def test_rename_refuses_repeated_summary_rows_before_writing() -> None:
+@pytest.mark.parametrize("other_name", ["Run #1", "Run\u00a0#1"])
+def test_rename_refuses_repeated_summary_rows_before_writing(other_name: str) -> None:
     app = Capstone()
     bounds = Bounds(left=0, top=0, right=200, bottom=100)
     window = Window(handle=100, title="Capstone", process_id=1, bounds=bounds)
@@ -140,8 +142,9 @@ def test_rename_refuses_repeated_summary_rows_before_writing() -> None:
     row = tree.model_copy(update={
         "ref": "run", "parent": tree.ref, "name": "Run #1", "control_type": "TreeItem",
     })
+    other = row.model_copy(update={"ref": "run-other", "name": other_name})
     app.snapshot = MagicMock(return_value=Snapshot(
-        window=window, controls=[tree, row, row.model_copy(update={"ref": "run-other"})],
+        window=window, controls=[tree, row, other],
         truncated=False,
     ))
     app.control = MagicMock()

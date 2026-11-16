@@ -60,6 +60,10 @@ RUN_DELETE_TIMEOUT_SECONDS: Final = 3
 LAST_RUN_NAMES: Final = frozenset({"last_run", "last", "latest"})
 
 
+def _run_name_key(name: str) -> str:
+    return name.replace("\N{NO-BREAK SPACE}", " ").strip()
+
+
 # ---------------------------------------------------------------------------
 # 1. Run Renaming
 # ---------------------------------------------------------------------------
@@ -91,7 +95,7 @@ def _rename_via_inline_editor(
         raise AutomationError(msg)
     editor = editors[0]
     pattern = editor.iface_value
-    if pattern.CurrentValue.strip() != old_name.strip():
+    if _run_name_key(pattern.CurrentValue) != _run_name_key(old_name):
         msg = "The active run editor does not contain the expected old name."
         raise AutomationError(msg)
     pattern.SetValue(new_name)
@@ -107,34 +111,39 @@ def _rename_via_inline_editor(
 
 def rename_run(app: Capstone, request: RenameRunRequest) -> RenameRunResult:
     """Rename a row in Sensor Data Summary and confirm the resulting names."""
-    old_name, new_name = request.old_name.strip(), request.new_name.strip()
+    old_key, new_name = _run_name_key(request.old_name), request.new_name.strip()
     if not new_name or "\n" in request.new_name or "\r" in request.new_name:
         msg = "new_name must be a nonempty single line."
         raise AutomationError(msg)
 
     snapshot = app.snapshot(request.handle, depth=20, limit=10_000)
-    items = _sensor_summary_items(snapshot)
-    targets = [
-        control for control in items or []
-        if control.enabled and control.name.strip() == old_name
-    ]
-    if not targets:
-        msg = f"Run item with name {old_name!r} not found in Sensor Data Summary."
+    items = _sensor_summary_items(snapshot) or []
+    targets = [control for control in items if _run_name_key(control.name) == old_key]
+    if len(targets) > 1:
+        msg = f"Multiple rows show {request.old_name!r}. Run-wide rename is unverified."
         raise AutomationError(msg)
+    if not targets or not targets[0].enabled:
+        msg = (
+            f"Run item with name {request.old_name!r} not found in Sensor Data Summary."
+        )
+        raise AutomationError(msg)
+    target = targets[0]
+    old_name = target.name.strip()
     if old_name == new_name:
         return RenameRunResult(
             old_name=request.old_name, new_name=request.new_name, verified=True,
             detail=f"Run already has the name {new_name!r}.",
         )
-    before = Counter(control.name.strip() for control in items or [])
-    if before[new_name]:
+    new_key = _run_name_key(new_name)
+    if any(
+        control.ref != target.ref and _run_name_key(control.name) == new_key
+        for control in items
+    ):
         msg = f"A row with the new name {new_name!r} already exists in Data Summary."
         raise AutomationError(msg)
-    if before[old_name] != 1:
-        msg = f"Multiple rows show {old_name!r}. Run-wide rename is unverified."
-        raise AutomationError(msg)
 
-    node = app.control(targets[0].ref)
+    before = Counter(control.name.strip() for control in items)
+    node = app.control(target.ref)
     handle = snapshot.window.handle
     try:
         pattern = node.iface_value
@@ -272,6 +281,7 @@ def _find_run_controls(
 ) -> list[Control]:
     """Find controls representing runs (checkboxes, tree items, list items)."""
     candidates: list[Control] = []
+    requested_names = {_run_name_key(name).casefold() for name in requested_runs or []}
     for ctrl in controls:
         if not ctrl.visible:
             continue
@@ -284,13 +294,8 @@ def _find_run_controls(
             "RadioButton",
         ):
             continue
-        if not (
-            RUN_NAME_PATTERN.fullmatch(ctrl.name.strip())
-            or any(
-                ctrl.name.strip().casefold() == name.strip().casefold()
-                for name in (requested_runs or [])
-            )
-        ):
+        name = _run_name_key(ctrl.name)
+        if not (RUN_NAME_PATTERN.fullmatch(name) or name.casefold() in requested_names):
             continue
 
         if target_containers is None or any(
@@ -302,8 +307,8 @@ def _find_run_controls(
 
 def _matches_run_name(ctrl: Control, target_run: str) -> bool:
     """Match a control against a target run identifier."""
-    cname = ctrl.name.strip().lower()
-    tname = target_run.strip().lower()
+    cname = _run_name_key(ctrl.name).casefold()
+    tname = _run_name_key(target_run).casefold()
     if cname == tname:
         return True
     if not RUN_NAME_PATTERN.fullmatch(cname):
