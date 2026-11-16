@@ -138,10 +138,6 @@ def compute_linear_regression(
     slope = fit.slope
     intercept = fit.intercept
     r_squared = fit.r_squared
-    slope_error = fit.std_err_slope if len(x) > MIN_REGRESSION_POINTS else 0.0
-    intercept_error = (
-        fit.std_err_intercept if len(x) > MIN_REGRESSION_POINTS else 0.0
-    )
 
     x_var, y_var = variable_names
     x_unit, y_unit = units
@@ -158,8 +154,8 @@ def compute_linear_regression(
         slope=slope,
         intercept=intercept,
         r_squared=r_squared,
-        slope_error=slope_error,
-        intercept_error=intercept_error,
+        slope_error=fit.std_err_slope,
+        intercept_error=fit.std_err_intercept,
         equation=eq_str,
         x_variable=x_var,
         y_variable=y_var,

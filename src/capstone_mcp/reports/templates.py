@@ -98,18 +98,22 @@ def _render_md_data(report: LabReport) -> list[str]:
     return lines
 
 
+def _format_standard_error(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.3e}"
+
+
 def _render_md_regression(report: LabReport) -> list[str]:
     lines = ["## 5. Regression & Curve Fitting", ""]
     if report.regression:
         reg = report.regression
-        se_m = f"`{reg.slope_error:.3e}`" if reg.slope_error else "'N/A'"
-        se_b = f"`{reg.intercept_error:.3e}`" if reg.intercept_error else "'N/A'"
+        se_m = _format_standard_error(reg.slope_error)
+        se_b = _format_standard_error(reg.intercept_error)
         r2_s = f"`{reg.r_squared:.4f}`" if reg.r_squared is not None else "'N/A'"
         lines.extend([
             f"**Model:** {reg.model_name}  ",
             f"**Fitted Equation:** `{reg.equation}`  ",
-            f"- **Slope ($m$):** `{reg.slope:.5e}` (std err: {se_m})  ",
-            f"- **Intercept ($b$):** `{reg.intercept:.5e}` (std err: {se_b})  ",
+            f"- **Slope ($m$):** `{reg.slope:.5e}` (std err: `{se_m}`)  ",
+            f"- **Intercept ($b$):** `{reg.intercept:.5e}` (std err: `{se_b}`)  ",
             f"- **Coefficient of Determination ($R^2$):** {r2_s}  ",
             "",
         ])
@@ -463,14 +467,18 @@ def _render_html_body_regression(report: LabReport) -> list[str]:
     sections = ["  <h2>5. Regression & Curve Fitting</h2>"]
     if report.regression:
         reg = report.regression
+        se_m = _format_standard_error(reg.slope_error)
+        se_b = _format_standard_error(reg.intercept_error)
         r2 = f"{reg.r_squared:.4f}" if reg.r_squared is not None else "N/A"
         sections.extend([
             '  <div class="card">',
             f"    <p><strong>Model:</strong> {html.escape(reg.model_name)}</p>",
             f'    <div class="equation-card">{html.escape(reg.equation)}</div>',
             (
-                f"    <p><strong>Slope:</strong> <code>{reg.slope:.5e}</code> | "
-                f"<strong>Intercept:</strong> <code>{reg.intercept:.5e}</code></p>"
+                f"    <p><strong>Slope:</strong> <code>{reg.slope:.5e}</code> "
+                f"(std err: <code>{se_m}</code>) | "
+                f"<strong>Intercept:</strong> <code>{reg.intercept:.5e}</code> "
+                f"(std err: <code>{se_b}</code>)</p>"
             ),
             f'    <p><strong>R²:</strong> <span class="badge">{r2}</span></p>',
             "  </div>",

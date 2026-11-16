@@ -70,6 +70,15 @@ def test_fit_linear_series_insufficient_points() -> None:
         fit_linear_series([1.0], [2.0])
 
 
+def test_two_finite_points_determine_a_line_without_standard_errors() -> None:
+    result = fit_linear_series([0.0, math.nan, 2.0], [1.0, 500.0, 5.0])
+
+    assert result.slope == pytest.approx(2.0)
+    assert result.intercept == pytest.approx(1.0)
+    assert result.std_err_slope is None
+    assert result.std_err_intercept is None
+
+
 def test_fit_linear_series_length_mismatch() -> None:
     """Ensure mismatched x and y lengths raise ValueError."""
     with pytest.raises(ValueError, match="Mismatched lengths"):

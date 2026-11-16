@@ -17,8 +17,8 @@ class LinearRegressionResult:
     slope: float
     intercept: float
     r_squared: float
-    std_err_slope: float
-    std_err_intercept: float
+    std_err_slope: float | None
+    std_err_intercept: float | None
     residuals: list[float]
 
 
@@ -103,11 +103,13 @@ def fit_linear_series(
     residuals = [r * y_scale for r in scaled_residuals]
     ss_res = math.fsum(r * r for r in scaled_residuals)
     r_squared = max(0.0, min(1.0, 1.0 - ss_res / ss_yy)) if ss_yy else 1.0
-    mse = ss_res / max(n - 2, 1)
-    std_err_slope = _rescale_ratio(math.sqrt(mse / ss_xx), y_scale, x_scale)
-    std_err_intercept = math.sqrt(mse * (1.0 / n + mean_x**2 / ss_xx)) * y_scale
+    std_err_slope = std_err_intercept = None
+    if n > MIN_LINEAR_POINTS:
+        mse = ss_res / (n - 2)
+        std_err_slope = _rescale_ratio(math.sqrt(mse / ss_xx), y_scale, x_scale)
+        std_err_intercept = math.sqrt(mse * (1.0 / n + mean_x**2 / ss_xx)) * y_scale
     if not all(
-        math.isfinite(v)
+        v is None or math.isfinite(v)
         for v in (slope, intercept, std_err_slope, std_err_intercept, *residuals)
     ):
         msg = "Regression result exceeds the finite floating-point range."

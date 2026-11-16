@@ -340,6 +340,18 @@ def test_render_report_formats() -> None:
     assert "html" in res_both
 
 
+@pytest.mark.parametrize(("count", "display"), [(2, "N/A"), (3, "0.000e+00")])
+def test_report_preserves_standard_error_availability(count: int, display: str) -> None:
+    x, y = [0.0, 1.0, 2.0][:count], [0.0, 2.0, 4.0][:count]
+    report = generate_report(data_series={"x": x, "y": y})
+    assert report.regression is not None
+    expected = None if count == 2 else 0.0
+    assert report.regression.slope_error == expected
+    assert report.regression.intercept_error == expected
+    assert render_markdown(report).count(f"std err: `{display}`") == 2
+    assert render_html(report).count(f"std err: <code>{display}</code>") == 2
+
+
 def test_report_svg_omits_nonfinite_points_and_bounds_its_output() -> None:
     report = generate_report(data_series={"x": [1, 2], "y": [2, 4]})
     values = [0.0] * 5_000
