@@ -41,13 +41,6 @@ def read_live_table_series(
         (c for c in result.columns if y_name.lower() in c.lower()), None,
     )
 
-    if not x_col and result.columns:
-        x_col = result.columns[0]
-    if not y_col and len(result.columns) > 1:
-        y_col = result.columns[1]
-    elif not y_col:
-        y_col = x_col
-
     if not x_col or not y_col:
         msg = (
             f"Cannot find columns matching '{x_name}' and '{y_name}' "

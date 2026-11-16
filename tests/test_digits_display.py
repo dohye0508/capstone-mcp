@@ -130,10 +130,50 @@ def test_create_digits_success_without_binding() -> None:
     assert res.digits_name == "Digits 1"
     assert res.current_value == 0.0
     assert res.verified is True
-    app.click.assert_called_once_with(100, "ref:digits_palette", allow_foreground=True)
+    app.click.assert_called_once_with(
+        100, "ref:digits_palette", double=True, allow_foreground=True,
+    )
 
 
-def test_create_digits_success_with_measurement_and_unit() -> None:
+def test_create_digits_does_not_verify_palette_as_a_new_widget() -> None:
+    app = Capstone()
+    bounds = Bounds(left=0, top=0, right=20, bottom=20)
+    controls = [
+        Control(
+            ref="page", parent=None, name="", control_type="Group",
+            automation_id="Workbook.PageView", enabled=True, visible=True, bounds=bounds,
+        ),
+        Control(
+            ref="page-child", parent="page", name="", control_type="Group",
+            automation_id="", enabled=True, visible=True, bounds=bounds,
+        ),
+        Control(
+            ref="palette-group", parent=None, name="", control_type="Group",
+            automation_id="CSDataDigits", enabled=True, visible=True, bounds=bounds,
+        ),
+        Control(
+            ref="palette-text", parent="palette-group", name="Digits", control_type="Text",
+            automation_id="", enabled=True, visible=True, bounds=bounds,
+        ),
+    ]
+    app.snapshot = MagicMock(return_value=Snapshot(
+        window=_mock_window(), controls=controls, truncated=False,
+    ))
+    app.click = MagicMock()
+
+    result = manage_display(app, DisplayRequest(
+        action=DisplayAction.CREATE_DIGITS,
+        create_digits=CreateDigitsRequest(handle=100, measurement="Acceleration"),
+    )).create_digits
+
+    assert result is not None
+    assert result.verified is False
+    assert result.measurement is None
+    app.click.assert_called_once_with(100, "palette-text", double=True, allow_foreground=True)
+
+
+@pytest.mark.parametrize("binding_applied", [True, False])
+def test_create_digits_confirms_measurement_and_unit(*, binding_applied: bool) -> None:
     app = Capstone()
     mock_win = _mock_window()
 
@@ -203,7 +243,13 @@ def test_create_digits_success_with_measurement_and_unit() -> None:
     app.keys = MagicMock()
 
     mock_node = MagicMock()
-    mock_node.iface_value.SetValue = MagicMock()
+
+    def bind_measurement(name: str) -> None:
+        nonlocal selector
+        if binding_applied:
+            selector = selector.model_copy(update={"name": name})
+
+    mock_node.iface_value.SetValue.side_effect = bind_measurement
     app.control = MagicMock(return_value=mock_node)
 
     display_res = manage_display(
@@ -222,8 +268,8 @@ def test_create_digits_success_with_measurement_and_unit() -> None:
     res = display_res.create_digits
     assert res.created is True
     assert res.digits_name == "Digits"
-    assert res.measurement == "Acceleration (m/s^2)"
-    assert res.current_value == 9.81
-    assert res.unit == "m/s^2"
-    assert res.verified is False
+    assert res.measurement == ("Acceleration (m/s^2)" if binding_applied else None)
+    assert res.current_value == (9.81 if binding_applied else None)
+    assert res.unit == ("m/s^2" if binding_applied else None)
+    assert res.verified is binding_applied
     assert app.click.call_count == 1

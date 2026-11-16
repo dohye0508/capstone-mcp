@@ -322,9 +322,6 @@ async def test_physics_tools_invocations() -> None:
     mcp = FastMCP("test_physics")
     tools = register_physics_tools(mcp, mock_native)
 
-    guide_fn = tools["capstone_guide"]
-    assert "workflow" in guide_fn(None)
-
     calc_fn = tools["capstone_create_calculation"]
     res_calc = await calc_fn("0.5*m*v^2", handle=10, unit="J")
     assert res_calc.calculation_name == "KineticEnergy"
@@ -412,7 +409,9 @@ async def test_ui_primitives_direct_invocations() -> None:
     mock_native.return_value = {"detail": "ok", "delivered": True}
 
     # action
-    res_action = await capstone_action(mock_native, "ref_1", Action.INVOKE)
+    res_action = await capstone_action(
+        mock_native, "ref_1", Action.INVOKE, allow_foreground=True,
+    )
     assert res_action.delivered is True
 
     # read_value
@@ -426,23 +425,31 @@ async def test_ui_primitives_direct_invocations() -> None:
     assert res_set.delivered is True
 
     # click
-    res_click = await capstone_click(mock_native, 10, Point(x=5, y=5), button=Button.RIGHT)
+    res_click = await capstone_click(
+        mock_native, 10, Point(x=5, y=5), button=Button.RIGHT, allow_foreground=True,
+    )
     assert res_click.delivered is True
 
     # drag
-    res_drag = await capstone_drag(mock_native, 10, Point(x=0, y=0), Point(x=10, y=10))
+    res_drag = await capstone_drag(
+        mock_native, 10, Point(x=0, y=0), Point(x=10, y=10), allow_foreground=True,
+    )
     assert res_drag.delivered is True
 
     # scroll
-    res_scroll = await capstone_scroll(mock_native, 10, Point(x=5, y=5), 3)
+    res_scroll = await capstone_scroll(
+        mock_native, 10, Point(x=5, y=5), 3, allow_foreground=True,
+    )
     assert res_scroll.delivered is True
 
     # keys
-    res_keys = await capstone_keys(mock_native, 10, "{ENTER}")
+    res_keys = await capstone_keys(mock_native, 10, "{ENTER}", allow_foreground=True)
     assert res_keys.delivered is True
 
     # type text
-    res_type = await capstone_type_text(mock_native, 10, "Hello+World")
+    res_type = await capstone_type_text(
+        mock_native, 10, "Hello+World", allow_foreground=True,
+    )
     assert res_type.delivered is True
 
     # register_ui_tools check

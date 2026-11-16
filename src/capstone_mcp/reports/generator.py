@@ -6,10 +6,11 @@ from __future__ import annotations
 import json
 import math
 from datetime import UTC, datetime
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from capstone_mcp.data_sources.adapters.capfile import read_capfile_all_series
+from capstone_mcp.data_sources.adapters.capfile import read_saved_run_data
 from capstone_mcp.data_sources.adapters.csv_file import read_csv_all_columns
 from capstone_mcp.numerics import (
     compute_series_summary,
@@ -25,6 +26,9 @@ from capstone_mcp.reports.models import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from capstone_mcp.data_sources.adapters.capfile import SavedRunData
+    from capstone_mcp.data_sources.models import DataSeries
 
 # Fundamental physical constants (CODATA 2018 / 2022)
 PLANCK_CONSTANT: Final[float] = 6.62607015e-34  # J * s
@@ -45,6 +49,12 @@ MAX_ASCII_WIDTH: Final[int] = 80
 MIN_ASCII_HEIGHT: Final[int] = 8
 MAX_ASCII_HEIGHT: Final[int] = 30
 AXIS_PADDING_RATIO: Final[float] = 0.05
+
+_PHYSICAL_FIT_AXES: Final = {
+    "photoelectric_effect": ("Frequency", "Stopping Voltage"),
+    "rlc_resonance": ("Frequency", "Resistor Voltage"),
+    "adiabatic_gas": ("Volume", "Pressure"),
+}
 
 
 def _require_finite(values: Sequence[float]) -> None:
@@ -79,7 +89,8 @@ def compute_data_summary(
 
     _require_finite(values)
     summary = compute_series_summary(values)
-    preview = [float(v) for v in values[:MIN_PREVIEW_POINTS]]
+    finite = (float(v) for v in values if math.isfinite(v))
+    preview = list(islice(finite, MIN_PREVIEW_POINTS))
 
     return DataSummary(
         variable_name=variable_name,
@@ -291,10 +302,6 @@ def _load_csv_data(path: Path) -> dict[str, list[float]]:
     return read_csv_all_columns(path)
 
 
-def _load_cap_data(path: Path) -> tuple[dict[str, list[float]], dict[str, str]]:
-    return read_capfile_all_series(path)
-
-
 def _load_json_data(path: Path) -> dict[str, list[float]]:
     return _load_json_string(path.read_text(encoding="utf-8"))
 
@@ -349,8 +356,6 @@ def _load_data_from_file_or_string(
 
     if path.is_file():
         suffix = path.suffix.lower()
-        if suffix == ".cap":
-            return _load_cap_data(path)
         if suffix in [".csv", ".tsv"]:
             return _load_csv_data(path), {}
         if suffix == ".json":
@@ -618,24 +623,22 @@ def _fit_adiabatic(
 
 def _fit_general(
     experiment_id: str,
-    x_key: str,
-    y_key: str,
-    active_series: dict[str, list[float]],
-    units_map: dict[str, str],
+    x_vals: list[float],
+    y_vals: list[float],
+    variables: tuple[str, str],
+    units: tuple[str, str],
 ) -> tuple[RegressionSummary, list[ErrorAnalysisRow], str]:
-    x_vals = active_series[x_key]
-    y_vals = active_series[y_key]
     reg = compute_linear_regression(
         x_vals,
         y_vals,
-        variable_names=(x_key, y_key),
-        units=(units_map.get(x_key, ""), units_map.get(y_key, "")),
+        variable_names=variables,
+        units=units,
     )
     plot = generate_ascii_plot(
         x_vals,
         y_vals,
         fit=(reg.slope, reg.intercept),
-        labels=(x_key, y_key),
+        labels=variables,
     )
     errs = _analyze_constants(experiment_id, x_vals, y_vals, reg)
     return reg, errs, plot
@@ -651,34 +654,89 @@ def _compute_fit(
         return None, [], ""
 
     x_key, y_key = series_keys[0], series_keys[1]
-    x_vals, y_vals = active_series[x_key], active_series[y_key]
-    if len(x_vals) < MIN_REGRESSION_POINTS or len(x_vals) != len(y_vals):
+    raw_x, raw_y = active_series[x_key], active_series[y_key]
+    if len(raw_x) != len(raw_y):
+        return None, [], ""
+    x_vals: list[float] = []
+    y_vals: list[float] = []
+    for x, y in zip(raw_x, raw_y, strict=True):
+        if math.isfinite(x) and math.isfinite(y):
+            x_vals.append(x)
+            y_vals.append(y)
+    if len(x_vals) < MIN_REGRESSION_POINTS or min(x_vals) == max(x_vals):
         return None, [], ""
 
     if experiment_id == "adiabatic_gas":
         return _fit_adiabatic(x_vals, y_vals)
 
-    return _fit_general(experiment_id, x_key, y_key, active_series, units_map)
+    return _fit_general(
+        experiment_id, x_vals, y_vals, (x_key, y_key),
+        (units_map.get(x_key, ""), units_map.get(y_key, "")),
+    )
 
 
-def generate_report(
+def _with_placeholders(series: DataSeries) -> list[float]:
+    return [math.nan if value is None else value for value in series.values]
+
+
+def _fit_series(
+    experiment_id: str, series: dict[str, list[float]], saved: SavedRunData | None,
+) -> dict[str, list[float]] | None:
+    if saved is not None:
+        return {v.name: _with_placeholders(v) for v in saved.pair} if saved.pair else {}
+    axes = _PHYSICAL_FIT_AXES.get(experiment_id)
+    if axes is None:
+        return None
+    if not all(axis in series for axis in axes):
+        return {}
+    return {axis: series[axis] for axis in axes}
+
+
+def _load_report_data(
+    source: str | None,
+    *,
+    data_series: dict[str, Sequence[float]] | None,
+    run_id: str | None,
+    axes: tuple[str, str] | None,
+) -> tuple[dict[str, list[float]], dict[str, str], SavedRunData | None]:
+    path = (
+        Path(source) if source and not source.lstrip().startswith("{") else None
+    )
+    if path is not None and path.suffix.lower() == ".cap":
+        if not path.is_file():
+            msg = f"Experiment data file does not exist: {path}"
+            raise FileNotFoundError(msg)
+        if data_series:
+            msg = "Choose a saved archive or supply independent data_series."
+            raise ValueError(msg)
+        saved = read_saved_run_data(path, run_id=run_id, axes=axes)
+        values = {k: _with_placeholders(v) for k, v in saved.series.items()}
+        return values, saved.channels, saved
+    if run_id is not None or axes is not None:
+        msg = "run_id and axes require a saved .cap archive."
+        raise ValueError(msg)
+    parsed, channels = _load_data_from_file_or_string(source)
+    for name, values in (data_series or {}).items():
+        _require_finite(values)
+        parsed[name] = list(values)
+    return parsed, channels, None
+
+
+def generate_report(  # noqa: PLR0913
     file_path_or_run: str | None = None,
     experiment_id: str = "generic",
     *,
     data_series: dict[str, Sequence[float]] | None = None,
     title: str | None = None,
     apparatus: list[str] | None = None,
+    run_id: str | None = None,
+    axes: tuple[str, str] | None = None,
 ) -> LabReport:
     """Generate a complete, structured laboratory report with statistics."""
     now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-
-    parsed_series, parsed_channels = _load_data_from_file_or_string(file_path_or_run)
-    active_series: dict[str, list[float]] = {
-        k: list(v) for k, v in parsed_series.items()
-    }
-    if data_series:
-        for k, v in data_series.items():
-            active_series[k] = list(v)
+    active_series, parsed_channels, saved = _load_report_data(
+        file_path_or_run, data_series=data_series, run_id=run_id, axes=axes,
+    )
 
     (
         cur_title,
@@ -695,10 +753,10 @@ def generate_report(
     final_channels = {**cur_channels, **parsed_channels}
 
     if not active_series:
-        is_sample = file_path_or_run == "sample" or (
-            file_path_or_run is not None and file_path_or_run.endswith("_sample")
-        )
-        if is_sample and experiment_id in _CANONICAL_EXPERIMENT_METADATA:
+        if (
+            file_path_or_run == "sample"
+            and experiment_id in _CANONICAL_EXPERIMENT_METADATA
+        ):
             active_series = _canonical_fallback_series(experiment_id)
             final_title = f"{final_title} [Sample / Demonstration]"
         elif file_path_or_run:
@@ -729,22 +787,35 @@ def generate_report(
         "x": "",
         "y": "",
     }
+    if saved is not None:
+        units_map = {
+            key: f"Capstone unit ID {series.units}" if series.units else ""
+            for key, series in saved.series.items()
+        }
     data_summaries = [
-        compute_data_summary(vals, name, units_map.get(name, ""))
+        compute_data_summary(
+            [value for value in vals if math.isfinite(value)],
+            name,
+            units_map.get(name, ""),
+        )
         for name, vals in active_series.items()
     ]
 
+    plotted_data = _fit_series(experiment_id, active_series, saved)
     regression, error_analysis, ascii_plot = _compute_fit(
-        experiment_id,
-        active_series,
+        experiment_id if saved is None else "generic",
+        active_series if plotted_data is None else plotted_data,
         units_map,
     )
 
-    is_json = bool(
-        file_path_or_run and file_path_or_run.lstrip().startswith(("{", "[")),
-    )
-    is_file = file_path_or_run and not is_json and Path(file_path_or_run).is_file()
-    run_name = file_path_or_run if file_path_or_run and not is_file else None
+    run_name = None if saved is None else saved.run_id
+    if (
+        file_path_or_run
+        and file_path_or_run != "sample"
+        and not file_path_or_run.lstrip().startswith("{")
+        and not Path(file_path_or_run).is_file()
+    ):
+        run_name = file_path_or_run
 
     metadata = ExperimentMetadata(
         experiment_id=experiment_id,
@@ -757,7 +828,9 @@ def generate_report(
         run_name=run_name,
     )
 
-    conclusion = f"Experimental data for {final_title} was analyzed with OLS. "
+    conclusion = f"Experimental data for {final_title} was summarized. "
+    if regression:
+        conclusion += "The selected axes were analyzed with OLS. "
     if regression and regression.r_squared is not None:
         conclusion += f"The fit achieved R^2 = {regression.r_squared:.4f}. "
     if error_analysis:
@@ -776,7 +849,17 @@ def generate_report(
         regression=regression,
         error_analysis=error_analysis,
         ascii_plot=ascii_plot,
-        raw_data_points={k: list(v) for k, v in active_series.items()},
+        raw_data_points=_report_points(active_series),
+        plotted_data_points=(
+            None if plotted_data is None else _report_points(plotted_data)
+        ),
         discussion_questions=cur_questions,
         conclusion=conclusion,
     )
+
+
+def _report_points(series: dict[str, list[float]]) -> dict[str, list[float | None]]:
+    return {
+        k: [v if math.isfinite(v) else None for v in values]
+        for k, values in series.items()
+    }

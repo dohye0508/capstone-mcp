@@ -78,3 +78,6 @@ Scope: offline internal verification only. No Capstone GUI, sensor, or real debu
 | MOCK02, MOCK03 | requires-live; cross-owner guards | actual Automation IDs require observed UI evidence; no guessed production IDs introduced. |
 
 Validation: 97 scoped tests passed before final NAT18 addition; runtime_round2 subsequently 16 passed including NAT18. Includes real fixture subprocesses and ephemeral local mock sockets only. Final root aggregate checks and CI remain necessary before merge.
+
+
+Historical baseline note: the table above records the pre-b11dd2a code. Upstream later added MAX_MEASUREMENTS=256 and a history adapter, so the earlier TEL01/TEL03/TEL04 statements about absent code no longer describe the merged implementation. The merged LRU/clock/ordering/origin contract and regressions are recorded in ROUND3_TELEMETRY.md; TEL05 is now explicitly enforced rather than an open timestamp-origin policy gap.

@@ -681,15 +681,7 @@ def _validate_dataset_budget(
                 raise CapFileError(msg)
 
 
-def _parse_archive(
-    archive: ZipFile,
-    *,
-    file_name: str,
-    include_data: bool,
-    dataset_index: int | None = None,
-    page: tuple[int, int] | None = None,
-) -> CapFile:
-    members = _archive_members(archive)
+def _main_xml(archive: ZipFile, members: dict[str, ZipInfo]) -> Element:
     main_info = members.get("main.xml")
     if main_info is None:
         msg = "Archive is missing main.xml."
@@ -707,6 +699,20 @@ def _parse_archive(
     if len(nodes) > MAX_XML_NODES:
         msg = f"main.xml contains more than {MAX_XML_NODES} elements."
         raise CapFileError(msg)
+    return root
+
+
+def _parse_archive(
+    archive: ZipFile,
+    *,
+    file_name: str,
+    include_data: bool,
+    dataset_index: int | None = None,
+    page: tuple[int, int] | None = None,
+) -> CapFile:
+    members = _archive_members(archive)
+    root = _main_xml(archive, members)
+    nodes = list(root.iter())
     dataset_elements = list(root.iter("DataSet")) if include_data else []
     if dataset_index is not None:
         if dataset_index < 0 or dataset_index >= len(dataset_elements):
@@ -796,6 +802,21 @@ def _read_cap_file(
 def read_cap_file(path: str | Path, *, include_data: bool = True) -> CapFile:
     """Read one bounded Capstone archive without extracting it to disk."""
     return _read_cap_file(path, include_data=include_data)
+
+
+def read_cap_workspace(path: str | Path) -> Element | None:
+    """Return the saved workspace without decoding datasets."""
+    archive_path = Path(path)
+    try:
+        if archive_path.stat().st_size > MAX_ARCHIVE_BYTES:
+            msg = f"Archive exceeds the {MAX_ARCHIVE_BYTES}-byte safety limit."
+            raise CapFileError(msg)
+        with ZipFile(archive_path, mode="r", allowZip64=False) as archive:
+            root = _main_xml(archive, _archive_members(archive))
+            return _single_child(root, "Workspace")
+    except (BadZipFile, LargeZipFile, OSError) as exc:
+        msg = f"Invalid Capstone archive: {archive_path}."
+        raise CapFileError(msg) from exc
 
 
 def _dataset_summary(dataset: CapDataSet, index: int) -> CapDatasetSummary:

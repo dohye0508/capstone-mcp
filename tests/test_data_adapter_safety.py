@@ -13,8 +13,8 @@ import pytest
 
 from capstone_mcp.bridge import NativeInventory
 from capstone_mcp.data_sources.adapters.capfile import (
-    read_capfile_all_series,
     read_capfile_series,
+    read_saved_run_data,
 )
 from capstone_mcp.data_sources.adapters.live_telemetry import LiveMeasurementAdapter
 from capstone_mcp.session import UnifiedSessionManager
@@ -118,26 +118,27 @@ def test_archive_different_run_identifiers_with_same_label_are_rejected(tmp_path
 def test_all_series_rejects_duplicate_run_names(tmp_path: Path) -> None:
     path = tmp_path / "duplicate.cap"
     _write_channels(path, [("Force", "Run #1", [1, 2]), ("Force", "Run #2", [3, 4])])
-    with pytest.raises(ValueError, match="occurs more than once"):
-        _ = read_capfile_all_series(path)
+    with pytest.raises(ValueError, match="multiple saved runs"):
+        _ = read_saved_run_data(path, run_id=None, axes=None)
 
 
-def test_all_series_rejects_sparse_values_without_shifting_samples(tmp_path: Path) -> None:
+def test_all_series_preserves_sparse_values_without_shifting_samples(tmp_path: Path) -> None:
     path = tmp_path / "sparse.cap"
     _write_channels(path, [("Time", "Run #1", [0, 1]), ("Force", "Run #1", [float("nan"), 4])])
-    with pytest.raises(ValueError, match="missing samples"):
-        _ = read_capfile_all_series(path)
+    saved = read_saved_run_data(path, run_id=None, axes=None)
+    assert saved.series["Force"].values == [None, 4]
 
 
 def test_all_series_preserves_complete_arrays(tmp_path: Path) -> None:
     path = tmp_path / "complete.cap"
     _write_channels(path, [("Time", "Run #1", [0, 1]), ("Force", "Run #1", [3, 4])])
-    series, _ = read_capfile_all_series(path)
-    assert series == {"Time": [0, 1], "Force": [3, 4]}
+    saved = read_saved_run_data(path, run_id=None, axes=None)
+    assert {name: channel.values for name, channel in saved.series.items()} == {"Time": [0, 1], "Force": [3, 4]}
 
 
 def _live_adapter() -> tuple[LiveMeasurementAdapter, MagicMock]:
     session = MagicMock(spec=UnifiedSessionManager)
+    session.debug_port = 9222
     session.telemetry = TelemetryBuffer()
     session.read_live_inventory.return_value = NativeInventory(sensors=[], measurements=[
         {"name": "Voltage 2", "euid": "v2", "units": "V"},
@@ -152,16 +153,18 @@ def test_live_exact_channel_and_retained_sample_count() -> None:
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 0]
     session.telemetry.push_sample("v1", 2.0, timestamp=0.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 1]
+    session.telemetry.push_sample("v1", 3.0, timestamp=1.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
     series = adapter.get_series("index", "Voltage")
-    session.read_live_measurement.assert_called_once_with("v1", port=9222)
-    assert series.x.values == [0]
-    assert series.metadata["x_euid"] == "sample_index"
+    session.read_live_measurement.assert_not_called()
+    assert series.x.values == [0, 1]
+    assert series.y.values == [2.0, 3.0]
+    assert series.metadata["x_basis"] == "sample_index"
 
 
 @pytest.mark.parametrize("x_name", ["time", "t"])
 def test_live_does_not_invent_time_axis(x_name: str) -> None:
     adapter, session = _live_adapter()
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="at least two"):
         _ = adapter.get_series(x_name, "Voltage")
     session.read_live_measurement.assert_not_called()
 
@@ -169,13 +172,13 @@ def test_live_does_not_invent_time_axis(x_name: str) -> None:
 @pytest.mark.parametrize("name", ["Volt", ""])
 def test_live_ambiguous_or_empty_measurement_is_rejected(name: str) -> None:
     adapter, session = _live_adapter()
-    with pytest.raises(ValueError, match=r"ambiguous|must not be empty"):
+    with pytest.raises(ValueError, match="Expected one"):
         _ = adapter.get_series("index", name)
     session.read_live_measurement.assert_not_called()
 
 
 def test_live_run_selection_is_not_fabricated() -> None:
     adapter, session = _live_adapter()
-    with pytest.raises(ValueError, match="do not support run_id"):
+    with pytest.raises(ValueError, match="specific run"):
         _ = adapter.get_series("index", "Voltage", run_id="Run #1")
     session.read_live_inventory.assert_not_called()

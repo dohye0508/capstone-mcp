@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from capstone_mcp.desktop import Capstone, find_capstone_executable
+from capstone_mcp.desktop import AutomationError, Capstone, find_capstone_executable
 from capstone_mcp.displays.harness import set_control_value
 from capstone_mcp.graphs.inspection import _backup_clipboard, _restore_clipboard
 from capstone_mcp.instruments.wireless import _extract_sensor_info
@@ -56,7 +56,9 @@ def test_capstone_click_and_type_text_methods_exist() -> None:
 
     with patch.object(app, "act") as mock_act:
         app.click(1234, "ref-test")
-        mock_act.assert_called_once_with("ref-test", Action.INVOKE, allow_foreground=True)
+        mock_act.assert_called_once_with(
+            "ref-test", Action.INVOKE, allow_foreground=True, double=False,
+        )
 
 
 def test_wireless_sensor_disconnected_not_evaluated_as_connected() -> None:
@@ -135,10 +137,39 @@ def test_harness_set_control_text_uses_literal_typing() -> None:
     app.type_text.assert_called_once_with("x = 42")
 
 
-def test_clipboard_backup_and_restore_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify clipboard backup and restore safely handle missing or active clipboard."""
-    monkeypatch.setattr("capstone_mcp.graphs.inspection.win32clipboard", None)
-    backup = _backup_clipboard()
-    assert isinstance(backup, dict)
-    # Restore should not throw even if empty
-    _restore_clipboard(backup)
+@pytest.mark.parametrize("sequence", [10, 11])
+def test_clipboard_restores_only_its_own_copy(sequence: int) -> None:
+    with patch("capstone_mcp.graphs.inspection.win32clipboard") as clipboard:
+        clipboard.GetClipboardSequenceNumber.return_value = sequence
+
+        _restore_clipboard({13: "previous text"}, copied_sequence=10)
+
+        clipboard.OpenClipboard.assert_called_once()
+        clipboard.CloseClipboard.assert_called_once()
+        if sequence == 10:
+            clipboard.EmptyClipboard.assert_called_once()
+            clipboard.SetClipboardData.assert_called_once_with(13, "previous text")
+        else:
+            clipboard.EmptyClipboard.assert_not_called()
+            clipboard.SetClipboardData.assert_not_called()
+
+
+def test_clipboard_refuses_a_format_it_cannot_restore() -> None:
+    with patch("capstone_mcp.graphs.inspection.win32clipboard") as clipboard:
+        clipboard.EnumClipboardFormats.side_effect = [13, 2, 0]
+        clipboard.GetClipboardData.return_value = "previous text"
+        with pytest.raises(AutomationError, match="clipboard format"):
+            _backup_clipboard()
+
+        clipboard.CloseClipboard.assert_called_once()
+        clipboard.EmptyClipboard.assert_not_called()
+
+
+def test_clipboard_restores_an_empty_clipboard() -> None:
+    with patch("capstone_mcp.graphs.inspection.win32clipboard") as clipboard:
+        clipboard.GetClipboardSequenceNumber.return_value = 99
+
+        _restore_clipboard({}, copied_sequence=99)
+
+        clipboard.EmptyClipboard.assert_called_once()
+        clipboard.SetClipboardData.assert_not_called()

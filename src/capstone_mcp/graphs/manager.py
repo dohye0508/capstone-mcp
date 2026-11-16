@@ -13,6 +13,7 @@ from capstone_mcp.graphs.inspection import (
     close_menus,
     menu_item_disabled,
     read_graph,
+    read_saved_graph,
     release_menu_bar,
     summarize_graph,
     verify_graph_binding,
@@ -277,8 +278,8 @@ def _toggle_fit(  # noqa: PLR0913
 def _read_fitting_graph(
     app: Capstone, handle: int, request: SetGraphFitsRequest,
 ) -> GraphState:
-    if (request.display_menu_label == "Display"
-            and request.copy_display_label == "Copy Display"):
+    if (request.display_menu_label is None
+            and request.copy_display_label is None):
         return read_graph(app, handle, allow_foreground=request.allow_foreground)
     return read_graph(
         app, handle, allow_foreground=request.allow_foreground,
@@ -625,6 +626,8 @@ class GraphManager:
 
     def read(self, request: ReadGraphRequest) -> ReadGraphResult:
         """Read graph state via native clipboard."""
+        if request.cap_file is not None:
+            return read_saved_graph(request.cap_file, request.graph_index)
         state = read_graph(
             self.app,
             request.handle,

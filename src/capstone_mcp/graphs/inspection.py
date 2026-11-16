@@ -15,6 +15,7 @@ from xml.etree.ElementTree import Element, ParseError
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring
 
+from capstone_mcp.capfiles import read_cap_workspace
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.graphs.models import (
     FIT_ROWS,
@@ -35,19 +36,26 @@ from capstone_mcp.graphs.models import (
     NativeFit,
     NativeMetricValue,
     ParameterValue,
+    ReadGraphResult,
     RendererAnalysisGroup,
 )
+from capstone_mcp.ui_strings import label_matches
 
 if TYPE_CHECKING:
     from capstone_mcp.models import Snapshot
+    from capstone_mcp.ui_events import StateChanges
 
 try:
+    import pywintypes
     import win32clipboard
+    import win32con
     import win32gui
     import win32process
 
     from capstone_mcp.ui_events import WindowEvents
 except ImportError:
+    pywintypes = None  # type: ignore[assignment]
+    win32con = None  # type: ignore[assignment]
     win32clipboard = None  # type: ignore[assignment]
     win32gui = None  # type: ignore[assignment]
     win32process = None  # type: ignore[assignment]
@@ -271,7 +279,10 @@ def parse_graph_xml(payload: bytes) -> GraphState:
     if len(workbooks) != 1:
         msg = "Graph clipboard XML must contain exactly one WorkbookItem."
         raise GraphStateError(msg)
-    workbook = workbooks[0]
+    return _parse_graph_item(workbooks[0])
+
+
+def _parse_graph_item(workbook: Element) -> GraphState:
     if _required(workbook, "GUID") != "CSLineGraph":
         msg = "WorkbookItem is not a CSLineGraph."
         raise GraphStateError(msg)
@@ -304,6 +315,35 @@ def parse_graph_xml(payload: bytes) -> GraphState:
     )
 
 
+def read_saved_graph(cap_file: str, graph_index: int | None) -> ReadGraphResult:
+    """Read a saved graph in workbook order without using Capstone or the clipboard."""
+    workspace = read_cap_workspace(cap_file)
+    items = (
+        []
+        if workspace is None
+        else workspace.findall(
+            ".//WorkbookItem[@GUID='CSLineGraph']",
+        )
+    )
+    count = len(items)
+    if not count:
+        msg = "Capstone archive does not contain saved graphs."
+        raise GraphStateError(msg)
+    if graph_index is None and count != 1:
+        msg = f"Archive contains {count} graphs. Use graph_index 0 to {count - 1}."
+        raise GraphStateError(msg)
+    index = 0 if graph_index is None else graph_index
+    if not 0 <= index < count:
+        msg = f"graph_index must be in 0 to {count - 1} for this archive."
+        raise GraphStateError(msg)
+    return ReadGraphResult(
+        state=_parse_graph_item(items[index]),
+        cap_file=cap_file,
+        graph_index=index,
+        graph_count=count,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Native Clipboard Read & Menu Release
 # ---------------------------------------------------------------------------
@@ -326,90 +366,137 @@ def release_menu_bar(app: Capstone, handle: int) -> None:
     raise AutomationError(msg)
 
 
-def _backup_clipboard() -> dict[int, Any]:
+def _backup_clipboard() -> tuple[dict[int, Any], int]:
     backup: dict[int, Any] = {}
-    if win32clipboard is None:
-        return backup
+    if win32clipboard is None or win32con is None or pywintypes is None:
+        msg = "Native clipboard backup requires Windows pywin32 environment."
+        raise AutomationError(msg)
     clip: Any = win32clipboard
-    clip.OpenClipboard()
     try:
-        fmt = 0
-        while fmt := clip.EnumClipboardFormats(fmt):
-            data = clip.GetClipboardData(fmt)
-            if not isinstance(data, (str, bytes)):
-                msg = "Clipboard cannot be safely preserved; copy was not started."
-                raise AutomationError(msg)
-            backup[fmt] = data
-    finally:
-        clip.CloseClipboard()
-    return backup
+        clip.OpenClipboard()
+        try:
+            supported = {
+                win32con.CF_TEXT,
+                win32con.CF_OEMTEXT,
+                win32con.CF_UNICODETEXT,
+                win32con.CF_LOCALE,
+                clip.RegisterClipboardFormat(GRAPH_MIME),
+            }
+            fmt = 0
+            while True:
+                fmt = clip.EnumClipboardFormats(fmt)
+                if fmt == 0:
+                    return backup, clip.GetClipboardSequenceNumber()
+                if fmt not in supported:
+                    msg = f"Cannot preserve clipboard format {fmt} before Copy Display."
+                    raise AutomationError(msg)
+                backup[fmt] = clip.GetClipboardData(fmt)
+        finally:
+            clip.CloseClipboard()
+    except pywintypes.error as exc:
+        msg = "Cannot back up the clipboard before Copy Display."
+        raise AutomationError(msg) from exc
 
 
 def _restore_clipboard(
     backup: dict[int, Any],
     *,
-    expected_sequence: int | None = None,
+    copied_sequence: int | None,
 ) -> None:
-    """Restore only while the clipboard still contains this operation's copy."""
-    if win32clipboard is None or expected_sequence is None:
+    if copied_sequence is None or win32clipboard is None:
         return
     clip: Any = win32clipboard
-    clip.OpenClipboard()
-    try:
-        if clip.GetClipboardSequenceNumber() != expected_sequence:
-            return
-        clip.EmptyClipboard()
-        for fmt, data in backup.items():
-            clip.SetClipboardData(fmt, data)
-    finally:
-        clip.CloseClipboard()
+    with suppress(Exception):
+        clip.OpenClipboard()
+        try:
+            if clip.GetClipboardSequenceNumber() != copied_sequence:
+                return
+            clip.EmptyClipboard()
+            for fmt, data in backup.items():
+                with suppress(Exception):
+                    clip.SetClipboardData(fmt, data)
+        finally:
+            with suppress(Exception):
+                clip.CloseClipboard()
 
 
-def _copied_graph_payload(
-    sequence: int,
-    process_id: int,
-) -> tuple[object, int] | None:
+def _copied_graph(sequence: int, process_id: int) -> tuple[object, int] | None:
     if win32clipboard is None or win32process is None:
         return None
     if win32clipboard.GetClipboardSequenceNumber() == sequence:
         return None
-    owner = win32clipboard.GetClipboardOwner()
-    if not owner or win32process.GetWindowThreadProcessId(owner)[1] != process_id:
-        msg = "Another application changed the clipboard during graph inspection."
-        raise AutomationError(msg)
-    format_id = win32clipboard.RegisterClipboardFormat(GRAPH_MIME)
-    if not win32clipboard.IsClipboardFormatAvailable(format_id):
-        msg = "Copy Display did not provide native graph data."
-        raise AutomationError(msg)
     win32clipboard.OpenClipboard()
     try:
         owner = win32clipboard.GetClipboardOwner()
         if not owner or win32process.GetWindowThreadProcessId(owner)[1] != process_id:
-            msg = "Clipboard ownership changed before its graph payload could be read."
+            msg = "Another application changed the clipboard during graph inspection."
             raise AutomationError(msg)
-        copied_sequence = win32clipboard.GetClipboardSequenceNumber()
+        format_id = win32clipboard.RegisterClipboardFormat(GRAPH_MIME)
+        if not win32clipboard.IsClipboardFormatAvailable(format_id):
+            return None, win32clipboard.GetClipboardSequenceNumber()
         payload = win32clipboard.GetClipboardData(format_id)
+        return payload, win32clipboard.GetClipboardSequenceNumber()
     finally:
         win32clipboard.CloseClipboard()
-    return payload, copied_sequence
 
 
-def _parse_graph_payload(payload: object) -> GraphState:
+def _copy_graph_payload(
+    app: Capstone,
+    popup: Snapshot,
+    pid: int,
+    changes: StateChanges,
+    copy_label: str | None = None,
+) -> bytes:
+    if win32clipboard is None:
+        msg = "Native clipboard events require Windows pywin32 environment."
+        raise AutomationError(msg)
+    copies = [
+        c
+        for c in popup.controls
+        if _graph_label(
+            c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+        )
+        and c.control_type == "MenuItem"
+        and c.enabled
+        and c.visible
+    ]
+    if len(copies) != 1:
+        msg = "Select exactly one graph before inspecting its analysis."
+        raise AutomationError(msg)
+    backup, sequence = _backup_clipboard()
+    if win32clipboard.GetClipboardSequenceNumber() != sequence:
+        msg = "The clipboard changed before Copy Display."
+        raise AutomationError(msg)
+    _ = app.control(copies[0].ref).invoke()
+    app.refs.clear()
+    payload, copied_sequence = changes.until(
+        lambda: _copied_graph(sequence, pid),
+        TRANSITION_SECONDS,
+        description="New native graph clipboard data",
+    )
+    _restore_clipboard(backup, copied_sequence=copied_sequence)
+    if payload is None:
+        msg = "Copy Display did not provide native graph data."
+        raise AutomationError(msg)
     if not isinstance(payload, bytes) or len(payload) > MAX_GRAPH_XML_BYTES:
         msg = "Native graph clipboard payload is invalid or exceeds 8 MiB."
         raise AutomationError(msg)
-    return parse_graph_xml(payload.rstrip(b"\0"))
+    return payload
 
 
-def read_graph(  # noqa: PLR0915
+def _graph_label(text: str, observed: str | None, resource_key: str) -> bool:
+    return label_matches(text, resource_key) if observed is None else text == observed
+
+
+def read_graph(
     app: Capstone,
     handle: int,
     *,
     allow_foreground: bool = True,
-    display_menu_label: str = "Display",
-    copy_display_label: str = "Copy Display",
+    display_menu_label: str | None = None,
+    copy_display_label: str | None = None,
 ) -> GraphState:
-    """Read selected graph state via native Copy Display, preserving user clipboard."""
+    """Read the graph using installed locale labels or exact observed overrides."""
     if not allow_foreground:
         msg = "Graph inspection uses the native Copy Display menu."
         raise AutomationError(msg)
@@ -419,8 +506,7 @@ def read_graph(  # noqa: PLR0915
         msg = "Target graph window is unavailable."
         raise AutomationError(msg)
     app.require_input_ready(handle)
-    baseline_handles = {w.handle for w in windows}
-    pid = target.process_id
+    baseline = {w.handle for w in windows}
     if (
         WindowEvents is None
         or win32clipboard is None
@@ -429,85 +515,59 @@ def read_graph(  # noqa: PLR0915
     ):
         msg = "Native clipboard events require Windows pywin32 environment."
         raise AutomationError(msg)
-
-    backup_sequence = win32clipboard.GetClipboardSequenceNumber()
-    clipboard_backup = _backup_clipboard()
-    copied_sequence: int | None = None
-    try:
-        with WindowEvents(pid, clipboard=True) as events:
-            _ = app.focus_window(handle)
-            release_menu_bar(app, handle)
-            snapshot = app.snapshot(handle, 16, 10_000)
-            if snapshot.truncated:
-                msg = "Graph menu selection requires a complete snapshot."
-                raise AutomationError(msg)
-            menus = [
-                c
-                for c in snapshot.controls
-                if c.control_type == "MenuItem"
-                and c.name == display_menu_label
-                and c.visible
-                and c.enabled
-            ]
-            if len(menus) != 1:
-                msg = "Expected one enabled Display menu."
-                raise AutomationError(msg)
+    with WindowEvents(target.process_id, clipboard=True) as events:
+        _ = app.focus_window(handle)
+        release_menu_bar(app, handle)
+        snapshot = app.snapshot(handle, 16, 10_000)
+        if snapshot.truncated:
+            msg = "Graph menu selection requires a complete snapshot."
+            raise AutomationError(msg)
+        menus = [
+            c
+            for c in snapshot.controls
+            if c.control_type == "MenuItem"
+            and c.visible
+            and c.enabled
+            and _graph_label(c.name, display_menu_label, "STR_DISPLAY")
+        ]
+        if len(menus) != 1:
+            msg = "Expected one enabled Display menu."
+            raise AutomationError(msg)
+        try:
             _ = app.control(menus[0].ref).expand()
-            try:
-                popup = events.changes.until(
-                    lambda: _display_popup(
-                        app, handle, copy_display_label, before=baseline_handles,
-                    ),
-                    TRANSITION_SECONDS,
-                    description="Display menu popup window",
-                )
-            except AutomationError:
-                close_menus(app, handle)
-                raise
-            copies = [
-                c
-                for c in popup.controls
-                if c.name == copy_display_label
-                and c.control_type == "MenuItem"
-                and c.enabled
-                and c.visible
-            ]
-            if len(copies) != 1:
-                msg = "Select exactly one graph before inspecting its analysis."
-                raise AutomationError(msg)
-            sequence = win32clipboard.GetClipboardSequenceNumber()
-            if sequence != backup_sequence:
-                msg = "Clipboard changed before graph copy; inspect again."
-                raise AutomationError(msg)
-            _ = app.control(copies[0].ref).invoke()
-            app.refs.clear()
-            payload, copied_sequence = events.changes.until(
-                lambda: _copied_graph_payload(sequence, pid),
+            popup = events.changes.until(
+                lambda: _display_popup(
+                    app, handle, copy_display_label, before=baseline,
+                ),
                 TRANSITION_SECONDS,
-                description="New native graph clipboard data",
+                description="Display menu popup window",
             )
-            state = _parse_graph_payload(payload)
+            payload = _copy_graph_payload(
+                app, popup, target.process_id, events.changes, copy_display_label,
+            )
+            state = parse_graph_xml(payload.rstrip(b"\0"))
             if any(w.handle == popup.window.handle for w in app.windows()):
                 _ = app.keys(handle, "{ESC}")
             _ = events.changes.until(
-                lambda: (
-                    True
-                    if {w.handle for w in app.windows()} == baseline_handles
-                    else None
-                ),
+                lambda: True if {w.handle for w in app.windows()} == baseline else None,
                 TRANSITION_SECONDS,
                 description="Copy Display menu dismissal",
             )
             release_menu_bar(app, handle)
+        except Exception:
+            try:
+                close_menus(app, handle)
+            except Exception:
+                logger.exception("Graph cleanup failed; preserving original error.")
+            raise
+        else:
             return state
-    finally:
-        _restore_clipboard(clipboard_backup, expected_sequence=copied_sequence)
 
 
 def _display_popup(
     app: Capstone,
     main_handle: int,
-    copy_label: str = "Copy Display",
+    copy_label: str | None = None,
     *,
     before: set[int] | None = None,
 ) -> Snapshot | None:
@@ -521,7 +581,9 @@ def _display_popup(
             logger.debug("Failed to snapshot window %s: %s", window.handle, error)
             continue
         if not snapshot.truncated and any(
-            c.name == copy_label
+            _graph_label(
+                c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+            )
             and c.control_type == "MenuItem"
             and c.visible
             and c.enabled
@@ -535,8 +597,13 @@ def _display_popup(
         return None
     current = app.snapshot(candidates[0], 3, 100)
     valid = not current.truncated and any(
-        c.name == copy_label and c.control_type == "MenuItem"
-        and c.visible and c.enabled for c in current.controls
+        _graph_label(
+            c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+        )
+        and c.control_type == "MenuItem"
+        and c.visible
+        and c.enabled
+        for c in current.controls
     )
     return current if valid else None
 

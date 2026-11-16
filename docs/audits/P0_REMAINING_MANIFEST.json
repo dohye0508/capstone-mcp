@@ -1,6 +1,6 @@
 {
   "as_of": "2026-11-16",
-  "basis": "Combined offline fixes, not unmerged upstream main",
+  "basis": "main b11dd2a plus codex/p0-round3-followup; follow-up changes are not yet upstream",
   "upstream_prs": [
     131,
     132,
@@ -78,10 +78,10 @@
         "RUN-01"
       ],
       "category": "capability_gap",
-      "title": "런 삭제 확인 대화상자 자동 처리",
-      "procedure": "복제 실험의 고유 이름 런을 삭제하면서 별도의 무관한 Yes 대화상자도 둔다.",
-      "acceptance": "해당 런만 삭제되고 무관한 확인창은 건드리지 않는다. 완료 미확인 시 unverified를 유지한다.",
-      "requirement": "현재 무차별 확인 제거; 실제 확인창 소유권/라벨 필요"
+      "title": "임의 이름 런의 정확한 선택·삭제",
+      "procedure": "복제 실험에서 최신 런이 아닌 고유 이름 런을 선택하는 실제 경로를 확보한다. 확인창이 나타나는 버전에서는 소유권·대상 이름도 확인한다.",
+      "acceptance": "해당 런만 삭제되고 다른 런·무관한 확인창은 유지된다. 완료 미확인 시 unverified를 유지한다.",
+      "requirement": "main의 최신 런 삭제는 지원·별도 실증 기록이 있음. 임의 이름 삭제 경로가 미지원이며 이번 세션에서는 실기하지 않음"
     },
     {
       "ids": [

@@ -9,9 +9,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from capstone_mcp import file_workflows
+from capstone_mcp import file_workflows, ui_strings
 from capstone_mcp.desktop import AutomationError
-from capstone_mcp.models import Bounds, Window
+from capstone_mcp.models import Action, Bounds, Control, Snapshot, Window
 
 if TYPE_CHECKING:
     from capstone_mcp.desktop import Capstone
@@ -108,6 +108,43 @@ def test_prepare_uses_requested_window_and_checks_modal_guard(tmp_path: Path) ->
 
 def _titled(handle: int, title: str) -> Window:
     return Window(handle=handle, title=title, process_id=7, bounds=BOUNDS)
+
+
+def test_localized_file_menu_keeps_using_the_native_command_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = tmp_path / "Resources" / "Strings"
+    resources.mkdir(parents=True)
+    (resources / "Capstone_dex.txt").write_text(
+        "STR_MENU_FILE\t10415\t&Datei\n"
+        "STR_MENU_DISPLAY_COPY_DISPLAY\t12998\tAnzeige kopieren\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ui_strings, "EXECUTABLE", tmp_path / "Capstone.exe")
+    ui_strings._labels.cache_clear()
+    try:
+        frame = _titled(HANDLE, "experiment.cap")
+        file_menu = Control(
+            ref="file", name="Datei", automation_id="", control_type="MenuItem",
+            bounds=BOUNDS, parent=None, visible=True, enabled=True,
+        )
+        save = file_menu.model_copy(update={"ref": "save", "automation_id": "mActionSaveAs"})
+        popup = Snapshot(window=_titled(9, ""), controls=[save], truncated=False)
+        app = Mock(windows=Mock(return_value=[frame]))
+        app.snapshot.return_value = Snapshot(
+            window=frame, controls=[file_menu], truncated=False,
+        )
+        events = Mock()
+        events.changes.until.return_value = popup
+
+        assert file_workflows._open_command(app, events, HANDLE, "mActionSaveAs") == {HANDLE}
+        assert [call.args for call in app.act.call_args_list] == [
+            ("file", Action.INVOKE), ("save", Action.INVOKE),
+        ]
+        assert ui_strings.label_matches("Anzeige kopieren", "STR_MENU_DISPLAY_COPY_DISPLAY")
+        assert not ui_strings.label_matches("Anzeige kopieren?", "STR_MENU_DISPLAY_COPY_DISPLAY")
+    finally:
+        ui_strings._labels.cache_clear()
 
 
 def test_open_is_confirmed_only_after_the_loading_window_is_gone(

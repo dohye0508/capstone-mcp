@@ -26,7 +26,7 @@ Acceptance requires normalized RMS no greater than 3% of fitted modulation ampli
 
 ## Public result behavior
 
-`SlitDiffractionRecipe.analyze` now accepts `slit_type="double_slit"` with existing `positions_mm` or top-level `positions_m` and intensity arrays. Acquisition output continues to store millimetre positions in its `data` payload. No request schema changes or new dependency are introduced. Explicit zero wavelength/distance is no longer replaced by a default.
+`SlitDiffractionRecipe.analyze` accepts `slit_type="double_slit"` and explicit `analysis_mode="joint_envelope"` with existing `positions_mm` or top-level `positions_m` and intensity arrays. Acquisition output continues to store millimetre positions in its `data` payload. No request schema changes or new dependency are introduced. Explicit zero wavelength/distance is no longer replaced by a default.
 
 Successful double-slit details include:
 
@@ -34,7 +34,7 @@ Successful double-slit details include:
 - `central_maximum.position_mm`, fitted `amplitude` and `background`;
 - `normalized_rms`, `model`, `wavelength_nm`, `screen_distance_m`, `slit_type`.
 
-There is no invented nominal-error percentage or identification of interference minima as envelope minima. Round-2 clients that always expected double-slit failure should accept a completed result when these conditions are met. Single-slit result fields remain separate and unchanged. Unsupported slit type names fail explicitly.
+There is no invented nominal-error percentage or identification of interference minima as envelope minima. The latest main default separation-only estimate is preserved: omitted `analysis_mode` (or `separation_only`) estimates only separation from the median peak spacing including the central fringe and never reports width. Strict joint fitting is opt-in; its failures never fall back to a less stringent estimate. Single-slit result fields remain separate and unchanged. Unsupported slit type names fail explicitly.
 
 ## Independent validation
 

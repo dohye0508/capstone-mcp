@@ -2,6 +2,7 @@
 """Deterministic unit and integration tests for the Physics Lab Report Engine."""
 
 import math
+import os
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,7 @@ from capstone_mcp.reports.models import (
     LabReport,
     RegressionSummary,
 )
+from capstone_mcp.reports.output import write_report_file
 from capstone_mcp.reports.templates import (
     render_html,
     render_markdown,
@@ -193,8 +195,9 @@ def test_generate_report_photoelectric_effect() -> None:
     voltages = [h_over_e * f - phi_ev for f in freqs]
 
     series = {
-        "Frequency": freqs,
+        "Elapsed": [0, 1, 2, 3, 4],
         "Stopping Voltage": voltages,
+        "Frequency": freqs,
     }
     report = generate_report(
         experiment_id="photoelectric_effect",
@@ -213,6 +216,17 @@ def test_generate_report_photoelectric_effect() -> None:
     h_row = next(r for r in report.error_analysis if r.symbol == "h")
     assert h_row.experimental_value == pytest.approx(PLANCK_CONSTANT, rel=1e-3)
     assert h_row.relative_error_percent < 1.0
+
+
+def test_photoelectric_report_does_not_use_unidentified_axes() -> None:
+    report = generate_report(
+        experiment_id="photoelectric_effect",
+        data_series={"Time": [1, 2, 3], "Current": [2, 4, 6]},
+    )
+
+    assert report.error_analysis == []
+    assert report.regression is None
+    assert report.plotted_data_points == {}
 
 
 def test_generate_report_rlc_resonance() -> None:
@@ -256,6 +270,19 @@ def test_generate_report_from_csv_file(tmp_path: Path) -> None:
     assert report.regression.slope == pytest.approx(2.0)
 
 
+def test_report_csv_fit_never_pairs_samples_from_different_rows(tmp_path: Path) -> None:
+    path = tmp_path / "sparse.csv"
+    _ = path.write_text("x;y\n0,0;0,0\n1,0;\n;200,0\n3,0;6,0\n", encoding="utf-8")
+
+    report = generate_report(file_path_or_run=str(path))
+
+    assert [summary.count for summary in report.data_summaries] == [3, 3]
+    assert report.regression is not None
+    assert report.regression.slope == pytest.approx(2.0)
+    assert report.regression.intercept == pytest.approx(0.0)
+    assert len(report.raw_data_points["x"]) == 4
+
+
 def test_render_markdown_output() -> None:
     x = [1.0, 2.0, 3.0]
     y = [2.0, 4.0, 6.0]
@@ -279,12 +306,20 @@ def test_render_html_output() -> None:
         experiment_id="generic",
         data_series={"x": x, "y": y},
         title="Custom Linear Experiment",
+        apparatus=["Sensor <optical>"],
     )
+    report = report.model_copy(update={"metadata": report.metadata.model_copy(
+        update={"channels_or_sensors": {"Ch A": "Optical & position"}},
+    )})
     html = render_html(report)
     assert "<!DOCTYPE html>" in html
     assert "<title>Laboratory Report: Custom Linear Experiment</title>" in html
     assert "<table" in html
     assert "<style>" in html
+    assert "<h2>3. Apparatus &amp; Setup Configuration</h2>" in html
+    assert "Sensor &lt;optical&gt;" in html
+    assert "<td>Ch A</td><td>Optical &amp; position</td>" in html
+    assert "<h2>4. Measured Data & Statistics</h2>" in html
 
 
 def test_render_report_formats() -> None:
@@ -305,11 +340,35 @@ def test_render_report_formats() -> None:
     assert "html" in res_both
 
 
+def test_report_svg_omits_nonfinite_points_and_bounds_its_output() -> None:
+    report = generate_report(data_series={"x": [1, 2], "y": [2, 4]})
+    raw = {"x": [math.nan, math.inf, *range(5_000)], "y": list(range(5_002))}
+    html = render_html(report.model_copy(update={"raw_data_points": raw}))
+
+    assert 2 <= html.count("<circle ") <= 1_000
+    assert 'cx="nan"' not in html
+    assert 'cx="inf"' not in html
+
+
+@pytest.mark.parametrize("source", [None, "missing_run_sample"])
+def test_report_requires_explicit_sample_request(source: str | None) -> None:
+    with pytest.raises(ValueError, match="No experimental"):
+        generate_report(file_path_or_run=source, experiment_id="photoelectric_effect")
+
+
+@pytest.mark.parametrize("column", ["x", "Velocity (m/s)"])
+def test_inline_report_json_is_data_not_a_run_name(column: str) -> None:
+    source = f'{{"{column}": [1, 2], "y": [2, 4]}}'
+    report = generate_report(file_path_or_run=source)
+    assert report.metadata.run_name is None
+    assert [summary.variable_name for summary in report.data_summaries] == [column, "y"]
+
+
 @pytest.mark.anyio
 async def test_capstone_generate_lab_report_tool(tmp_path: Path) -> None:
     out_file = tmp_path / "test_report.md"
     result = await capstone_generate_lab_report(
-        file_path_or_run="photoelectric_effect_sample",
+        file_path_or_run="sample",
         experiment_id="photoelectric_effect",
         output_path=str(out_file),
         format="markdown",
@@ -320,6 +379,7 @@ async def test_capstone_generate_lab_report_tool(tmp_path: Path) -> None:
     assert out_file.exists()
     saved_text = out_file.read_text(encoding="utf-8")
     assert "Laboratory Report" in saved_text
+    assert "Sample / Demonstration" in saved_text
 
 
 @pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
@@ -331,10 +391,68 @@ def test_adiabatic_report_rejects_invalid_absolute_pressure(invalid: float) -> N
         )
 
 
-def test_report_requires_explicit_sample_request() -> None:
+def test_explicit_sample_is_labeled_as_demonstration() -> None:
     with pytest.raises(ValueError, match="No experimental data"):
         generate_report(experiment_id="photoelectric_effect")
     report = generate_report(
         file_path_or_run="sample", experiment_id="photoelectric_effect",
     )
     assert "Sample / Demonstration" in report.metadata.title
+def test_report_output_preserves_existing_html(tmp_path: Path) -> None:
+    markdown = tmp_path / "report.md"
+    html = markdown.with_suffix(".html")
+    html.write_text("Existing report", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        write_report_file(str(markdown), "both", "# Report", "<p>New report</p>")
+
+    assert html.read_text(encoding="utf-8") == "Existing report"
+    assert not markdown.exists()
+
+
+def test_report_write_failure_leaves_no_partial_output(tmp_path: Path) -> None:
+    markdown = tmp_path / "report.md"
+    html = markdown.with_suffix(".html")
+
+    with pytest.raises(UnicodeEncodeError):
+        write_report_file(str(markdown), "both", "# Report", "\ud800")
+
+    assert not markdown.exists()
+    assert not html.exists()
+    write_report_file(str(markdown), "both", "# Report", "<p>Report</p>")
+    assert markdown.read_text(encoding="utf-8") == "# Report"
+    assert html.read_text(encoding="utf-8") == "<p>Report</p>"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows exclusive rename")
+def test_report_preserves_file_created_during_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    markdown = tmp_path / "report.md"
+    html = markdown.with_suffix(".html")
+    rename = Path.rename
+
+    def race(source: Path, target: Path) -> Path:
+        if target == html:
+            html.write_text("Concurrent report", encoding="utf-8")
+        return rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", race)
+
+    with pytest.raises(FileExistsError):
+        write_report_file(str(markdown), "both", "# Report", "<p>Report</p>")
+
+    assert list(tmp_path.iterdir()) == [html]
+    assert html.read_text(encoding="utf-8") == "Concurrent report"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows alternate data stream")
+def test_report_rejects_an_alternate_data_stream(tmp_path: Path) -> None:
+    existing = tmp_path / "existing.md"
+    existing.write_text("Existing report", encoding="utf-8")
+    stream = f"{existing}:report"
+
+    with pytest.raises(ValueError, match="ordinary filesystem path"):
+        write_report_file(stream, "markdown", "# Report", None)
+
+    assert existing.read_text(encoding="utf-8") == "Existing report"

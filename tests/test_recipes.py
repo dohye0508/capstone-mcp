@@ -246,7 +246,7 @@ def test_adiabatic_constant_volume_does_not_return_theory() -> None:
         },
     )
     assert result.status == "failed"
-    assert "nonconstant" in result.message
+    assert "distinct volumes" in result.message
 
 
 def test_adiabatic_measured_power_law() -> None:
@@ -286,7 +286,7 @@ def test_double_slit_does_not_misidentify_interference_minima() -> None:
         },
     )
     assert result.status == "failed"
-    assert "envelope" in result.message
+    assert "derived_slit_width_mm" not in result.details
 
 
 def test_single_slit_input_units_match() -> None:
@@ -359,6 +359,20 @@ def test_resonance_analysis_rejects_incomplete_or_nonfinite_data(
     })
     assert result.status == "failed"
     assert "matching finite" in result.message
+def test_slit_separation_counts_spacing_through_central_fringe() -> None:
+    result = SlitDiffractionRecipe().analyze({
+        "positions_mm": list(range(-5, 6)),
+        "intensities": [0, 2, 0, 3, 1, 5, 1, 3, 0, 2, 0],
+        "slit_type": "double_slit",
+    })
+    assert result.status == "completed"
+    assert "derived_slit_width_mm" not in result.details
+    assert result.details["derived_slit_separation_mm"] == pytest.approx(0.325)
+
+
+# ---------------------------------------------------------------------------
+# Server MCP Tool Integration Tests
+# ---------------------------------------------------------------------------
 
 
 def test_diffraction_flat_maximum_uses_plateau_midpoint() -> None:

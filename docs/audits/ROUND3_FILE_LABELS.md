@@ -38,3 +38,8 @@ Illustrative tool invocation (the Korean labels are synthetic examples; replace 
 Call `capstone_export_data` with this structure only after independently observing the target controls. Save/open accept the same mapping; discard remains separately gated by `discard_unsaved=true`.
 
 Dialog/menu snapshots now use bounded depth 16 and 10,000 controls, including candidate refresh. This avoids deliberately shallow trees being rejected by the completeness guard. A tree that still exceeds either bound remains explicitly rejected; no claim of unrestricted traversal or native locale coverage is made.
+
+
+## Final upstream merge contract
+
+After integrating b11dd2a, omitted label fields retain upstream installed-resource catalog matching (mnemonic/whitespace/case normalization across installed catalogs). Explicit caller fields remain exact raw equality and never fall back to translations. This supersedes the earlier statement that all defaults remain English-only. A partial mapping preserves this distinction across worker JSON via override-only serialization; omitted fields are not silently converted into explicit English overrides. Filename IDs and discard have no added guessed catalog keys. Private default file-menu and close helpers use STR_MENU_FILE and STR_CLOSE respectively. Native-dialog uniqueness, latest-reference refresh and complete bounded snapshots remain unchanged. Added regression verifies partial override IPC and explicit-label rejection even when a catalog matcher would accept another language.

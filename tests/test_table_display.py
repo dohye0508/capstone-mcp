@@ -106,7 +106,9 @@ def test_create_table_success() -> None:
     assert result.created is True
     assert result.table_name == "Table"
     assert result.verified is True
-    app.click.assert_called_once_with(100, "ref:table_palette", allow_foreground=True)
+    app.click.assert_called_once_with(
+        100, "ref:table_palette", double=True, allow_foreground=True,
+    )
 
 
 def test_set_table_columns_validates_inputs() -> None:
@@ -134,7 +136,8 @@ def test_set_table_columns_validates_inputs() -> None:
         )
 
 
-def test_set_table_columns_configures_and_auto_expands() -> None:
+@pytest.mark.parametrize("binding_applied", [True, False])
+def test_set_table_columns_configures_and_auto_expands(*, binding_applied: bool) -> None:
     app = Capstone()
     mock_win = _mock_window()
 
@@ -179,13 +182,9 @@ def test_set_table_columns_configures_and_auto_expands() -> None:
         bounds=Bounds(left=250, top=100, right=400, bottom=130),
     )
 
-    call_count = 0
-
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
-        nonlocal call_count
-        call_count += 1
         ctrls = [table_ctrl, header_1, add_col_btn]
-        if call_count > 1:
+        if app.click.called:
             ctrls.append(header_2)
         return Snapshot(window=mock_win, controls=ctrls, truncated=False)
 
@@ -193,9 +192,16 @@ def test_set_table_columns_configures_and_auto_expands() -> None:
     app.click = MagicMock()
     app.keys = MagicMock()
 
-    mock_node = MagicMock()
-    mock_node.iface_value.SetValue = MagicMock()
-    app.control = MagicMock(return_value=mock_node)
+    def bind_column(ref: str, name: str) -> None:
+        nonlocal header_1, header_2
+        if binding_applied:
+            if ref == header_1.ref:
+                header_1 = header_1.model_copy(update={"name": name})
+            else:
+                assert ref == header_2.ref
+                header_2 = header_2.model_copy(update={"name": name})
+
+    app.set_value = MagicMock(side_effect=bind_column)
 
     display_res = manage_display(
         app,
@@ -213,10 +219,12 @@ def test_set_table_columns_configures_and_auto_expands() -> None:
     assert isinstance(display_res.set_table_columns, SetTableColumnsResult)
     res = display_res.set_table_columns
     assert res.table_name == "Table 1"
-    assert res.column_count == 2
-    assert res.columns == ["Time (s)", "Velocity (m/s)"]
-    assert res.verified is False
-    assert mock_node.iface_value.SetValue.call_count == 2
+    assert res.column_count == (2 if binding_applied else 1)
+    assert res.columns == (
+        ["Time (s)", "Velocity (m/s)"] if binding_applied else ["<Select Measurement>"]
+    )
+    assert res.verified is binding_applied
+    assert app.click.call_count == int(binding_applied)
 
 
 def test_read_table_validates_pagination_bounds() -> None:
@@ -298,20 +306,10 @@ def test_read_table_extracts_data_and_statistics() -> None:
     )
 
     # Row 2
-    r2_c1 = Control(
-        ref="ref:r2c1",
-        parent="ref:table",
-        name="0.1",
-        control_type="DataItem",
-        automation_id="R1C0",
-        enabled=True,
-        visible=True,
-        bounds=Bounds(left=100, top=170, right=300, bottom=190),
-    )
     r2_c2 = Control(
         ref="ref:r2c2",
         parent="ref:table",
-        name="0.22",
+        name="Position (m)",
         control_type="DataItem",
         automation_id="R1C1",
         enabled=True,
@@ -352,6 +350,11 @@ def test_read_table_extracts_data_and_statistics() -> None:
         visible=True,
         bounds=Bounds(left=100, top=550, right=300, bottom=580),
     )
+    stat_mean_position = stat_mean.model_copy(update={
+        "ref": "ref:stat_mean_position",
+        "name": "Mean: 0.33",
+        "bounds": Bounds(left=300, top=550, right=500, bottom=580),
+    })
 
     app.snapshot = MagicMock(
         return_value=Snapshot(
@@ -362,11 +365,11 @@ def test_read_table_extracts_data_and_statistics() -> None:
                 col2,
                 r1_c1,
                 r1_c2,
-                r2_c1,
                 r2_c2,
                 r3_c1,
                 r3_c2,
                 stat_mean,
+                stat_mean_position,
             ],
             truncated=False,
         ),
@@ -389,7 +392,7 @@ def test_read_table_extracts_data_and_statistics() -> None:
     assert res.page == 1
     assert len(res.rows) == 2
     assert res.rows[0] == {"Time (s)": 0.0, "Position (m)": 0.05}
-    assert res.rows[1] == {"Time (s)": 0.1, "Position (m)": 0.22}
+    assert res.rows[1] == {"Time (s)": None, "Position (m)": "Position (m)"}
     assert res.statistics is not None
     assert "Mean" in res.statistics
-    assert res.statistics["Mean"]["Time (s)"] == 0.25
+    assert res.statistics["Mean"] == {"Time (s)": 0.25, "Position (m)": 0.33}

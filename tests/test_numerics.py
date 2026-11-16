@@ -33,6 +33,18 @@ def test_compute_series_summary_empty_raises() -> None:
         compute_series_summary([])
 
 
+def test_summary_keeps_finite_values_and_small_variation() -> None:
+    summary = compute_series_summary([
+        float("nan"), 1e12 + 1, float("inf"), 1e12 + 2, 1e12 + 3, float("-inf"),
+    ])
+
+    assert summary.count == 3
+    assert summary.mean == 1e12 + 2
+    assert summary.std_dev == pytest.approx(1.0)
+    assert summary.min_val == 1e12 + 1
+    assert summary.max_val == 1e12 + 3
+
+
 def test_fit_linear_series_exact() -> None:
     """Verify exact linear fit for y = 2x + 1."""
     x = [0.0, 1.0, 2.0, 3.0, 4.0]
@@ -122,3 +134,14 @@ def test_linear_regression_scales_both_axes_without_overflow(scale: float) -> No
 def test_linear_regression_unrepresentable_result_fails() -> None:
     with pytest.raises(ValueError, match="floating-point range"):
         fit_linear_series([1e-300, 2e-300], [1e300, 2e300])
+def test_svg_sparkline_bounds_scatter_and_fit_and_preserves_title() -> None:
+    values = list(range(3_000))
+    svg = render_svg_sparkline(
+        values, values, fit_x=values, fit_y=values, title="Force & <Motion>",
+    )
+
+    assert 0 < svg.count("<circle ") <= 1_000
+    assert 0 < svg.count(" L ") < 1_000
+    assert 'cx="nan"' not in svg
+    assert "Force &amp; &lt;Motion&gt;" in svg
+    assert ">2999.00<" in svg

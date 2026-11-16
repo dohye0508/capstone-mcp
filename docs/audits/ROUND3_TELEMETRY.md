@@ -6,7 +6,7 @@
 
 Migration: callers that previously supplied bare timestamps must construct `TelemetryClock(clock_id="device-or-import:run-identity", unit="seconds", origin="documented acquisition origin")` from their actual source contract and pass `clock=...`. Calling code must not use that example identity for unrelated devices or runs. The only production writer currently supplies no timestamp and therefore retains host observation behavior. Explicit fixture timestamps were updated accordingly.
 
-`get_snapshot(euid)` exports an atomic copy of both timestamped samples and their clock under one lock. `get_clock(euid)` exposes immutable provenance for diagnostics; `get_samples` remains a compatibility value-only accessor and must not be used to infer shared time domains. The live data adapter exports instantaneous values rather than buffer timestamps: metadata now states `sampling=sequential_instantaneous`, `synchronized=false`, and `timestamps_exported=false`. It does not claim paired synchronous acquisition.
+`get_snapshot(euid)` exports an atomic copy of samples, clock, original first timestamp and retained starting sample index under one lock. `get_clock(euid)` exposes immutable provenance; `get_samples` remains a compatibility value-only accessor and must not be used to infer shared domains. After merging upstream b11dd2a, the live adapter reads retained single-channel history, never fresh paired polls. It requires at least two samples, preserves insertion order at equal timestamps, and subtracts the original channel timestamp rather than the first still-retained sample. Time values retain the declared clock unit (s/ms/us/ns/ticks), and metadata carries clock_id, clock_unit, clock_origin and elapsed_origin. Only a host-monotonic clock is labeled host_monotonic_elapsed; explicit external clocks use declared_clock_elapsed. Sample indices remain stable across ring eviction. No synchronous cross-channel/hardware clock claim is made.
 
 Tests: `test_telemetry_clock.py` covers missing metadata, changed domain/unit/origin, automatic/external clock mixing, eviction, clearing and snapshot independence. Existing finite/monotonic/limit and adapter safety tests continue to execute.
 
@@ -26,7 +26,7 @@ Inspected installed `C:/Program Files/PASCO scientific/Capstone/Resources/www/ja
 | --- | --- | --- |
 | DEFECT-TEL05 | Fixed internal source contract | None for internal mixing prevention. External producers remain responsible for truthful clock metadata. |
 | DEFECT-HW01 | Unsupported hardware timestamp capability | Actual native acquisition response or documented export provides hardware clock identity, origin and units. Current read-measurement wrapper cannot establish them. |
-| DEFECT-HW02 | Unsupported synchronized channel capability | Native sample identifiers/timestamps and an explicit alignment contract. Sequential instantaneous measurements are now labeled unsynchronized. |
+| DEFECT-HW02 | Unsupported synchronized channel capability | Native sample identifiers/timestamps and an explicit alignment contract. The merged adapter rejects paired-channel axes and exports single-channel retained history only. |
 | P0-STRM01 | Unsupported bulk streaming capability | Documented or captured bulk request/response and rate/count semantics. No invented endpoint or claim of 100 kHz support. |
 | DEFECT-HW08 | Partial: safe admission/unverified result already implemented; completion unsupported | ZeroSensor vocabulary exists, but sensor-to-measurement mapping and settled/finished acknowledgement are absent. Current zero tool rejects recording and reports completion unverified. UI request has sensor_name rather than authoritative EUID; private per-adapter buffers have no global ownership registry. Clearing every client's buffer would silently destroy unrelated data. |
 | DEFECT-HW09 | Unsupported trigger binding, fails before mutation | Native sensor-selection/control evidence and independent selected-measurement readback. Inventory dump is empty, property names alone do not establish selection semantics. |
@@ -35,3 +35,12 @@ Inspected installed `C:/Program Files/PASCO scientific/Capstone/Resources/www/ja
 | DEFECT-NAT02 | Claim verification, not reproduced unbounded worker | Existing real subprocess tests verify bounded request timeout and owned cleanup. Actual blocked COM operation and physical outcome require authorized controlled live evidence; host timeout cannot prove cancellation of equipment state. |
 
 No GUI, sensor, trigger, output, or actual debug endpoint operations were performed. No additional speculative native implementation was introduced.
+
+
+## Upstream merge reconciliation (b11dd2a)
+
+Preserved upstream's maximum 256 measurement histories and least-recently-sampled eviction. Eviction removes samples, clock, original timestamp and sample counters under the same lock; reintroducing that EUID starts a new history and cannot inherit stale clock metadata. Per-channel storage remains bounded by capacity (default 1000). This is an intentional bounded retention policy; it does not preserve every discovered channel forever. Inventory metadata still lists channels with zero retained samples where applicable. Counts use O(1) sample_count.
+
+Upstream session filtering is retained: polling another port or nondefault unit does not contaminate this session's default-unit history. Saved capfile/CSV adapters retain upstream SavedRunData and explicit missing-row alignment semantics.
+
+New `test_telemetry_history_merge.py` verifies equal-time ordering, stable elapsed origin and sample indices after ring eviction, millisecond metadata, and removal of all LRU metadata before EUID reuse. Scoped reconciliation suites: 112 passed/1 skipped initially (one default-resource matcher failure then fixed), followed by 54 passed for workflow/native-safety reconciliation and 32 passed for the final clock/label regression set. Targeted production basedpyright and Ruff passed. Overall merged CI remains the root task's responsibility.

@@ -12,6 +12,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from pydantic import ValidationError
 
+from capstone_mcp.data_sources import get_experiment_series
 from capstone_mcp.experiment_analysis import (
     CapDatasetSelection,
     CapLinearFitRequest,
@@ -20,6 +21,8 @@ from capstone_mcp.experiment_analysis import (
     compare_cap_datasets,
     fit_cap_datasets,
 )
+from capstone_mcp.reports import generate_report
+from capstone_mcp.server import capstone_generate_lab_report
 
 EXAMPLE: Final = (
     Path("C:/Program Files/PASCO scientific/Capstone")
@@ -64,7 +67,9 @@ def _numeric_payload(values: list[float | str | None]) -> bytes:
     return bytes(payload)
 
 
-def _write_cap(path: Path, specs: list[_DatasetSpec]) -> None:
+def _write_cap(
+    path: Path, specs: list[_DatasetSpec], *, runs: dict[str, int] | None = None,
+) -> None:
     sources: list[str] = []
     payloads: list[tuple[str, bytes]] = []
     for index, spec in enumerate(specs):
@@ -110,11 +115,17 @@ def _write_cap(path: Path, specs: list[_DatasetSpec]) -> None:
         )
         payloads.append((payload_name, payload))
 
+    run_labels = "".join(
+        f'<RunParameterSet RunParameterID="{run_id}">'
+        f'<ParameterValue RunNumber="{number}" /></RunParameterSet>'
+        for run_id, number in (runs or {}).items()
+    )
     xml = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         "<DSProExperiment>\n"
         "  <DataRepository>\n"
         f"{''.join(sources)}"
+        f"{run_labels}"
         "  </DataRepository>\n"
         "</DSProExperiment>\n"
     ).encode()
@@ -122,6 +133,87 @@ def _write_cap(path: Path, specs: list[_DatasetSpec]) -> None:
         archive.writestr("main.xml", xml)
         for payload_name, payload in payloads:
             archive.writestr(payload_name, payload)
+
+
+def test_saved_series_requires_named_axes_and_exposes_independent_coordinates(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "series.cap"
+    _write_cap(path, [_DatasetSpec(
+        dataset_id="{force}", source_euid="{sensor}", source_name="Force",
+        values=[3, None, 8], numeric_cache=True, independent_kind="interval",
+        interval_start=0.25, interval_step=0.5,
+    )])
+
+    with pytest.raises(ValueError, match="Unknown"):
+        get_experiment_series(path, "Unknown", "Force")
+    series = get_experiment_series(path, "independent_coordinate", "Force")
+    assert series.x.values == [0.25, 0.75, 1.25]
+    assert series.x.units == ""
+    assert series.y.values == [3.0, None, 8.0]
+    assert series.paired_floats() == ([0.25, 1.25], [3.0, 8.0])
+
+
+def test_saved_series_rejects_matching_counts_with_shifted_coordinates(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "shifted.cap"
+    _write_cap(path, [
+        _DatasetSpec("{x}", "{source-x}", "Position", [1, 2], independent_kind="interval"),
+        _DatasetSpec("{y}", "{source-y}", "Force", [3, 4], independent_kind="interval", interval_start=1),
+    ])
+
+    with pytest.raises(ValueError, match="different independent coordinates"):
+        get_experiment_series(path, "Position", "Force")
+
+
+def test_saved_series_pairs_only_exact_shared_coordinates_of_same_run(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "overlap.cap"
+    _write_cap(path, [
+        _DatasetSpec("{run}", "{source-x}", "Angle", [1, 2, 3], independent_kind="interval"),
+        _DatasetSpec("{run}", "{source-y}", "Light", [8, 9, 10], independent_kind="interval", interval_start=1),
+    ], runs={"{run}": 1})
+
+    series = get_experiment_series(path, "Angle", "Light", run_id="Run #1")
+
+    assert series.paired_floats() == ([2.0, 3.0], [8.0, 9.0])
+    assert series.run_id == "Run #1"
+
+
+@pytest.mark.anyio
+async def test_saved_report_preserves_requested_run_and_raw_row_positions(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "report.cap"
+    _write_cap(path, [
+        _DatasetSpec("{r1}", "{x}", "Angle", [1, None, 3], numeric_cache=True),
+        _DatasetSpec("{r1}", "{y}", "Light", [2, 100, 6], numeric_cache=True),
+        _DatasetSpec("{r2}", "{x}", "Angle", [4, 5], numeric_cache=True),
+        _DatasetSpec("{r2}", "{y}", "Light", [40, 50], numeric_cache=True),
+    ], runs={"{r1}": 1, "{r2}": 2})
+
+    with pytest.raises(ValueError, match="multiple saved runs"):
+        generate_report(str(path))
+    summary = generate_report(str(path), run_id="Run #2")
+    assert summary.regression is None
+    assert summary.plotted_data_points == {}
+    assert summary.raw_data_points["Light"] == [40.0, 50.0]
+
+    result = await capstone_generate_lab_report(
+        str(path), "photoelectric_effect", run_id="Run #1", axes=("Angle", "Light"),
+        format="both",
+    )
+    report = result.lab_report
+    assert report.metadata.run_name == "Run #1"
+    assert report.raw_data_points["Angle"] == [1.0, None, 3.0]
+    assert report.raw_data_points["Light"] == [2.0, 100.0, 6.0]
+    assert report.regression is not None
+    assert report.regression.slope == pytest.approx(2.0)
+    assert report.error_analysis == []
+    assert result.report_html is not None
+    assert result.report_html.count("<circle ") == 2
 
 
 def test_fit_saved_datasets_by_exact_id_with_provenance(

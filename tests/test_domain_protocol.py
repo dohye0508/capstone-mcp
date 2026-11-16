@@ -53,6 +53,7 @@ async def exercise_file_tools() -> None:
     # Given: a real installed example, never modified by this test.
     parameters = StdioServerParameters(
         command=sys.executable, args=["-m", "capstone_mcp.server"], cwd=ROOT,
+        env={"PYTHONPATH": str(Path(ROOT) / "src")},
     )
     with anyio.fail_after(45):
         async with (
@@ -84,6 +85,7 @@ async def exercise_fit_tool() -> None:
     # Given
     parameters = StdioServerParameters(
         command=sys.executable, args=["-m", "capstone_mcp.server"], cwd=ROOT,
+        env={"PYTHONPATH": str(Path(ROOT) / "src")},
     )
     with anyio.fail_after(30):
         async with (
@@ -118,6 +120,7 @@ async def exercise_ai_graph_contract() -> None:
     # Given: actual MCP metadata, without attaching to or changing a desktop.
     parameters = StdioServerParameters(
         command=sys.executable, args=["-m", "capstone_mcp.server"], cwd=ROOT,
+        env={"PYTHONPATH": str(Path(ROOT) / "src")},
     )
     with anyio.fail_after(30):
         async with (

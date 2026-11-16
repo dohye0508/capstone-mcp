@@ -72,7 +72,7 @@ def test_recipe_returns_both_geometry_values_with_metre_and_mm_inputs() -> None:
         {"positions_mm": [value * 1000 for value in x]},
     ):
         result = recipe.analyze(
-            {**positions, "intensities": y, "slit_type": "double_slit"},
+            {**positions, "intensities": y, "slit_type": "double_slit", "analysis_mode": "joint_envelope"},
         )
         assert result.status == "completed", result.message
         assert result.details["derived_slit_width_mm"] == pytest.approx(0.04, rel=0.003)
@@ -123,7 +123,7 @@ def test_non_double_slit_structure_is_rejected_by_residual() -> None:
 def test_recipe_does_not_replace_zero_wavelength_with_default() -> None:
     x, y = aperture_scan(4e-5, 2.5e-4, 650e-9, 1)
     result = SlitDiffractionRecipe().analyze({
-        "positions_m": x, "intensities": y, "slit_type": "double_slit",
+        "positions_m": x, "intensities": y, "slit_type": "double_slit", "analysis_mode": "joint_envelope",
         "wavelength_m": 0,
     })
     assert result.status == "failed"

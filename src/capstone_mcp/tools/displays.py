@@ -4,6 +4,7 @@
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
+from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import JsonValue, TypeAdapter
@@ -19,6 +20,7 @@ from capstone_mcp.graphs import (
     GraphFailure,
     GraphRequest,
     GraphResult,
+    read_saved_graph,
 )
 
 type NativeCaller = Callable[..., Awaitable[Any]]
@@ -50,6 +52,8 @@ def register_display_tools(
         Supported actions (request.action):
         - create: Insert a new graph onto active page (request.create)
         - read: Read graph curves, fits, and data signatures (request.read)
+          Set request.read.cap_file to read a saved archive without the desktop.
+          Set request.read.graph_index (zero-based workbook order) for multiple graphs.
         - fit: Scale graph axes to fit all data (request.fit)
         - select_measurement: Select axis measurement via popup menu path
           (request.select_measurement)
@@ -62,6 +66,15 @@ def register_display_tools(
         - analyze: Set axes, fit curves, and compile analytical report
           (request.analyze)
         """
+        if (
+            request.action == GraphAction.READ
+            and request.read is not None
+            and request.read.cap_file is not None
+        ):
+            result = await to_thread.run_sync(
+                read_saved_graph, request.read.cap_file, request.read.graph_index,
+            )
+            return GraphResult(action=request.action, read=result)
         return GraphResult.model_validate(
             await native(
                 NativeRequest(

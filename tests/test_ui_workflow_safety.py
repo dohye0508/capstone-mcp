@@ -13,7 +13,7 @@ from capstone_mcp.displays.digits import (
 )
 from capstone_mcp.displays.harness import find_display_container, set_control_value
 from capstone_mcp.displays.models import SetScopeTriggerRequest
-from capstone_mcp.displays.scope import _configure_scope, set_scope_trigger
+from capstone_mcp.displays.scope import _write_settings, set_scope_trigger
 from capstone_mcp.displays.table import _find_add_column_button, _find_column_headers
 from capstone_mcp.displays.workbook import (
     _find_add_page_button,
@@ -28,7 +28,6 @@ from capstone_mcp.runs import (
     SetRunVisibilityRequest,
 )
 from capstone_mcp.runs.manager import (
-    _rename_via_inline_editor,
     delete_run,
     rename_run,
     set_run_visibility,
@@ -112,15 +111,15 @@ def test_scope_timebase_cannot_modify_global_timestamp_control() -> None:
     app.snapshot.return_value = _snapshot([
         _control("Scope"), _control("Timestamp", "Edit", aid="global.time"),
     ])
-    with pytest.raises(AutomationError, match="unique scope control"):
-        _configure_scope(app, 1, "2 ms/div", None)
+    with pytest.raises(AutomationError, match="writable timebase"):
+        _write_settings(app, app.snapshot.return_value, _control("Scope"), ((("timebase",), "2 ms/div"),))
     app.control.assert_not_called()
 
 
 def test_collapsed_scope_trigger_is_not_verified_or_mutated() -> None:
     app = MagicMock()
     app.snapshot.return_value = _snapshot([_control("Scope")])
-    with pytest.raises(AutomationError, match="trigger drawer"):
+    with pytest.raises(AutomationError, match="identifiable Scope"):
         set_scope_trigger(app, SetScopeTriggerRequest(handle=1))
     app.control.assert_not_called()
 
@@ -141,13 +140,6 @@ def test_delta_does_not_guess_among_three_crosshair_coordinates() -> None:
     assert values[:6] == (None,) * 6
 
 
-def test_run_rename_separates_shortcuts_from_literal_name() -> None:
-    app, node = MagicMock(), MagicMock()
-    _rename_via_inline_editor(app, 1, node, "run +{a}^%")
-    app.type_text.assert_called_once_with("run +{a}^%")
-    assert [call.args[1] for call in app.keys.call_args_list] == ["{F2}", "^a", "{ENTER}"]
-
-
 def test_run_rename_rejects_multiline_before_snapshot() -> None:
     app = MagicMock()
     with pytest.raises(AutomationError, match="new_name"):
@@ -159,9 +151,9 @@ def test_delete_requires_explicit_identity_and_observes_removal() -> None:
     app = MagicMock()
     run = _control("시행 하나", "TreeItem")
     app.snapshot.side_effect = [_snapshot([run]), _snapshot([])]
-    result = delete_run(app, DeleteRunRequest(handle=1, run_name="시행 하나"))
-    assert result.verified
-    app.click.assert_called_once()
+    with pytest.raises(AutomationError, match="by name"):
+        delete_run(app, DeleteRunRequest(handle=1, run_name="시행 하나"))
+    app.click.assert_not_called()
 
 
 def test_visibility_does_not_fabricate_requested_state() -> None:
@@ -204,7 +196,7 @@ def test_clipboard_restore_preserves_newer_external_copy(monkeypatch: pytest.Mon
     clipboard = MagicMock()
     clipboard.GetClipboardSequenceNumber.return_value = 11
     monkeypatch.setattr(inspection, "win32clipboard", clipboard)
-    inspection._restore_clipboard({1: "original"}, expected_sequence=10)
+    inspection._restore_clipboard({1: "original"}, copied_sequence=10)
     clipboard.EmptyClipboard.assert_not_called()
     clipboard.CloseClipboard.assert_called_once()
 
@@ -215,7 +207,7 @@ def test_empty_clipboard_can_be_restored_without_touching_external_data(
     clipboard = MagicMock()
     clipboard.GetClipboardSequenceNumber.return_value = 10
     monkeypatch.setattr(inspection, "win32clipboard", clipboard)
-    inspection._restore_clipboard({}, expected_sequence=10)
+    inspection._restore_clipboard({}, copied_sequence=10)
     clipboard.EmptyClipboard.assert_called_once()
 
 
@@ -224,7 +216,7 @@ def test_unsupported_clipboard_handle_fails_before_copy(monkeypatch: pytest.Monk
     clipboard.EnumClipboardFormats.side_effect = [2, 0]
     clipboard.GetClipboardData.return_value = 12345
     monkeypatch.setattr(inspection, "win32clipboard", clipboard)
-    with pytest.raises(AutomationError, match="safely preserved"):
+    with pytest.raises(AutomationError, match="clipboard format"):
         inspection._backup_clipboard()
     clipboard.EmptyClipboard.assert_not_called()
     clipboard.CloseClipboard.assert_called_once()
@@ -250,14 +242,38 @@ def test_export_cleanup_uses_known_handle_and_current_close_ref(
     finder = MagicMock(return_value=close)
     monkeypatch.setattr(file_workflows, "_named_button", finder)
     file_workflows._close_export_dialog(app, events, 1, failing=True)
-    finder.assert_called_once_with(app, 1, "Close")
+    finder.assert_called_once_with(app, 1, "STR_CLOSE")
     assert app.act.call_args.args[0] == "fresh-close"
+
+
+def test_invalid_graph_payload_still_restores_owned_clipboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, events, clipboard = MagicMock(), MagicMock(), MagicMock()
+    app.windows.return_value = [_snapshot([]).window]
+    app.snapshot.return_value = _snapshot([_control("Display", "MenuItem")])
+    popup = _snapshot([_control("Copy Display", "MenuItem")])
+    events.__enter__.return_value = events
+    events.changes.until.side_effect = [popup, (b"invalid XML", 10)]
+    clipboard.GetClipboardSequenceNumber.return_value = 5
+    restore = MagicMock()
+    monkeypatch.setattr(inspection, "WindowEvents", MagicMock(return_value=events))
+    monkeypatch.setattr(inspection, "win32clipboard", clipboard)
+    monkeypatch.setattr(inspection, "win32gui", MagicMock())
+    monkeypatch.setattr(inspection, "win32process", MagicMock())
+    monkeypatch.setattr(inspection, "_backup_clipboard", lambda: ({1: "original"}, 5))
+    monkeypatch.setattr(inspection, "_restore_clipboard", restore)
+    monkeypatch.setattr(inspection, "release_menu_bar", MagicMock())
+    with pytest.raises(inspection.GraphStateError):
+        inspection.read_graph(app, 1)
+    restore.assert_called_once_with({1: "original"}, copied_sequence=10)
 
 
 def test_export_cleanup_failure_reports_original_error_and_unresolved_dialog() -> None:
     app, events = MagicMock(), MagicMock()
     app.windows.return_value = [_snapshot([]).window]
     app.snapshot.side_effect = AutomationError("blocked by child dialog")
+
     def fail_and_cleanup() -> None:
         try:
             msg = "export timed out"
@@ -276,26 +292,3 @@ def test_truncated_file_dialog_cannot_prove_unique_target() -> None:
     snapshot = _snapshot([_control("Save", "Button")]).model_copy(update={"truncated": True})
     with pytest.raises(AutomationError, match="truncated"):
         file_workflows._one(snapshot, lambda c: c.name == "Save")
-
-
-def test_invalid_graph_payload_still_restores_owned_clipboard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, events, clipboard = MagicMock(), MagicMock(), MagicMock()
-    app.windows.return_value = [_snapshot([]).window]
-    app.snapshot.return_value = _snapshot([_control("Display", "MenuItem")])
-    popup = _snapshot([_control("Copy Display", "MenuItem")])
-    events.__enter__.return_value = events
-    events.changes.until.side_effect = [popup, (b"invalid XML", 10)]
-    clipboard.GetClipboardSequenceNumber.return_value = 5
-    restore = MagicMock()
-    monkeypatch.setattr(inspection, "WindowEvents", MagicMock(return_value=events))
-    monkeypatch.setattr(inspection, "win32clipboard", clipboard)
-    monkeypatch.setattr(inspection, "win32gui", MagicMock())
-    monkeypatch.setattr(inspection, "win32process", MagicMock())
-    monkeypatch.setattr(inspection, "_backup_clipboard", lambda: {1: "original"})
-    monkeypatch.setattr(inspection, "_restore_clipboard", restore)
-    monkeypatch.setattr(inspection, "release_menu_bar", MagicMock())
-    with pytest.raises(inspection.GraphStateError):
-        inspection.read_graph(app, 1)
-    restore.assert_called_once_with({1: "original"}, expected_sequence=10)

@@ -2,9 +2,7 @@
 """Tool router for physical calculations, numerical fitting, and lab reports."""
 
 from collections.abc import Awaitable, Callable
-from contextlib import ExitStack
 from functools import partial
-from pathlib import Path
 from typing import Any, Literal
 
 import anyio
@@ -33,41 +31,9 @@ from capstone_mcp.reports import (
     generate_report,
     render_report,
 )
+from capstone_mcp.reports.output import write_report_file as _write_report_file
 
 type NativeCaller = Callable[..., Awaitable[Any]]
-
-
-def _write_report_file(
-    out_path: str,
-    format_type: str,
-    md_text: str | None,
-    html_text: str | None,
-) -> None:
-    p = Path(out_path)
-    if format_type == "html":
-        outputs = [(p, html_text or "")]
-    elif format_type == "both":
-        outputs = [(p, md_text or ""), (p.with_suffix(".html"), html_text or "")]
-    else:
-        outputs = [(p, md_text or "")]
-    if len({path for path, _ in outputs}) != len(outputs):
-        msg = "Markdown and HTML report destinations must be different."
-        raise ValueError(msg)
-    created: list[Path] = []
-    try:
-        with ExitStack() as stack:
-            streams = []
-            for path, text in outputs:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                stream = stack.enter_context(path.open("x", encoding="utf-8"))
-                created.append(path)
-                streams.append((stream, text))
-            for stream, text in streams:
-                _ = stream.write(text)
-    except OSError:
-        for path in created:
-            path.unlink(missing_ok=True)
-        raise
 
 
 def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]:
@@ -185,11 +151,13 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             openWorldHint=False,
         ),
     )
-    async def capstone_generate_lab_report(
+    async def capstone_generate_lab_report(  # noqa: PLR0913
         file_path_or_run: str,
         experiment_id: str = "generic",
         *,
         output_path: str | None = None,
+        run_id: str | None = None,
+        axes: tuple[str, str] | None = None,
         format: Literal["markdown", "html", "both"] = "markdown",  # noqa: A002
     ) -> GenerateLabReportResult:
         """Generate a formal physics laboratory report from experiment data.
@@ -201,11 +169,13 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
         generates ASCII plots, and renders publication-ready Markdown and HTML.
 
         Args:
-            file_path_or_run: Path to a .cap archive, CSV/JSON file, or JSON object.
+            file_path_or_run: .cap archive, CSV/JSON file, inline JSON, or 'sample'.
             experiment_id: Canonical experiment identifier ('photoelectric_effect',
                 'rlc_resonance', 'forced_harmonic_oscillation', 'adiabatic_gas',
                 'slit_diffraction', or 'generic').
-            output_path: Optional new path; existing report files are never overwritten.
+            output_path: Optional new path to save the report without overwriting files.
+            run_id: Saved run name or number for a .cap file with multiple runs.
+            axes: Explicit (x, y) series for linear regression from a saved .cap file.
             format: Output format ('markdown', 'html', or 'both').
 
         Returns:
@@ -213,9 +183,8 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
         """
         report = await anyio.to_thread.run_sync(
             partial(
-                generate_report,
-                file_path_or_run=file_path_or_run,
-                experiment_id=experiment_id,
+                generate_report, file_path_or_run, experiment_id,
+                run_id=run_id, axes=axes,
             ),
         )
         rendered = await anyio.to_thread.run_sync(

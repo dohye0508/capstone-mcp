@@ -18,6 +18,7 @@ from capstone_mcp.file_events import FileEvents
 from capstone_mcp.file_workflow_models import FileWorkflowLabels
 from capstone_mcp.models import Action, Control, Model, Snapshot
 from capstone_mcp.ui_events import WindowEvents
+from capstone_mcp.ui_strings import label_matches
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -52,6 +53,41 @@ class OpenedExperiment(Model):
     document_title_before: str
     document_title_after: str
     discarded_unsaved_changes: bool
+
+
+class _ResourceLabel(str):
+    """Internal marker for a default installed-resource label, never user input."""
+
+    __slots__ = ()
+
+
+_DEFAULT_CLOSE: Final = _ResourceLabel("STR_CLOSE")
+_DEFAULT_FILE_MENU: Final = _ResourceLabel("STR_MENU_FILE")
+
+
+def _workflow_labels(provided: FileWorkflowLabels | None) -> FileWorkflowLabels:
+    labels = provided or FileWorkflowLabels()
+    keys = {
+        "file_menu": "STR_MENU_FILE",
+        "export_format": "STR_EXPORT_DATA_EXPORT_FORMAT_BUTTON_LABEL",
+        "csv_format": "STR_EXPORT_DATA_EXPORT_FORMAT_CSV_MENU_ITEM",
+        "alignment_options": "STR_EXPORT_DATA_DIALOG_OPTIONS",
+        "align_by_index": "STR_TABLE_DATA_ALIGNMENT_MODE_INDEX",
+        "select_all": "STR_EXPORT_DATA_DIALOG_SELECT_ALL",
+        "export_to_file": "STR_EXPORT_DATA_DIALOG_EXPORT",
+        "close": "STR_CLOSE",
+    }
+    return labels.model_copy(update={
+        field: _ResourceLabel(key) for field, key in keys.items()
+        if field not in labels.model_fields_set
+    })
+
+
+def _matches_label(actual: str, expected: str) -> bool:
+    return (
+        label_matches(actual, expected)
+        if isinstance(expected, _ResourceLabel) else actual == expected
+    )
 
 
 def _one(snapshot: Snapshot, predicate: Callable[[Control], bool]) -> Control:
@@ -95,18 +131,19 @@ def _new_snapshot(
 def _named_button(app: Capstone, handle: int, name: str) -> Control:
     return _one(
         app.snapshot(handle, 16, 10_000),
-        lambda c: c.control_type == "Button" and c.name == name,
+        lambda c: c.control_type == "Button" and _matches_label(c.name, name),
     )
 
 
 def _open_command(
     app: Capstone, events: WindowEvents, handle: int, command_id: str,
-    *, file_menu_label: str = "File",
+    *, file_menu_label: str = _DEFAULT_FILE_MENU,
 ) -> set[int]:
     before = {w.handle for w in app.windows()}
     file_menu = _one(
         app.snapshot(handle, 16, 10_000),
-        lambda c: c.control_type == "MenuItem" and c.name == file_menu_label,
+        lambda c: c.control_type == "MenuItem"
+        and _matches_label(c.name, file_menu_label),
     )
     _ = app.act(file_menu.ref, Action.INVOKE)
     try:
@@ -136,13 +173,14 @@ def _choose_export_option(
         lambda: _new_snapshot(
             app, before,
             lambda s: any(
-                c.control_type == "MenuItem" and c.name == option for c in s.controls
+                c.control_type == "MenuItem" and _matches_label(c.name, option)
+                for c in s.controls
             ),
         ),
         TRANSITION_SECONDS,
     )
     control = _one(
-        menu, lambda c: c.control_type == "MenuItem" and c.name == option,
+        menu, lambda c: c.control_type == "MenuItem" and _matches_label(c.name, option),
     )
     menu_handle = menu.window.handle
     _ = app.act(control.ref, Action.INVOKE)
@@ -273,7 +311,7 @@ def save_experiment(
     workflow_labels: FileWorkflowLabels | None = None,
 ) -> FileArtifact:
     """Save As to a new explicit path and verify the resulting Capstone archive."""
-    labels = workflow_labels or FileWorkflowLabels()
+    labels = _workflow_labels(workflow_labels)
     path, before, pid = _prepare(
         app, handle, destination, ".cap", allow_foreground=allow_foreground,
     )
@@ -294,7 +332,7 @@ def export_data(
     workflow_labels: FileWorkflowLabels | None = None,
 ) -> FileArtifact:
     """Select all data and export by index as CSV without saving the .cap document."""
-    labels = workflow_labels or FileWorkflowLabels()
+    labels = _workflow_labels(workflow_labels)
     path, before, pid = _prepare(
         app, handle, destination, ".csv", allow_foreground=allow_foreground,
     )
@@ -343,7 +381,7 @@ def export_data(
 
 def _close_export_dialog(
     app: Capstone, events: WindowEvents, handle: int, *, failing: bool,
-    close_label: str = "Close",
+    close_label: str = _DEFAULT_CLOSE,
 ) -> None:
     """Close only the export dialog observed by this workflow, if still present."""
     original = sys.exception()
@@ -441,7 +479,7 @@ def open_experiment(  # noqa: PLR0913
     path, before, pid = _open_preconditions(
         app, handle, source, discard_unsaved=discard_unsaved,
     )
-    labels = workflow_labels or FileWorkflowLabels()
+    labels = _workflow_labels(workflow_labels)
     def is_field(control: Control) -> bool:
         return _is_open_field(control, labels.open_filename_id)
 

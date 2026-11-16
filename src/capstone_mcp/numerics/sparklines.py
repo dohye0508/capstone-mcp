@@ -1,12 +1,54 @@
 # Copyright 2026 Capstone MCP contributors.
 """Clean ASCII sparklines and standalone SVG chart generation."""
 
+from __future__ import annotations
+
+import html
 import math
-from collections.abc import Sequence
-from typing import Final
-from xml.sax.saxutils import escape
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
 
 MIN_FIT_POINTS: Final[int] = 2
+MAX_SVG_POINTS: Final[int] = 1000
+
+
+def finite_plot_points(
+    x: Sequence[float], y: Sequence[float],
+) -> Iterator[tuple[float, float]]:
+    """Yield finite pairs without shifting one series across missing rows."""
+    return (
+        (px, py)
+        for px, py in zip(x, y, strict=False)
+        if math.isfinite(px) and math.isfinite(py)
+    )
+
+
+def plot_bounds(
+    x: Sequence[float], y: Sequence[float],
+) -> tuple[int, float, float, float, float] | None:
+    """Count finite points and determine axis bounds without retaining points."""
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
+    count = 0
+    for px, py in finite_plot_points(x, y):
+        count += 1
+        min_x, max_x = min(px, min_x), max(px, max_x)
+        min_y, max_y = min(py, min_y), max(py, max_y)
+    if not count:
+        return None
+    return count, min_x, max_x, min_y, max_y
+
+
+def sampled_svg_points(
+    x: Sequence[float], y: Sequence[float], count: int,
+) -> Iterator[tuple[float, float]]:
+    """Sample finite points in order, preserving endpoints and bounding SVG size."""
+    step = max(1, math.ceil((count - 1) / (MAX_SVG_POINTS - 1)))
+    for index, point in enumerate(finite_plot_points(x, y)):
+        if index % step == 0 or index == count - 1:
+            yield point
 
 
 def _validate_plot_values(x: Sequence[float], y: Sequence[float]) -> None:
@@ -44,31 +86,24 @@ def render_ascii_sparkline(
         Formatted ASCII plot string.
     """
     _validate_plot_values(x, y)
-    pairs = [
-        (float(xi), float(yi))
-        for xi, yi in zip(x, y, strict=False)
-        if not (math.isnan(xi) or math.isnan(yi))
-    ]
-    if not pairs:
+    if width < 1 or height < 1:
+        msg = "ASCII plot dimensions must be positive."
+        raise ValueError(msg)
+    bounds = plot_bounds(x, y)
+    if bounds is None:
         return "[Empty data series for ASCII plot]"
 
-    min_x = min(p[0] for p in pairs)
-    max_x = max(p[0] for p in pairs)
-    min_y = min(p[1] for p in pairs)
-    max_y = max(p[1] for p in pairs)
+    _, min_x, max_x, min_y, max_y = bounds
 
     span_x = max_x - min_x if max_x > min_x else 1.0
     span_y = max_y - min_y if max_y > min_y else 1.0
 
     _validate_plot_spans(span_x, span_y)
-    if width < 1 or height < 1:
-        msg = "ASCII plot dimensions must be positive."
-        raise ValueError(msg)
 
     # Grid init
     grid = [[" " for _ in range(width)] for _ in range(height)]
 
-    for xi, yi in pairs:
+    for xi, yi in finite_plot_points(x, y):
         col = int(((xi - min_x) / span_x) * (width - 1))
         row = int(((max_y - yi) / span_y) * (height - 1))
         col = max(0, min(width - 1, col))
@@ -113,13 +148,13 @@ def render_svg_sparkline(
         Valid SVG XML markup string.
     """
     _validate_plot_values(x, y)
-    pairs = [
-        (float(xi), float(yi))
-        for xi, yi in zip(x, y, strict=False)
-        if not (math.isnan(xi) or math.isnan(yi))
-    ]
-    if not pairs:
-        return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}"><text x="20" y="30">No data</text></svg>'
+    fit_x = fit_x if fit_x is not None else ()
+    fit_y = fit_y if fit_y is not None else ()
+    _validate_plot_values(fit_x, fit_y)
+    no_data = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}"><text x="20" y="30">No data</text></svg>'
+    bounds = plot_bounds(x, y)
+    if bounds is None:
+        return no_data
 
     pad_left = 60
     pad_right = 30
@@ -129,21 +164,16 @@ def render_svg_sparkline(
     plot_w = width - pad_left - pad_right
     plot_h = height - pad_top - pad_bottom
 
-    if (fit_x is None) != (fit_y is None):
-        msg = "Both fitted coordinate arrays must be supplied."
-        raise ValueError(msg)
-    if fit_x is not None and fit_y is not None:
-        _validate_plot_values(fit_x, fit_y)
-
-    all_x = [p[0] for p in pairs] + (list(fit_x) if fit_x else [])
-    all_y = [p[1] for p in pairs] + (list(fit_y) if fit_y else [])
-
-    min_x, max_x = min(all_x), max(all_x)
-    min_y, max_y = min(all_y), max(all_y)
+    count, min_x, max_x, min_y, max_y = bounds
+    fit_bounds = plot_bounds(fit_x, fit_y)
+    fit_count = 0
+    if fit_bounds and fit_bounds[0] >= MIN_FIT_POINTS:
+        fit_count, fit_min_x, fit_max_x, fit_min_y, fit_max_y = fit_bounds
+        min_x, max_x = min(min_x, fit_min_x), max(max_x, fit_max_x)
+        min_y, max_y = min(min_y, fit_min_y), max(max_y, fit_max_y)
 
     span_x = max_x - min_x if max_x > min_x else 1.0
     span_y = max_y - min_y if max_y > min_y else 1.0
-
     _validate_plot_spans(span_x, span_y)
 
     def to_svg(px: float, py: float) -> tuple[float, float]:
@@ -157,7 +187,7 @@ def render_svg_sparkline(
 
     if title:
         elements.append(
-            f'<text x="{pad_left}" y="25" font-family="sans-serif" font-size="14" font-weight="bold" fill="#1e293b">{escape(title)}</text>',
+            f'<text x="{pad_left}" y="25" font-family="sans-serif" font-size="14" font-weight="bold" fill="#1e293b">{html.escape(title)}</text>',
         )
 
     # Axes
@@ -169,9 +199,9 @@ def render_svg_sparkline(
     )
 
     # Fitted line if present
-    if fit_x and fit_y and len(fit_x) == len(fit_y) and len(fit_x) >= MIN_FIT_POINTS:
+    if fit_count:
         path_data: list[str] = []
-        for i, (fx, fy) in enumerate(zip(fit_x, fit_y, strict=True)):
+        for i, (fx, fy) in enumerate(sampled_svg_points(fit_x, fit_y, fit_count)):
             sx, sy = to_svg(fx, fy)
             cmd = "M" if i == 0 else "L"
             path_data.append(f"{cmd} {sx:.1f} {sy:.1f}")
@@ -180,7 +210,7 @@ def render_svg_sparkline(
         )
 
     # Scatter points
-    for xi, yi in pairs:
+    for xi, yi in sampled_svg_points(x, y, count):
         sx, sy = to_svg(xi, yi)
         elements.append(
             f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="3.5" fill="#2563eb" opacity="0.85"/>',

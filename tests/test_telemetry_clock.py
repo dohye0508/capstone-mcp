@@ -26,7 +26,7 @@ def test_domain_change_rejected_before_append(change: dict[str, str]) -> None:
     other = TelemetryClock.model_validate({**CLOCK.model_dump(), **change})
     with pytest.raises(ValueError, match="clock domain"):
         buffer.push_sample("x", 2, 200, clock=other)
-    assert buffer.get_snapshot("x").model_dump() == {"clock": CLOCK.model_dump(), "samples": [(100.0, 1.0)]}
+    assert buffer.get_snapshot("x").model_dump() == {"clock": CLOCK.model_dump(), "first_timestamp": 100.0, "first_sample_index": 0, "samples": [(100.0, 1.0)]}
 
 
 def test_automatic_host_timestamps_cannot_mix_with_device_times() -> None:

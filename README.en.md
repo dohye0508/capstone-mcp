@@ -157,7 +157,7 @@ Choose sensor names, supported rates, dataset runs, and units based on the actua
 Live configuration/current-value queries and repeated recording require a debugging port. Save your work and close Capstone, then launch it from PowerShell:
 
 ```powershell
-$env:QTWEBENGINE_REMOTE_DEBUGGING = "127.0.0.1:9223"
+$env:QTWEBENGINE_REMOTE_DEBUGGING = "127.0.0.1:9222"
 Start-Process "C:/Program Files/PASCO scientific/Capstone/Capstone.exe"
 Remove-Item Env:QTWEBENGINE_REMOTE_DEBUGGING
 ```

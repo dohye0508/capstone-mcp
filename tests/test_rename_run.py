@@ -50,24 +50,28 @@ def test_rename_run_direct_value_pattern_success() -> None:
     app.windows = MagicMock(return_value=[mock_window])
 
     initial_treeitem = Control(
-        ref="ref:run1", parent=None, name="Run #1",
+        ref="ref:run1", parent="sensor-tree", name="Run #1",
         control_type="TreeItem", automation_id="run_1", enabled=True,
         visible=True, bounds=Bounds(left=10, top=10, right=100, bottom=30),
     )
     renamed_treeitem = Control(
-        ref="ref:run1", parent=None, name="1k Ohm Trial",
+        ref="ref:run1", parent="sensor-tree", name="1k Ohm Trial",
         control_type="TreeItem", automation_id="run_1", enabled=True,
         visible=True, bounds=Bounds(left=10, top=10, right=100, bottom=30),
     )
 
     call_count = 0
+    tree = initial_treeitem.model_copy(update={
+        "ref": "sensor-tree", "parent": None, "control_type": "Tree", "name": "",
+        "automation_id": "experimentDataSensors",
+    })
 
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
         nonlocal call_count
         call_count += 1
         return Snapshot(
             window=mock_window,
-            controls=[renamed_treeitem if call_count > 1 else initial_treeitem],
+            controls=[tree, renamed_treeitem if call_count > 1 else initial_treeitem],
             truncated=False,
         )
 
@@ -84,3 +88,65 @@ def test_rename_run_direct_value_pattern_success() -> None:
     assert res.new_name == "1k Ohm Trial"
     assert res.verified is True
     mock_node.iface_value.SetValue.assert_called_once_with("1k Ohm Trial")
+
+
+def test_rename_routes_literal_name_to_confirmed_inline_editor() -> None:
+    app = Capstone()
+    bounds = Bounds(left=0, top=0, right=200, bottom=100)
+    window = Window(handle=100, title="Capstone", process_id=1, bounds=bounds)
+    tree = Control(
+        ref="tree", parent=None, name="", control_type="Tree",
+        automation_id="experimentDataSensors", enabled=True, visible=True, bounds=bounds,
+    )
+    row = tree.model_copy(update={
+        "ref": "run", "parent": tree.ref, "name": "Run #1", "control_type": "TreeItem",
+    })
+    field = row.model_copy(update={"ref": "edit", "control_type": "Edit"})
+    new_name = "실험 ^a + {ENTER}"
+    renamed = row.model_copy(update={"name": new_name})
+    app.snapshot = MagicMock(side_effect=[
+        Snapshot(window=window, controls=[tree, *items], truncated=False)
+        for items in ([row], [row, field], [renamed])
+    ])
+    run_node = MagicMock()
+    del run_node.iface_value
+    editor = MagicMock()
+    editor.iface_value.CurrentValue = "Run #1"
+    editor.iface_value.SetValue.side_effect = lambda name: setattr(
+        editor.iface_value, "CurrentValue", name,
+    )
+    app.control = MagicMock(side_effect={"run": run_node, "edit": editor}.__getitem__)
+    app.focus_window = MagicMock()
+    app.keys = MagicMock()
+    app.require_input_ready = MagicMock()
+    app.require_foreground = MagicMock()
+
+    result = rename_run(app, RenameRunRequest(old_name="Run #1", new_name=new_name))
+
+    assert result.verified
+    app.keys.assert_called_once_with(100, "{F2}", allow_foreground=True)
+    editor.iface_value.SetValue.assert_called_once_with(new_name)
+    assert editor.type_keys.call_args.args == ("{ENTER}",)
+
+
+def test_rename_refuses_repeated_summary_rows_before_writing() -> None:
+    app = Capstone()
+    bounds = Bounds(left=0, top=0, right=200, bottom=100)
+    window = Window(handle=100, title="Capstone", process_id=1, bounds=bounds)
+    tree = Control(
+        ref="tree", parent=None, name="", control_type="Tree",
+        automation_id="experimentDataSensors", enabled=True, visible=True, bounds=bounds,
+    )
+    row = tree.model_copy(update={
+        "ref": "run", "parent": tree.ref, "name": "Run #1", "control_type": "TreeItem",
+    })
+    app.snapshot = MagicMock(return_value=Snapshot(
+        window=window, controls=[tree, row, row.model_copy(update={"ref": "run-other"})],
+        truncated=False,
+    ))
+    app.control = MagicMock()
+
+    with pytest.raises(AutomationError, match="Multiple rows"):
+        _ = rename_run(app, RenameRunRequest(old_name="Run #1", new_name="Trial A"))
+
+    app.control.assert_not_called()

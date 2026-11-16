@@ -15,6 +15,7 @@ class ElementInfo:
     runtime_id: list[int]
 
 class ValuePattern:
+    CurrentIsReadOnly: bool
     CurrentValue: str
     def SetValue(self, value: str) -> None: ...
 

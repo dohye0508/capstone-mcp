@@ -57,8 +57,13 @@ def _make_mock_app(controls: list[Control]) -> MagicMock:
 
 def test_rename_run_via_unified_manager() -> None:
     # Given: Data Summary has Run #1
-    run_ctrl = _make_control(ref="ref:run1", name="Run #1")
-    renamed_ctrl = _make_control(ref="ref:run1", name="Baseline Run")
+    tree = _make_control("tree", "", "Tree").model_copy(
+        update={"automation_id": "experimentDataSensors"},
+    )
+    run_ctrl = _make_control(ref="ref:run1", name="Run #1").model_copy(
+        update={"parent": tree.ref},
+    )
+    renamed_ctrl = run_ctrl.model_copy(update={"name": "Baseline Run"})
     call_count = 0
 
     def mock_snapshot(*_args: object, **_kwargs: object) -> Snapshot:
@@ -71,7 +76,7 @@ def test_rename_run_via_unified_manager() -> None:
                 process_id=1,
                 bounds=Bounds(left=0, top=0, right=800, bottom=600),
             ),
-            controls=[renamed_ctrl if call_count > 1 else run_ctrl],
+            controls=[tree, renamed_ctrl if call_count > 1 else run_ctrl],
             truncated=False,
         )
 
@@ -98,23 +103,32 @@ def test_rename_run_via_unified_manager() -> None:
 
 
 def test_delete_run_via_unified_manager() -> None:
-    # Given: Data Summary has Run #1 and Run #2
-    run1 = _make_control(ref="ref:1", name="Run #1")
-    run2 = _make_control(ref="ref:2", name="Run #2")
-    app = _make_mock_app([run1, run2])
+    tree = _make_control("tree", "", "Tree").model_copy(
+        update={"automation_id": "experimentDataSensors"},
+    )
+    button = _make_control("button", "Delete Last Run", "Button").model_copy(
+        update={"automation_id": "Workbook.DeleteRunButton"},
+    )
+    run1 = _make_control("ref:1", "Run #1").model_copy(update={"parent": tree.ref})
+    run2 = _make_control("ref:2", "Run #2").model_copy(update={"parent": tree.ref})
+    app = _make_mock_app([tree, button, run1, run2])
+    before = app.snapshot.return_value
+    app.snapshot.side_effect = [
+        before, before.model_copy(update={"controls": [tree, button, run1]}),
+    ]
 
     # When: delete last run
     result = manage_run(
         app,
         RunRequest(
             action=RunAction.DELETE,
-            delete=DeleteRunRequest(run_name="Run #2"),
+            delete=DeleteRunRequest(run_name="last_run"),
         ),
     )
 
     # Then:
     assert result.delete is not None
-    assert result.delete.verified is False
+    assert result.delete.verified is True
     assert result.delete.deleted_run == "Run #2"
 
 

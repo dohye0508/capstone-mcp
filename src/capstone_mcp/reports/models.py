@@ -74,7 +74,8 @@ class LabReport(Model):
     additional_regressions: list[RegressionSummary] = Field(default_factory=list)
     error_analysis: list[ErrorAnalysisRow] = Field(default_factory=list)
     ascii_plot: str = ""
-    raw_data_points: dict[str, list[float]] = Field(default_factory=dict)
+    raw_data_points: dict[str, list[float | None]] = Field(default_factory=dict)
+    plotted_data_points: dict[str, list[float | None]] | None = None
     discussion_questions: list[str] = Field(default_factory=list)
     conclusion: str = ""
 

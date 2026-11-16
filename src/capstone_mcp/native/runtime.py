@@ -299,7 +299,7 @@ class NativeDesktop:
                         handle=r.handle,
                         mode=r.mode,
                         graph_name=r.target,
-                        offset=r.point,
+                        offset=r.fit_offset,
                         allow_foreground=r.allow_foreground,
                     ),
                 ),

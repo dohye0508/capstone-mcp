@@ -122,3 +122,29 @@ async def test_public_router_forwards_observed_mapping(operation: str, tmp_path:
     await tools[f"capstone_{operation}"](1, str(path), workflow_labels=LABELS)
     assert native.call_args.args[0].workflow_labels == LABELS
     assert native.call_args.kwargs["mutates"]
+
+
+def test_partial_label_override_keeps_resource_defaults_across_ipc(monkeypatch: pytest.MonkeyPatch) -> None:
+    provided = FileWorkflowLabels(filename_id="custom-field", close="Close")
+    request = NativeRequest(operation="save_experiment", workflow_labels=provided)
+    decoded = NativeRequest.model_validate_json(request.model_dump_json())
+    assert decoded.workflow_labels is not None
+    assert decoded.workflow_labels.model_fields_set == {"filename_id", "close"}
+    resolved = workflow._workflow_labels(decoded.workflow_labels)
+    match = Mock(return_value=True)
+    monkeypatch.setattr(workflow, "label_matches", match)
+    assert workflow._matches_label("Datei", resolved.file_menu)
+    match.assert_called_once_with("Datei", "STR_MENU_FILE")
+    match.reset_mock()
+    assert not workflow._matches_label("Schließen", resolved.close)
+    match.assert_not_called()
+
+
+
+def test_omitted_close_retains_catalog_after_partial_override_json() -> None:
+    request = NativeRequest(operation="save_experiment", workflow_labels=FileWorkflowLabels(file_menu="Observed File"))
+    decoded = NativeRequest.model_validate_json(request.model_dump_json())
+    resolved = workflow._workflow_labels(decoded.workflow_labels)
+    assert isinstance(resolved.close, workflow._ResourceLabel)
+    assert resolved.close == "STR_CLOSE"
+    assert not isinstance(resolved.file_menu, workflow._ResourceLabel)

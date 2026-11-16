@@ -8,8 +8,8 @@ import pytest
 from capstone_mcp.capfiles import read_cap_file
 from capstone_mcp.csv_data import CsvDataError
 from capstone_mcp.data_sources.adapters.capfile import (
-    read_capfile_all_series,
     read_capfile_series,
+    read_saved_run_data,
 )
 from capstone_mcp.data_sources.adapters.csv_file import (
     read_csv_all_columns,
@@ -43,7 +43,7 @@ def test_cap_numeric_range_failure_in_all_adapter_paths(tmp_path: Path, value: s
     path = tmp_path / "bounds.cap"
     _write_cap(path, xml=_xml(1), payload=_payload([value]))
     with pytest.raises(ValueError, match="floating-point range"):
-        read_capfile_all_series(path)
+        read_saved_run_data(path, run_id=None, axes=None)
     for x_name in ("@independent", "Observed Value"):
         with pytest.raises(ValueError, match="floating-point range"):
             read_capfile_series(path, x_name, "Observed Value")
@@ -55,4 +55,5 @@ def test_representable_subnormal_zero_and_text_remain_supported(tmp_path: Path) 
     assert read_csv_all_columns(csv_path) == {"Force": [5e-324, -0.0]}
     cap_path = tmp_path / "finite.cap"
     _write_cap(cap_path, xml=_xml(2), payload=_payload(["5e-324", "-0"]))
-    assert read_capfile_all_series(cap_path)[0] == {"Set": [5e-324, -0.0]}
+    saved = read_saved_run_data(cap_path, run_id=None, axes=None)
+    assert saved.series["Observed Value"].values == [5e-324, -0.0]

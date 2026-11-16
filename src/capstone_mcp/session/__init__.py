@@ -84,11 +84,12 @@ class UnifiedSessionManager:
         unit_type: int = 0,
         port: int | None = None,
     ) -> float:
-        """Poll instantaneous measurement value over CDP WebSocket (< 10 ms)."""
+        """Read a current value; retain history for this port and default units."""
         val = self._cdp_client.read_live_measurement(
             measurement_euid, unit_type, port,
         )
-        self._telemetry.push_sample(measurement_euid, val)
+        if unit_type == 0 and port in (None, self.debug_port):
+            self._telemetry.push_sample(measurement_euid, val)
         return val
 
     def evaluate_stop_condition(

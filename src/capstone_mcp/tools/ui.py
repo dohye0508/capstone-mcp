@@ -31,14 +31,22 @@ WINDOWS: Final = TypeAdapter(list[Window])
 TEXT: Final = TypeAdapter(str)
 
 
+def _require_foreground(allowed: bool) -> None:  # noqa: FBT001
+    if not allowed:
+        msg = "Physical input or focus movement requires allow_foreground=true."
+        raise ValueError(msg)
+
+
 async def capstone_action(
     native: NativeCaller,
     ref: str,
     action: Action,
     *,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
     """Activate by click (invoke), or use UIA toggle/select/expand/collapse/focus."""
+    if action in (Action.INVOKE, Action.FOCUS):
+        _require_foreground(allow_foreground)
     return Result.model_validate(
         await native(
             NativeRequest(
@@ -85,9 +93,10 @@ async def capstone_click(  # noqa: PLR0913
     button: Button = Button.LEFT,
     *,
     double: bool = False,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
-    """Click window-relative pixels; foreground input is enabled by default."""
+    """Click window-relative pixels with explicit foreground permission."""
+    _require_foreground(allow_foreground)
     return Result.model_validate(
         await native(
             NativeRequest(
@@ -109,9 +118,10 @@ async def capstone_drag(
     start: Point,
     end: Point,
     *,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
     """Drag between window-relative pixels; hard timeout leaves outcome uncertain."""
+    _require_foreground(allow_foreground)
     return Result.model_validate(
         await native(
             NativeRequest(
@@ -132,9 +142,10 @@ async def capstone_scroll(
     point: Point,
     notches: int,
     *,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
     """Scroll at window-relative pixels; positive notches scroll upward."""
+    _require_foreground(allow_foreground)
     return Result.model_validate(
         await native(
             NativeRequest(
@@ -154,9 +165,10 @@ async def capstone_keys(
     handle: int,
     keys: str,
     *,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
     """Send pywinauto key syntax: ^o, {ESC}, {ENTER}, %{F4}. Changes focus."""
+    _require_foreground(allow_foreground)
     return Result.model_validate(
         await native(
             NativeRequest(
@@ -175,9 +187,10 @@ async def capstone_type_text(
     handle: int,
     text: str,
     *,
-    allow_foreground: bool = True,
+    allow_foreground: bool = False,
 ) -> Result:
     """Type literal Unicode text in the focused field, escaping shortcut syntax."""
+    _require_foreground(allow_foreground)
     escaped = "".join(
         "{" + char + "}" if char in "+^%~(){}" else char for char in text
     )
@@ -207,16 +220,6 @@ async def _dispatch_mouse_ui(  # noqa: PLR0913, PLR0917
     notches: int,
     allow_foreground: bool,
 ) -> Result:
-    if action in ("click", "double_click"):
-        target_point = point or Point(x=0, y=0)
-        return await capstone_click(
-            native,
-            handle,
-            target_point,
-            button=button,
-            double=(action == "double_click"),
-            allow_foreground=allow_foreground,
-        )
     if action == "drag":
         if start is None or end is None:
             msg = "Action 'drag' requires both start and end points."
@@ -224,9 +227,20 @@ async def _dispatch_mouse_ui(  # noqa: PLR0913, PLR0917
         return await capstone_drag(
             native, handle, start, end, allow_foreground=allow_foreground,
         )
-    target_point = point or Point(x=0, y=0)
+    if point is None:
+        msg = f"Action '{action}' requires an explicit point."
+        raise ValueError(msg)
+    if action in ("click", "double_click"):
+        return await capstone_click(
+            native,
+            handle,
+            point,
+            button=button,
+            double=(action == "double_click"),
+            allow_foreground=allow_foreground,
+        )
     return await capstone_scroll(
-        native, handle, target_point, notches, allow_foreground=allow_foreground,
+        native, handle, point, notches, allow_foreground=allow_foreground,
     )
 
 
@@ -410,7 +424,7 @@ def register_ui_tools(
         ] = None,
         point: Annotated[
             Point | None,
-            Field(description="Target coordinate for click or scroll."),
+            Field(description="Required coordinate for click, double_click, or scroll."),
         ] = None,
         start: Annotated[
             Point | None,
@@ -452,7 +466,7 @@ def register_ui_tools(
         allow_foreground: Annotated[
             bool,
             Field(description="Whether to bring window to foreground for physical input."),
-        ] = True,
+        ] = False,
     ) -> Result:
         """Consolidated UI interaction escape hatch for unmodeled modals and controls.
 
@@ -466,6 +480,8 @@ def register_ui_tools(
           on control ref
         - read_value: Read current text value of control ref (returned in Result.detail)
         - set_value: Set current text value of control ref
+
+        Set allow_foreground=true to authorize mouse, keyboard, invoke, or focus.
         """
         if action in ("click", "double_click", "drag", "scroll"):
             return await _dispatch_mouse_ui(

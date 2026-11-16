@@ -9,6 +9,7 @@ import pytest
 
 from capstone_mcp import bridge
 from capstone_mcp.bridge import NativeInventory
+from capstone_mcp.session import UnifiedSessionManager
 from capstone_mcp.session.cdp_client import SessionCdpClient
 from capstone_mcp.session.lifecycle import SessionLifecycleManager
 from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
@@ -197,3 +198,31 @@ def test_condition_watcher_evaluation_and_monitoring() -> None:
     assert trigger.triggered is True
     assert trigger.current_value == 5.5
     assert halted is True
+
+
+def test_telemetry_buffer_evicts_least_recently_sampled_measurement() -> None:
+    buf = TelemetryBuffer(capacity=2)
+    for index in range(256):
+        buf.push_sample(f"measurement-{index}", float(index))
+
+    buf.push_sample("measurement-0", -1.0)
+    buf.push_sample("new-measurement", 500.0)
+
+    assert buf.get_latest("measurement-0") == -1.0
+    assert buf.get_samples("measurement-1") == []
+    assert buf.get_latest("new-measurement") == 500.0
+
+
+def test_telemetry_history_does_not_mix_ports_or_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = UnifiedSessionManager(debug_port=9230)
+
+    def read(port: int, _euid: str, unit: int) -> float:
+        return float(port + unit)
+
+    monkeypatch.setattr(bridge, "read_measurement", read)
+    assert session.read_live_measurement("x") == 9230.0
+    assert session.read_live_measurement("x", port=9234) == 9234.0
+    assert session.read_live_measurement("x", unit_type=1) == 9231.0
+    assert [v for _, v in session.telemetry.get_samples("x")] == [9230.0]

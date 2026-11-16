@@ -24,7 +24,7 @@ async def test_real_stdio_guide_and_archive_page_without_capstone(tmp_path: Path
     bad.write_bytes(b"not a zip")
     params = StdioServerParameters(
         command=sys.executable, args=["-m", "capstone_mcp.server"],
-        cwd=str(_REPO_ROOT),
+        cwd=str(_REPO_ROOT), env={"PYTHONPATH": str(_REPO_ROOT / "src")},
     )
     with anyio.fail_after(45):
         async with (

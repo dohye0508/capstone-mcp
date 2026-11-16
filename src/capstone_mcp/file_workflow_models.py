@@ -2,7 +2,7 @@
 """Explicit labels and IDs observed in native file workflow controls."""
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from capstone_mcp.models import Model
 
@@ -23,3 +23,8 @@ class FileWorkflowLabels(Model):
     select_all: ObservedLabel = "Select All"
     export_to_file: ObservedLabel = "Export to file..."
     close: ObservedLabel = "Close"
+
+    @model_serializer
+    def serialize_overrides(self) -> dict[str, str]:
+        """Keep omitted resource defaults distinguishable across worker IPC."""
+        return {field: getattr(self, field) for field in self.model_fields_set}

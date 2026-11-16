@@ -18,7 +18,7 @@ def test_initial_instructions_fit_the_observed_client_limit() -> None:
 def test_every_guide_topic_is_announced_in_the_initial_instructions() -> None:
     for topic in GUIDE:
         assert topic in INSTRUCTIONS
-    assert "capstone_guide(topic)" in INSTRUCTIONS
+    assert "capstone://guide" in INSTRUCTIONS
 
 
 def test_single_topic_returns_only_that_section() -> None:

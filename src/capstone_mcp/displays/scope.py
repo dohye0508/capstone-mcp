@@ -3,16 +3,17 @@
 
 from __future__ import annotations
 
+import math
 import re
-from typing import TYPE_CHECKING
+from _ctypes import COMError
+from typing import TYPE_CHECKING, Final
+
+from pywinauto.uia_defines import NoPatternInterfaceError
 
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.displays.harness import (
     double_click_control,
-    find_display_container,
     find_palette_item,
-    is_within_bounds,
-    set_control_value,
 )
 from capstone_mcp.displays.models import (
     FFT_PALETTE_SUFFIX,
@@ -31,50 +32,125 @@ from capstone_mcp.displays.models import (
 )
 
 if TYPE_CHECKING:
-    from capstone_mcp.models import Control
+    from capstone_mcp.models import Control, Snapshot
+
+_PEAK_NUMBER: Final = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?"
+_PEAK_FREQUENCY: Final = rf"({_PEAK_NUMBER})\s*(kHz|Hz)?"
+_PEAK_AMPLITUDE: Final = rf"({_PEAK_NUMBER})\s*(mV|V|dB)?"
+_WIDGET_TITLES: Final = {
+    "Scope": re.compile(r"(?:scope|oscilloscope)(?:\s*#?\d+)?", re.IGNORECASE),
+    "FFT": re.compile(r"(?:fft|spectrum analyzer)(?:\s*#?\d+)?", re.IGNORECASE),
+}
+_VALUE_ERRORS = (AttributeError, COMError, NoPatternInterfaceError, RuntimeError)
+type Settings = tuple[tuple[tuple[str, ...], str | None], ...]
 
 
-def _configure_scope(
-    app: Capstone,
-    handle: int,
-    timebase_str: str | None,
-    channel: str | None,
-) -> None:
-    for value, keywords in (
-        (timebase_str, ("timebase", "sec/div")),
-        (channel, ("channel", "y-axis", "measurement")),
-    ):
-        if value is not None:
-            _configure_display_field(app, handle, "scope", None, keywords, value)
-
-
-def _configure_display_field(  # noqa: PLR0913, PLR0917
-    app: Capstone,
-    handle: int,
-    kind: str,
-    display_name: str | None,
-    keywords: tuple[str, ...],
-    value: str,
-) -> None:
-    snapshot = app.snapshot(handle, depth=16, limit=10_000)
+def _widgets(snapshot: Snapshot, kind: str) -> list[Control]:
     if snapshot.truncated:
-        msg = "Display configuration requires a complete snapshot."
-        raise AutomationError(msg)
-    container = find_display_container(snapshot.controls, kind, display_name)
-    matches = [
-        c
-        for c in snapshot.controls
-        if c.visible
-        and c.enabled
-        and c.ref != container.ref
-        and is_within_bounds(c, container)
-        and c.control_type in ("Edit", "ComboBox")
-        and any(k in c.automation_id.lower() or k in c.name.lower() for k in keywords)
+        return []
+    page_refs = {
+        c.ref for c in snapshot.controls
+        if c.visible and c.automation_id.endswith(".PageView")
+    }
+    return [
+        c for c in _descendants(snapshot, page_refs)
+        if c.control_type in {"Custom", "Group", "Pane"}
+        and _WIDGET_TITLES[kind].fullmatch(c.name.strip())
     ]
-    if len(matches) != 1:
-        msg = f"No unique {kind} control for {keywords!r}; no value was entered."
+
+
+def _descendants(snapshot: Snapshot, refs: set[str]) -> list[Control]:
+    # Full snapshots are in depth-first order, so parents precede children.
+    result: list[Control] = []
+    for c in snapshot.controls:
+        if c.visible and c.parent in refs:
+            refs.add(c.ref)
+            result.append(c)
+    return result
+
+
+def _widget_id(widget: Control) -> str:
+    return widget.automation_id or widget.name.strip()
+
+
+def _widget(snapshot: Snapshot, kind: str, identifier: str | None) -> Control:
+    widgets = [
+        c for c in _widgets(snapshot, kind)
+        if identifier is None or identifier in {_widget_id(c), c.name.strip()}
+    ]
+    if len(widgets) != 1:
+        msg = f"Expected one identifiable {kind} widget on the visible workbook page."
         raise AutomationError(msg)
-    set_control_value(app, handle, matches[0], value)
+    return widgets[0]
+
+
+def _matches_setting(ctrl: Control, aliases: tuple[str, ...]) -> bool:
+    if not ctrl.enabled:
+        return False
+    names = (ctrl.name, ctrl.automation_id.rsplit(".", 1)[-1])
+    return any(re.sub(r"[\W_]+", "", name.casefold()) in aliases for name in names)
+
+
+def _write_settings(
+    app: Capstone, snapshot: Snapshot, widget: Control, settings: Settings,
+) -> bool:
+    controls = _descendants(snapshot, {widget.ref})
+    writes = []
+    for aliases, value in settings:
+        if value is None:
+            continue
+        candidates = [c for c in controls if _matches_setting(c, aliases)]
+        msg = f"{widget.name} does not expose one writable {aliases[0]} control."
+        if len(candidates) != 1:
+            raise AutomationError(msg)
+        try:
+            pattern = app.control(candidates[0].ref).iface_value
+            if pattern.CurrentIsReadOnly:
+                raise AutomationError(msg)
+        except _VALUE_ERRORS as exc:
+            raise AutomationError(msg) from exc
+        writes.append((pattern, value))
+
+    if not writes:
+        return True
+    app.require_input_ready(snapshot.window.handle)
+    try:
+        for pattern, value in writes:
+            pattern.SetValue(value)
+        return all(
+            pattern.CurrentValue.strip().casefold() == value.strip().casefold()
+            for pattern, value in writes
+        )
+    except _VALUE_ERRORS as exc:
+        msg = "A display setting may have changed; inspect the widget before retrying."
+        raise AutomationError(msg) from exc
+    finally:
+        app.refs.clear()
+
+
+def _insert_widget(
+    app: Capstone, handle: int, kind: str, palette_suffix: str, settings: Settings,
+) -> tuple[str | None, bool, str]:
+    before = app.snapshot(handle, depth=20, limit=10_000)
+    existing = {_widget_id(widget) for widget in _widgets(before, kind)}
+    palette = find_palette_item(before.controls, kind, palette_suffix)
+    double_click_control(app, before.window.handle, palette)
+    after = app.snapshot(before.window.handle, depth=20, limit=10_000)
+    widgets = _widgets(after, kind)
+    new = [widget for widget in widgets if _widget_id(widget) not in existing]
+    if before.truncated or len(new) != 1:
+        return None, False, (
+            f"{kind} palette input sent. Inspect the page before retrying; "
+            "the new widget could not be identified and no settings were applied."
+        )
+    identifier = _widget_id(new[0])
+    try:
+        verified = _write_settings(app, after, new[0], settings)
+    except AutomationError as exc:
+        return identifier, False, f"{kind} '{identifier}' is visible. {exc}"
+    if verified:
+        return identifier, True, f"{kind} '{identifier}' is visible."
+    return identifier, False, f"{kind} '{identifier}' settings could not be verified."
 
 
 def create_scope(
@@ -89,52 +165,22 @@ def create_scope(
         msg = "Scope creation requires allow_foreground=true."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    if snapshot.truncated:
-        msg = "Display creation requires a complete snapshot."
-        raise AutomationError(msg)
-    palette_item = find_palette_item(snapshot.controls, "Scope", SCOPE_PALETTE_SUFFIX)
-    double_click_control(app, request.handle, palette_item)
-
-    display_id = "Scope 1"
     timebase_str = str(request.timebase) if request.timebase is not None else None
-
-    if timebase_str is not None or request.channel is not None:
-        _configure_scope(app, request.handle, timebase_str, request.channel)
-
-    detail = f"Scope '{display_id}' creation requested; native state is unverified."
+    display_id, verified, detail = _insert_widget(
+        app, request.handle, "Scope", SCOPE_PALETTE_SUFFIX,
+        (
+            (("timebase", "timebaseedit", "secdiv"), timebase_str),
+            (("channel", "channelselector", "measurementselector"), request.channel),
+        ),
+    )
     return CreateScopeResult(
         display_id=display_id,
         display_type="Scope",
-        timebase=timebase_str,
-        channel=request.channel,
-        verified=False,
+        timebase=timebase_str if verified else None,
+        channel=request.channel if verified else None,
+        verified=verified,
         detail=detail,
     )
-
-
-def _find_trigger_controls(
-    controls: list[Control],
-) -> tuple[Control | None, Control | None, Control | None]:
-    """Find trigger level, slope, and mode controls in snapshot."""
-    level_ctrl: Control | None = None
-    slope_ctrl: Control | None = None
-    mode_ctrl: Control | None = None
-
-    for ctrl in controls:
-        if not ctrl.visible:
-            continue
-        aid = ctrl.automation_id.lower()
-        name = ctrl.name.lower()
-
-        if "triggerlevel" in aid or "trigger_level" in aid or "trigger level" in name:
-            level_ctrl = ctrl
-        elif "triggerslope" in aid or "trigger_slope" in aid or "trigger slope" in name:
-            slope_ctrl = ctrl
-        elif "triggermode" in aid or "trigger_mode" in aid or "trigger mode" in name:
-            mode_ctrl = ctrl
-
-    return level_ctrl, slope_ctrl, mode_ctrl
 
 
 def set_scope_trigger(
@@ -149,43 +195,37 @@ def set_scope_trigger(
     normalized_slope = VALID_SLOPES.get(request.trigger_slope.lower())
     if not normalized_slope:
         valid = list(VALID_SLOPES.keys())
-        msg = f"Unsupported trigger slope '{request.trigger_slope}'. Valid: {valid}"
+        msg = (
+            f"Unsupported trigger slope "
+            f"'{request.trigger_slope}'. Valid: {valid}"
+        )
         raise AutomationError(msg)
 
     normalized_mode = VALID_MODES.get(request.trigger_mode.lower())
     if not normalized_mode:
         valid = list(VALID_MODES.keys())
-        msg = f"Unsupported trigger mode '{request.trigger_mode}'. Valid: {valid}"
-        raise AutomationError(msg)
-
-    scope_id = request.scope_id or "Scope 1"
-
-    if request.trigger_source is not None:
-        msg = "Trigger source binding is unverified; no trigger settings were changed."
-        raise AutomationError(msg)
-    fields = (
-        (
-            ("triggerlevel", "trigger_level", "trigger level"),
-            str(request.trigger_level),
-        ),
-        (("triggerslope", "trigger_slope", "trigger slope"), normalized_slope),
-        (("triggermode", "trigger_mode", "trigger mode"), normalized_mode),
-    )
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    container = find_display_container(snapshot.controls, "scope", request.scope_id)
-    scoped = [c for c in snapshot.controls if is_within_bounds(c, container)]
-    if any(c is None for c in _find_trigger_controls(scoped)):
-        msg = "Scope trigger controls are unavailable; open its trigger drawer first."
-        raise AutomationError(msg)
-    for keywords, value in fields:
-        _configure_display_field(
-            app, request.handle, "scope", request.scope_id, keywords, value,
+        msg = (
+            f"Unsupported trigger mode "
+            f"'{request.trigger_mode}'. Valid: {valid}"
         )
+        raise AutomationError(msg)
+
+    snapshot = app.snapshot(request.handle, depth=20, limit=10_000)
+    widget = _widget(snapshot, "Scope", request.scope_id)
+    scope_id = _widget_id(widget)
+    verified = _write_settings(
+        app, snapshot, widget,
+        (
+            (("triggerlevel",), str(request.trigger_level)),
+            (("triggerslope",), normalized_slope),
+            (("triggermode",), normalized_mode),
+            (("triggersource",), request.trigger_source),
+        ),
+    )
 
     detail = (
-        f"Scope '{scope_id}' trigger settings requested (unverified): "
-        f"Level={request.trigger_level}, "
-        f"Slope={normalized_slope}, Mode={normalized_mode}."
+        f"Scope '{scope_id}' trigger settings verified." if verified
+        else f"Scope '{scope_id}' trigger values could not be verified."
     )
     return ScopeTriggerResult(
         scope_id=scope_id,
@@ -193,23 +233,9 @@ def set_scope_trigger(
         trigger_slope=normalized_slope,
         trigger_mode=normalized_mode,
         trigger_source=request.trigger_source,
-        verified=False,
+        verified=verified,
         detail=detail,
     )
-
-
-def _configure_fft(
-    app: Capstone,
-    handle: int,
-    measurement: str | None,
-    frequency_range: str | None,
-) -> None:
-    for value, keywords in (
-        (measurement, ("measurement", "channel", "y-axis")),
-        (frequency_range, ("freq_range", "span")),
-    ):
-        if value is not None:
-            _configure_display_field(app, handle, "fft", None, keywords, value)
 
 
 def create_fft(
@@ -224,70 +250,57 @@ def create_fft(
         msg = "FFT creation requires allow_foreground=true."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    if snapshot.truncated:
-        msg = "Display creation requires a complete snapshot."
-        raise AutomationError(msg)
-    palette_item = find_palette_item(snapshot.controls, "FFT", FFT_PALETTE_SUFFIX)
-    double_click_control(app, request.handle, palette_item)
-
-    display_id = "FFT 1"
-
-    if request.measurement is not None or request.frequency_range is not None:
-        _configure_fft(
-            app,
-            request.handle,
-            request.measurement,
-            request.frequency_range,
-        )
-
-    detail = f"FFT '{display_id}' creation requested; native state is unverified."
+    display_id, verified, detail = _insert_widget(
+        app, request.handle, "FFT", FFT_PALETTE_SUFFIX,
+        (
+            (("measurement", "measurementselector", "channel"), request.measurement),
+            (("frequencyrange", "freqrangeedit", "span"), request.frequency_range),
+        ),
+    )
     return CreateFftResult(
         display_id=display_id,
         display_type="FFT",
-        measurement=request.measurement,
-        frequency_range=request.frequency_range,
-        verified=False,
+        measurement=request.measurement if verified else None,
+        frequency_range=request.frequency_range if verified else None,
+        verified=verified,
         detail=detail,
     )
 
 
-def _parse_peak_text(text: str) -> tuple[float, float] | None:
-    """Parse frequency and amplitude from coordinate text like '(1200 Hz, 3.5 V)'."""
+def _parse_peak_text(text: str) -> FftPeak | None:
+    """Parse FFT coordinates or named frequency and amplitude labels."""
     text = text.replace("\u2212", "-")
-    coord_match = re.search(
-        r"\(\s*([0-9.]+)\s*(?:Hz|kHz)?\s*,\s*([0-9.]+)\s*(?:V|mV|dB)?\s*\)",
+    match = re.search(
+        rf"\(\s*{_PEAK_FREQUENCY}\s*,\s*{_PEAK_AMPLITUDE}\s*\)",
         text,
         re.IGNORECASE,
     )
-    if coord_match:
-        try:
-            freq = float(coord_match.group(1))
-            if "khz" in text.lower():
-                freq *= 1000.0
-            amp = float(coord_match.group(2))
-        except ValueError:
-            return None
-        else:
-            return freq, amp
-
-    named_match = re.search(
-        r"(?:freq|f)\s*[:=]\s*([0-9.]+)\s*(?:Hz|kHz)?.*?amp(?:litude)?\s*[:=]\s*([0-9.]+)",
-        text,
-        re.IGNORECASE,
+    if match is None:
+        match = re.search(
+            rf"\b(?:freq(?:uency)?|f)\s*[:=]\s*{_PEAK_FREQUENCY}(?![\w.]).*?"
+            rf"\bamp(?:litude)?\s*[:=]\s*{_PEAK_AMPLITUDE}(?![\w.])",
+            text,
+            re.IGNORECASE,
+        )
+    if match is None:
+        return None
+    frequency, frequency_unit, amplitude, amplitude_unit = match.groups(default="")
+    frequency_hz = float(frequency) * (1000 if frequency_unit.lower() == "khz" else 1)
+    magnitude = float(amplitude)
+    if (
+        frequency_hz < 0
+        or not math.isfinite(frequency_hz)
+        or not math.isfinite(magnitude)
+    ):
+        return None
+    unit = amplitude_unit.lower()
+    if unit == "mv":
+        magnitude /= 1000
+    return FftPeak(
+        frequency_hz=frequency_hz,
+        amplitude=magnitude,
+        amplitude_unit="dB" if unit == "db" else "V" if unit else None,
     )
-    if named_match:
-        try:
-            freq = float(named_match.group(1))
-            if "khz" in text.lower():
-                freq *= 1000.0
-            amp = float(named_match.group(2))
-        except ValueError:
-            return None
-        else:
-            return freq, amp
-
-    return None
 
 
 def read_fft_peaks(
@@ -302,23 +315,28 @@ def read_fft_peaks(
         msg = "FFT peak reading requires allow_foreground=true."
         raise AutomationError(msg)
 
-    fft_id = request.fft_id or "FFT 1"
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if request.top_k < 1:
+        msg = "FFT top_k must be positive."
+        raise AutomationError(msg)
+    snapshot = app.snapshot(request.handle, depth=20, limit=10_000)
+    widget = _widget(snapshot, "FFT", request.fft_id)
+    fft_id = _widget_id(widget)
 
     peaks: list[FftPeak] = []
     seen: set[float] = set()
 
-    for ctrl in snapshot.controls:
-        if not ctrl.visible:
-            continue
+    for ctrl in _descendants(snapshot, {widget.ref}):
         text = ctrl.name.strip()
-        parsed = _parse_peak_text(text)
-        if parsed:
-            freq, amp = parsed
-            if freq not in seen:
-                seen.add(freq)
-                peaks.append(FftPeak(frequency_hz=freq, amplitude=amp, unit="Hz"))
+        peak = _parse_peak_text(text)
+        if peak is not None and peak.frequency_hz not in seen:
+            seen.add(peak.frequency_hz)
+            peaks.append(peak)
 
+    if len({p.amplitude_unit for p in peaks}) > 1:
+        msg = "FFT peak amplitudes have different or unknown units."
+        raise AutomationError(msg)
+    if request.min_amplitude is not None:
+        peaks = [p for p in peaks if p.amplitude >= request.min_amplitude]
     peaks.sort(key=lambda p: p.amplitude, reverse=True)
     top_peaks = peaks[: request.top_k]
 
@@ -332,6 +350,6 @@ def read_fft_peaks(
         fft_id=fft_id,
         peaks=top_peaks,
         peak_count=len(top_peaks),
-        verified=False,
+        verified=True,
         detail=detail,
     )

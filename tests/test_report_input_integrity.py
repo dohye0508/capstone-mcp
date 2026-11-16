@@ -41,8 +41,9 @@ def test_invalid_json_numeric_series_is_not_silently_ignored(text: str) -> None:
 
 
 def test_zero_variance_does_not_fabricate_regression() -> None:
-    with pytest.raises(ValueError, match="zero variance"):
-        generate_report(data_series={"x": [1, 1, 1], "y": [1, 2, 3]})
+    report = generate_report(data_series={"x": [1, 1, 1], "y": [1, 2, 3]})
+    assert report.regression is None
+    assert len(report.data_summaries) == 2
 
 
 @pytest.mark.parametrize(("suffix", "content", "message"), [

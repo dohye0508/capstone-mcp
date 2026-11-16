@@ -115,7 +115,7 @@ def test_graph_create_uses_exact_observed_nonenglish_palette_label() -> None:
     request = GraphRequest(action=GraphAction.CREATE,
                            create=CreateGraphRequest(handle=1, palette_label="그래프"))
     manager.manage_graph(app, GraphRequest.model_validate_json(request.model_dump_json()))
-    app.click.assert_called_once_with(1, item.ref, allow_foreground=True)
+    app.click.assert_called_once_with(1, item.ref, double=True, allow_foreground=True)
 
 
 def test_graph_create_refuses_ambiguous_observed_palette_label() -> None:
@@ -287,3 +287,45 @@ def test_popup_refresh_revalidates_label_before_returning_refs(kind: str) -> Non
     result = (manager._fit_menu(app, {1}, "선형") if kind == "fit" else
               inspection._display_popup(app, 1, "화면 복사", before={1}))
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [({}, ["Display", "화면"]), ({"display_menu_label": "Display"}, ["Display"])],
+)
+def test_serialized_graph_request_distinguishes_explicit_english_from_catalog(
+    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], expected: list[str],
+) -> None:
+    catalog = MagicMock(side_effect=lambda text, _key: text in {"Display", "화면"})
+    monkeypatch.setattr(inspection, "label_matches", catalog)
+    request = GraphRequest.model_validate({"action": "read", "read": {"handle": 1, **fields}})
+    restored = GraphRequest.model_validate_json(request.model_dump_json())
+    assert restored.read is not None
+    selected = [text for text in ("Display", "화면") if inspection._graph_label(
+        text, restored.read.display_menu_label, "STR_DISPLAY",
+    )]
+    assert selected == expected
+    if fields:
+        catalog.assert_not_called()
+    else:
+        assert restored.read.display_menu_label is None
+        assert catalog.call_count == 2
+
+
+def test_explicit_english_copy_label_excludes_localized_popup_after_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inspection, "label_matches", lambda _text, _key: True)
+    request = GraphRequest(action=GraphAction.READ, read=ReadGraphRequest(
+        handle=1, copy_display_label="Copy Display",
+    ))
+    restored = GraphRequest.model_validate_json(request.model_dump_json())
+    assert restored.read is not None
+    app = MagicMock()
+    localized = _snapshot(label="화면 복사")
+    app.windows.return_value = [localized.window]
+    app.snapshot.return_value = localized
+    assert inspection._display_popup(
+        app, 1, restored.read.copy_display_label, before={1},
+    ) is None
+    assert inspection._display_popup(app, 1, before={1}) == localized

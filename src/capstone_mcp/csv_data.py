@@ -2,11 +2,10 @@
 """Bounded pages of native CSV export text, without invented dataset identities."""
 
 import csv
-import io
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final
+from typing import Final, TextIO
 
 from capstone_mcp.models import Model
 
@@ -44,25 +43,12 @@ def parse_csv_number(value: str) -> Decimal | None:
     return number if number.is_finite() else None
 
 
-def _decode_csv(payload: bytes) -> str:
-    if payload.startswith((b"\xff\xfe", b"\xfe\xff")):
-        encodings = ("utf-16",)
-    else:
-        encodings = ("utf-8-sig", "cp949")
-    for encoding in encodings:
-        try:
-            return payload.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    msg = "CSV must be UTF-8, BOM-marked UTF-16, or CP949 text."
-    raise CsvDataError(msg)
-
-
-def _csv_delimiter(text: str) -> str:
+def _csv_delimiter(stream: TextIO) -> str:
     candidates: list[str] = []
     header_candidates: list[str] = []
     for delimiter in (",", ";", "\t"):
-        reader = csv.reader(io.StringIO(text), delimiter=delimiter, strict=True)
+        stream.seek(0)
+        reader = csv.reader(stream, delimiter=delimiter, strict=True)
         try:
             header = next(reader, [])
             if len(header) <= 1:
@@ -86,31 +72,57 @@ def _csv_delimiter(text: str) -> str:
     return candidates[0] if candidates else ","
 
 
-def read_csv_table(path: str | Path) -> CsvTable:
-    """Read a bounded, rectangular UTF-8/UTF-16/CP949 comma/semicolon/tab table."""
-    source = Path(path)
-    with source.open("rb") as stream:
-        payload = stream.read(MAX_CSV_BYTES + 1)
-    if len(payload) > MAX_CSV_BYTES:
+def _read_csv_rows(
+    source: Path, offset: int = 0, limit: int | None = None,
+) -> tuple[list[str], list[list[str]], int]:
+    if source.stat().st_size > MAX_CSV_BYTES:
         msg = "CSV exceeds the 64 MiB extraction limit."
         raise CsvDataError(msg)
-    text = _decode_csv(payload)
-    reader = csv.reader(
-        io.StringIO(text, newline=""), delimiter=_csv_delimiter(text), strict=True,
+    with source.open("rb") as stream:
+        bom = stream.read(2)
+    encodings = (
+        ("utf-16",) if bom in (b"\xff\xfe", b"\xfe\xff") else ("utf-8-sig", "cp949")
     )
+    for encoding in encodings:
+        try:
+            with source.open(encoding=encoding, newline="") as stream:
+                return _collect_csv_rows(stream, offset, limit)
+        except UnicodeDecodeError:
+            continue
+    msg = "CSV must be UTF-8, BOM-marked UTF-16, or CP949 text."
+    raise CsvDataError(msg)
+
+
+def _collect_csv_rows(
+    stream: TextIO, offset: int, limit: int | None,
+) -> tuple[list[str], list[list[str]], int]:
+    delimiter = _csv_delimiter(stream)
+    stream.seek(0)
+    reader = csv.reader(stream, delimiter=delimiter, strict=True)
     try:
         header = next(reader, None)
         if not header or len(header) > MAX_COLUMNS:
             msg = "CSV needs a header with at most 1024 columns."
             raise CsvDataError(msg)
+        stop = MAX_ROWS if limit is None else offset + min(
+            limit, MAX_PAGE_CELLS // len(header),
+        )
         rows: list[list[str]] = []
-        for row in reader:
-            if len(row) != len(header) or len(rows) >= MAX_ROWS:
+        count = 0
+        for count, row in enumerate(reader, 1):
+            if len(row) != len(header) or count > MAX_ROWS:
                 msg = "CSV is ragged or exceeds the one-million-row limit."
                 raise CsvDataError(msg)
-            rows.append(row)
+            if offset < count <= stop:
+                rows.append(row)
     except csv.Error as exc:
         raise CsvDataError(str(exc)) from exc
+    return header, rows, count
+
+
+def read_csv_table(path: str | Path) -> CsvTable:
+    """Read a bounded, rectangular UTF-8/UTF-16/CP949 comma/semicolon/tab table."""
+    header, rows, _ = _read_csv_rows(Path(path))
     return CsvTable(header, rows)
 
 
@@ -156,10 +168,7 @@ def read_csv_page(path: str, offset: int = 0, limit: int = 1000) -> CsvPage:
         msg = "CSV offset must be nonnegative and limit must be positive."
         raise CsvDataError(msg)
     source = Path(path).resolve()
-    table = read_csv_table(source)
-    header, rows = table.header, table.rows
-    page_limit = min(limit, MAX_PAGE_CELLS // len(header))
-    page = rows[offset : offset + page_limit]
+    header, page, row_count = _read_csv_rows(source, offset, limit)
     columns: list[CsvColumn] = []
     for index, label in enumerate(header):
         values = [row[index] for row in page]
@@ -174,9 +183,9 @@ def read_csv_page(path: str, offset: int = 0, limit: int = 1000) -> CsvPage:
     next_offset = offset + len(page)
     return CsvPage(
         path=str(source),
-        row_count=len(rows),
+        row_count=row_count,
         offset=offset,
         returned_rows=len(page),
-        next_offset=next_offset if next_offset < len(rows) else None,
+        next_offset=next_offset if next_offset < row_count else None,
         columns=columns,
     )

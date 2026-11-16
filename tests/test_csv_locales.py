@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """CSV locale, channel identity, and sample alignment regression tests."""
 
+import math
 import unicodedata
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +17,7 @@ from capstone_mcp.data_sources.adapters.csv_file import (
     read_csv_series,
 )
 from capstone_mcp.data_sources.adapters.live_telemetry import LiveMeasurementAdapter
+from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "cp949", "utf-16"])
@@ -68,14 +70,17 @@ def test_unknown_and_ambiguous_columns_are_not_substituted(tmp_path: Path) -> No
     assert read_csv_series(path, "Time", "Voltage B").y.values == [2]
 
 
-def test_sparse_pairs_preserve_positions_and_reports_refuse_shifting(tmp_path: Path) -> None:
+def test_sparse_columns_keep_missing_sample_positions(tmp_path: Path) -> None:
     path = tmp_path / "sparse.csv"
     path.write_text("x,y\n,2\n1,\n3,4\n", encoding="utf-8")
     series = read_csv_series(path, "x", "y")
     assert series.x.values == [None, 1, 3]
     assert series.y.values == [2, None, 4]
-    with pytest.raises(CsvDataError, match="missing or invalid"):
-        read_csv_all_columns(path)
+    columns = read_csv_all_columns(path)
+    assert math.isnan(columns["x"][0])
+    assert math.isnan(columns["y"][1])
+    assert columns["x"][1:] == [1, 3]
+    assert columns["y"][::2] == [2, 4]
 
 
 def test_duplicate_columns_do_not_overwrite(tmp_path: Path) -> None:
@@ -98,13 +103,18 @@ def test_live_adapter_reads_native_inventory_fields_without_invented_time() -> N
             "MeasurementName": "전압", "MeasurementEUID": "native-voltage", "Unit": "V",
         }],
     )
-    session.telemetry.sample_count.return_value = 7
-    session.read_live_measurement.return_value = 1.25
+    session.debug_port = 9222
+    session.telemetry = TelemetryBuffer()
+    clock = TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero")
+    session.telemetry.push_sample("native-voltage", 1.25, 10.0, clock=clock)
+    session.telemetry.push_sample("native-voltage", 1.5, 10.5, clock=clock)
     adapter = LiveMeasurementAdapter(session=session)
     metadata = adapter.list_datasets()[0]
-    assert (metadata.name, metadata.units, metadata.sample_count) == ("전압", "V", 7)
+    assert (metadata.name, metadata.units, metadata.sample_count) == ("전압", "V", 2)
     series = adapter.get_series("인덱스", unicodedata.normalize("NFD", "전압"))
-    assert series.y.values == [1.25]
-    session.read_live_measurement.assert_called_once_with("native-voltage", port=9222)
-    with pytest.raises(ValueError, match="not found"):
-        adapter.get_series("시간", "전압")
+    assert series.x.values == [0, 1]
+    assert series.y.values == [1.25, 1.5]
+    timed = adapter.get_series("시간", "전압")
+    assert timed.x.values == [0.0, 0.5]
+    assert timed.metadata["x_basis"] == "declared_clock_elapsed"
+    session.read_live_measurement.assert_not_called()

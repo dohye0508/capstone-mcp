@@ -3,12 +3,15 @@
 
 import contextlib
 import re
+import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import ValidationError
+from pywinauto.uia_defines import NoPatternInterfaceError
 
 from capstone_mcp.analysis import (
     MIN_COMPARISON_RUNS,
@@ -28,7 +31,7 @@ from capstone_mcp.displays import (
     is_within_bounds,
 )
 from capstone_mcp.file_workflows import FileArtifact
-from capstone_mcp.models import Control
+from capstone_mcp.models import Control, Snapshot
 from capstone_mcp.runs.models import (
     CapturedFit,
     CapturedRun,
@@ -49,7 +52,12 @@ from capstone_mcp.runs.models import (
     SourceFit,
 )
 
+if TYPE_CHECKING:
+    from pywinauto.controls.uiawrapper import UIAWrapper
+
 RUN_NAME_PATTERN: Final = re.compile(r"run\s*#?\s*\d+", re.IGNORECASE)
+RUN_DELETE_TIMEOUT_SECONDS: Final = 3
+LAST_RUN_NAMES: Final = frozenset({"last_run", "last", "latest"})
 
 
 # ---------------------------------------------------------------------------
@@ -60,154 +68,174 @@ RUN_NAME_PATTERN: Final = re.compile(r"run\s*#?\s*\d+", re.IGNORECASE)
 def _rename_via_inline_editor(
     app: Capstone,
     handle: int,
-    node: Any,  # noqa: ANN401
+    node: "UIAWrapper",
+    old_name: str,
     new_name: str,
 ) -> None:
-    """Fallback inline renaming via F2 keystrokes."""
-    node.set_focus()
-    app.keys(handle, "{F2}", allow_foreground=True)
-    app.keys(handle, "^a", allow_foreground=True)
-    app.type_text(new_name)
-    app.keys(handle, "{ENTER}", allow_foreground=True)
+    """Send F2 to the run row and write literal text only to its active editor."""
+    _ = app.focus_window(handle)
+    _ = node.set_focus()
+    if not node.has_keyboard_focus():
+        msg = "Could not focus the saved run row before opening its editor."
+        raise AutomationError(msg)
+    _ = app.keys(handle, "{F2}", allow_foreground=True)
+    snapshot = app.snapshot(handle, depth=20, limit=10_000)
+    editors = []
+    for control in snapshot.controls:
+        if control.control_type == "Edit" and control.visible and control.enabled:
+            candidate = app.control(control.ref)
+            if candidate.has_keyboard_focus():
+                editors.append(candidate)
+    if snapshot.truncated or len(editors) != 1:
+        msg = "Could not identify the active run name editor after F2."
+        raise AutomationError(msg)
+    editor = editors[0]
+    pattern = editor.iface_value
+    if pattern.CurrentValue.strip() != old_name.strip():
+        msg = "The active run editor does not contain the expected old name."
+        raise AutomationError(msg)
+    pattern.SetValue(new_name)
+    if pattern.CurrentValue != new_name or not editor.has_keyboard_focus():
+        msg = "Could not confirm the new value and focus of the run editor."
+        raise AutomationError(msg)
+    app.require_input_ready(handle)
+    app.require_foreground()
+    editor.type_keys(
+        "{ENTER}", with_spaces=True, set_foreground=False, pause=0, vk_packet=False,
+    )
 
 
 def rename_run(app: Capstone, request: RenameRunRequest) -> RenameRunResult:
-    """Find the target run in Data Summary and rename it reliably."""
-    if not request.new_name.strip() or any(c in request.new_name for c in "\r\n"):
-        msg = "new_name must not be empty."
+    """Rename a row in Sensor Data Summary and confirm the resulting names."""
+    old_name, new_name = request.old_name.strip(), request.new_name.strip()
+    if not new_name or "\n" in request.new_name or "\r" in request.new_name:
+        msg = "new_name must be a nonempty single line."
         raise AutomationError(msg)
 
-    # 1. Take snapshot to locate the target run item
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    if snapshot.truncated:
-        msg = "Run mutation requires a complete snapshot."
-        raise AutomationError(msg)
-    matches = [
-        control
-        for control in snapshot.controls
-        if control.visible
-        and control.control_type == "TreeItem"
-        and control.name.strip() == request.old_name.strip()
+    snapshot = app.snapshot(request.handle, depth=20, limit=10_000)
+    items = _sensor_summary_items(snapshot)
+    targets = [
+        control for control in items or []
+        if control.enabled and control.name.strip() == old_name
     ]
-    if not matches:
-        msg = f"Run item with name '{request.old_name}' not found in Data Summary."
+    if not targets:
+        msg = f"Run item with name {old_name!r} not found in Sensor Data Summary."
         raise AutomationError(msg)
-    if len(matches) != 1:
-        msg = "Run name is ambiguous; refusing to rename multiple matching items."
+    if old_name == new_name:
+        return RenameRunResult(
+            old_name=request.old_name, new_name=request.new_name, verified=True,
+            detail=f"Run already has the name {new_name!r}.",
+        )
+    before = Counter(control.name.strip() for control in items or [])
+    if before[new_name]:
+        msg = f"A row with the new name {new_name!r} already exists in Data Summary."
         raise AutomationError(msg)
-    target_control = matches[0]
-    if request.new_name != request.old_name and any(
-        c.visible
-        and c.control_type == "TreeItem"
-        and c.name.strip() == request.new_name.strip()
-        for c in snapshot.controls
-    ):
-        msg = "The requested new run name already exists."
+    if before[old_name] != 1:
+        msg = f"Multiple rows show {old_name!r}. Run-wide rename is unverified."
         raise AutomationError(msg)
 
-    node = app.control(target_control.ref)
-
-    # 2. Try ValuePattern direct set
-    value_set = False
-    with contextlib.suppress(AttributeError, RuntimeError):
-        if hasattr(node, "iface_value") and node.iface_value:
-            node.iface_value.SetValue(request.new_name)
-            value_set = True
-
-    if not value_set:
+    node = app.control(targets[0].ref)
+    handle = snapshot.window.handle
+    try:
+        pattern = node.iface_value
+    except (AttributeError, NoPatternInterfaceError):
         if not request.allow_foreground:
             msg = "Renaming via inline editor requires allow_foreground=true."
-            raise AutomationError(msg)
-        _rename_via_inline_editor(app, request.handle, node, request.new_name)
+            raise AutomationError(msg) from None
+        _rename_via_inline_editor(app, handle, node, old_name, request.new_name)
+    else:
+        pattern.SetValue(request.new_name)
 
-    # 3. Verify via fresh snapshot
-    verification_snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    renamed = any(
-        c.visible
-        and c.control_type == "TreeItem"
-        and c.name.strip() == request.new_name.strip()
-        for c in verification_snapshot.controls
-    )
-
+    after = _sensor_summary_items(app.snapshot(handle, depth=20, limit=10_000))
+    before[new_name] = before.pop(old_name)
+    renamed = after is not None and Counter(c.name.strip() for c in after) == before
     detail = (
-        f"Run successfully renamed from '{request.old_name}' to '{request.new_name}'."
-        if renamed
-        else f"Rename issued, but '{request.new_name}' was not confirmed in tree."
+        f"Renamed {old_name!r} to {new_name!r} in Sensor Data Summary."
+        if renamed else f"Rename was issued. The new name {new_name!r} is unconfirmed."
     )
-
     return RenameRunResult(
-        old_name=request.old_name,
-        new_name=request.new_name,
-        verified=renamed,
-        detail=detail,
+        old_name=request.old_name, new_name=request.new_name,
+        verified=renamed, detail=detail,
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. Run Deletion & Modal Auto-Dismissal
+# 2. Run Deletion and Verification
 # ---------------------------------------------------------------------------
 
 
-def _find_run_items(controls: list[Control]) -> list[Control]:
-    """Find all Run items in Data Summary tree."""
-    return [
-        ctrl
-        for ctrl in controls
-        if (
-            ctrl.visible
-            and ctrl.control_type == "TreeItem"
-            and RUN_NAME_PATTERN.search(ctrl.name)
-        )
+def _sensor_summary_items(snapshot: Snapshot) -> list[Control] | None:
+    trees = [
+        c.ref for c in snapshot.controls
+        if c.visible and c.control_type == "Tree"
+        and c.automation_id == "experimentDataSensors"
     ]
+    if snapshot.truncated or len(trees) != 1:
+        return None
+    return [
+        c for c in snapshot.controls
+        if c.visible and c.control_type == "TreeItem" and c.parent == trees[0]
+        and c.name.strip()
+    ]
+
+
+def _sensor_summary_rows(snapshot: Snapshot) -> Counter[str] | None:
+    items = _sensor_summary_items(snapshot)
+    return None if items is None else Counter(c.name.strip() for c in items)
+
+
+def _confirmed_deleted_name(
+    app: Capstone, handle: int, before: Counter[str],
+) -> str:
+    deadline = time.monotonic() + RUN_DELETE_TIMEOUT_SECONDS
+    while True:
+        if {window.handle for window in app.windows()} != {handle}:
+            msg = "Delete Last Run opened an unexpected window; inspect Capstone."
+            raise AutomationError(msg)
+        after = _sensor_summary_rows(app.snapshot(handle, depth=20, limit=10_000))
+        if after is not None:
+            removed = before - after
+            if len(removed) == 1 and not after - before:
+                name = next(iter(removed))
+                if name not in after and {w.handle for w in app.windows()} == {handle}:
+                    return name
+        if time.monotonic() >= deadline:
+            msg = "Could not verify Delete Last Run; inspect Data Summary."
+            raise AutomationError(msg)
+        time.sleep(0.1)
 
 
 def delete_run(app: Capstone, request: DeleteRunRequest) -> DeleteRunResult:
-    """Delete a unique named run and report only observed removal."""
-    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
-    if snapshot.truncated:
-        msg = "Run mutation requires a complete snapshot."
+    """Use the native last-run button and confirm a disappearance in Data Summary."""
+    if request.run_name.strip().lower() not in LAST_RUN_NAMES:
+        msg = "Delete by name has no verified native command; use Capstone directly."
         raise AutomationError(msg)
-    name = request.run_name.strip()
-    if name.casefold() in ("last_run", "last", "latest"):
-        run_items = _find_run_items(snapshot.controls)
-        if not run_items:
-            msg = "No runs found to delete in Data Summary."
-            raise AutomationError(msg)
-        msg = "Latest run identity is unverified; provide an explicit run name."
+    if not request.allow_foreground:
+        msg = "Delete Last Run requires allow_foreground=true."
         raise AutomationError(msg)
-    matches = [
-        c
-        for c in snapshot.controls
-        if c.visible
-        and c.control_type == "TreeItem"
-        and c.name.strip().casefold() == name.casefold()
+    snapshot = app.snapshot(request.handle, depth=20, limit=10_000)
+    handle = snapshot.window.handle
+    if {window.handle for window in app.windows()} != {handle}:
+        msg = "Close other Capstone windows or dialogs before deleting the last run."
+        raise AutomationError(msg)
+    before = _sensor_summary_rows(snapshot)
+    if not before:
+        msg = "Open Sensor Data Summary before deleting the last run."
+        raise AutomationError(msg)
+    buttons = [
+        c for c in snapshot.controls
+        if c.visible and c.enabled and c.control_type == "Button"
+        and c.automation_id.endswith(".DeleteRunButton")
     ]
-    if len(matches) != 1:
-        msg = f"Run '{name}' not found uniquely in Data Summary."
+    if len(buttons) != 1:
+        msg = "Expected one enabled Delete Last Run button; no input was sent."
         raise AutomationError(msg)
-    target = matches[0]
-    click_control(
-        app, request.handle, target, allow_foreground=request.allow_foreground,
-    )
-    app.keys(request.handle, "{DELETE}", allow_foreground=request.allow_foreground)
-    fresh = app.snapshot(request.handle, depth=16, limit=10_000)
-    removed = not fresh.truncated and not any(
-        c.control_type == "TreeItem" and c.name.strip().casefold() == name.casefold()
-        for c in fresh.controls
-    )
-    if removed:
-        try:
-            app.require_input_ready(request.handle)
-        except AutomationError:
-            removed = False
+    click_control(app, handle, buttons[0], allow_foreground=True)
+    actual_deleted_name = _confirmed_deleted_name(app, handle, before)
     return DeleteRunResult(
-        deleted_run=target.name,
-        verified=removed,
-        detail=(
-            f"Run '{target.name}' removal observed."
-            if removed
-            else "Deletion requested but not verified; inspect any confirmation dialog."
-        ),
+        deleted_run=actual_deleted_name,
+        verified=True,
+        detail=f"Run '{actual_deleted_name}' deleted.",
     )
 
 
@@ -668,7 +696,7 @@ class RunManager:
         return rename_run(self.app, request)
 
     def delete(self, request: DeleteRunRequest) -> DeleteRunResult:
-        """Delete a named run and verify its observed removal."""
+        """Delete the last recorded run and confirm the result in Data Summary."""
         return delete_run(self.app, request)
 
     def set_visibility(

@@ -213,7 +213,16 @@ class AutomationWorker:
         failure = self._graph_transport_failure(
             request, identifier, "WORKER_TIMEOUT", msg,
         )
-        return NativeSessionError(msg, failure, stderr_tail=stderr_tail)
+        return NativeSessionError(
+            msg,
+            failure,
+            stderr_tail=stderr_tail,
+            error_code="TIMEOUT_ERROR",
+            remediation=(
+                "Call capstone_attach and inspect Capstone before issuing more input. "
+                "The previous operation may have partially completed."
+            ),
+        )
 
     def _handle_call_failure(
         self, request: NativeRequest, identifier: str, error: Exception,
@@ -232,13 +241,21 @@ class AutomationWorker:
         return NativeSessionError(msg, failure, stderr_tail=stderr_tail)
 
     def call(self, request: NativeRequest) -> JsonValue:
-        """Cover startup, write, complete read, and parsing with one absolute budget."""
-        if self.retired:
-            msg = "Native session was retired; create a new session before more input."
-            raise NativeSessionError(msg)
+        """Serialize reattachment and requests; never retry an uncertain operation."""
         if not self.lock.acquire(blocking=False):
             msg = "A native request is already active; it was not queued or replayed."
             raise NativeSessionError(msg)
+        try:
+            if self.retired:
+                if request.operation != "attach":
+                    msg = "Native session retired. Call capstone_attach before input."
+                    raise NativeSessionError(msg)
+                self._reset_locked()
+            return self._call_locked(request)
+        finally:
+            self.lock.release()
+
+    def _call_locked(self, request: NativeRequest) -> JsonValue:
         deadline = time.monotonic() + self.timeout
         identifier = uuid4().hex
         future: Future[NativeReply] = Future()
@@ -260,8 +277,6 @@ class AutomationWorker:
             raise self._handle_call_timeout(request, identifier, error) from error
         except Exception as error:
             raise self._handle_call_failure(request, identifier, error) from error
-        finally:
-            self.lock.release()
         if reply.error is not None:
             if reply.graph_failure is not None:
                 self.last_graph_failure = reply.graph_failure
@@ -361,14 +376,17 @@ class AutomationWorker:
             msg = "A native request is still active; reattachment was not queued."
             raise NativeSessionError(msg)
         try:
-            self._retire()
-            self.process = None
-            self.transport = None
-            self.retired = False
-            self.uncertain = False
-            self.stderr_buffer.clear()
+            self._reset_locked()
         finally:
             self.lock.release()
+
+    def _reset_locked(self) -> None:
+        self._retire()
+        self.process = None
+        self.transport = None
+        self.retired = False
+        self.uncertain = False
+        self.stderr_buffer.clear()
 
     def close(self) -> None:
         """Retire without attempting to repeat or undo an uncertain native action."""

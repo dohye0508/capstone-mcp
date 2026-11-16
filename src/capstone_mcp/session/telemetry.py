@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from threading import Lock
 from typing import Final, Literal
 from uuid import uuid4
@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 DEFAULT_BUFFER_CAPACITY: Final = 1000
+MAX_MEASUREMENTS: Final = 256
 
 
 class TelemetryClock(BaseModel):
@@ -28,6 +29,8 @@ class TelemetrySnapshot(BaseModel):
     """Atomic copy of sample values and the clock needed to interpret timestamps."""
 
     clock: TelemetryClock | None
+    first_timestamp: float | None
+    first_sample_index: int
     samples: list[tuple[float, float]]
 
 
@@ -37,7 +40,9 @@ class TelemetryBuffer:
     def __init__(self, capacity: int = DEFAULT_BUFFER_CAPACITY) -> None:
         """Initialize telemetry buffer with bounded capacity per measurement."""
         self._capacity = max(1, capacity)
-        self._buffers: dict[str, deque[tuple[float, float]]] = {}
+        self._buffers: OrderedDict[str, deque[tuple[float, float]]] = OrderedDict()
+        self._origins: dict[str, float] = {}
+        self._counts: dict[str, int] = {}
         self._clocks: dict[str, TelemetryClock] = {}
         self._host_clock = TelemetryClock(
             clock_id=f"host-monotonic:{uuid4().hex}", unit="seconds",
@@ -80,9 +85,18 @@ class TelemetryBuffer:
                 msg = "Telemetry timestamps must not decrease within a measurement."
                 raise ValueError(msg)
             if buf is None:
+                if len(self._buffers) >= MAX_MEASUREMENTS:
+                    evicted, _ = self._buffers.popitem(last=False)
+                    self._clocks.pop(evicted, None)
+                    self._origins.pop(evicted, None)
+                    self._counts.pop(evicted, None)
+                self._origins[euid] = ts
+                self._counts[euid] = 0
                 buf = self._buffers[euid] = deque(maxlen=self._capacity)
                 self._clocks[euid] = selected_clock
             buf.append((ts, value))
+            self._counts[euid] += 1
+            self._buffers.move_to_end(euid)
 
     def get_clock(self, euid: str) -> TelemetryClock | None:
         """Return immutable timestamp provenance for retained channel samples."""
@@ -94,6 +108,10 @@ class TelemetryBuffer:
         with self._lock:
             return TelemetrySnapshot(
                 clock=self._clocks.get(euid),
+                first_timestamp=self._origins.get(euid),
+                first_sample_index=(
+                    self._counts.get(euid, 0) - len(self._buffers.get(euid, ()))
+                ),
                 samples=list(self._buffers.get(euid, ())),
             )
 
@@ -131,9 +149,13 @@ class TelemetryBuffer:
             if euid is not None:
                 self._buffers.pop(euid, None)
                 self._clocks.pop(euid, None)
+                self._origins.pop(euid, None)
+                self._counts.pop(euid, None)
             else:
                 self._buffers.clear()
                 self._clocks.clear()
+                self._origins.clear()
+                self._counts.clear()
 
     def compute_stats(self, euid: str) -> dict[str, float]:
         """Compute basic summary statistics for buffered samples."""

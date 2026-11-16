@@ -9,12 +9,23 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
+import httpx2
 import psutil
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 
 from capstone_mcp import server
+from capstone_mcp.automation_models import NativeRequest
+from capstone_mcp.automation_worker import AutomationWorker
 from capstone_mcp.data_sources import get_experiment_series, list_source_datasets
-from capstone_mcp.desktop import DEFAULT_DEBUG_PORT, EXECUTABLE, Capstone
+from capstone_mcp.desktop import (
+    DEFAULT_DEBUG_PORT,
+    EXECUTABLE,
+    AutomationError,
+    Capstone,
+)
+from capstone_mcp.models import Window
 from capstone_mcp.session import UnifiedSessionManager
 
 if TYPE_CHECKING:
@@ -52,37 +63,48 @@ def live_capstone_process() -> Generator[int, None, None]:
     process = subprocess.Popen(  # noqa: S603
         cmd, env=env, cwd=str(EXECUTABLE.parent),
     )
-    pid = process.pid
-
-    # Wait up to 15s for Capstone to expose CDP discovery endpoint
-    mgr = UnifiedSessionManager(debug_port=DEFAULT_DEBUG_PORT)
-    ready = False
-    for _ in range(15):
-        time.sleep(1)
-        try:
-            inv = mgr.read_live_inventory()
-            if inv is not None:
-                ready = True
-                break
-        except (RuntimeError, OSError, ValueError, TimeoutError):
-            pass
-
-    if not ready:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        pytest.fail("Capstone did not open CDP debug port within 15 seconds.")
-
     try:
-        yield pid
+        app = Capstone()
+        titles: list[str] = []
+        for _attempt in range(15):
+            if process.poll() is not None:
+                pytest.fail(f"Capstone exited before opening a window ({process.returncode})")
+            try:
+                windows = app.attach(process_id=process.pid)
+                titles = [window.title for window in windows]
+                if any(title and title != "PASCO Software Update" for title in titles):
+                    break
+            except (AutomationError, OSError):
+                pass
+            time.sleep(1)
+        else:
+            pytest.fail(f"Capstone experiment window not ready; observed: {titles}")
+        yield process.pid
     finally:
-        process.terminate()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+@pytest.fixture(scope="module")
+def live_capstone_cdp(live_capstone_process: int) -> None:
+    """Wait for CDP independently of the GUI attachment test."""
+    manager = UnifiedSessionManager(debug_port=DEFAULT_DEBUG_PORT)
+    deadline = time.monotonic() + 15
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+            _ = manager.read_live_inventory()
+        except (httpx2.HTTPError, RuntimeError, OSError, ValueError) as exc:
+            last_error = exc
+            time.sleep(1)
+        else:
+            return
+    pytest.fail(f"Capstone PID {live_capstone_process} CDP not ready: {last_error}")
 
 
 def test_live_capstone_attaches_and_lists_windows(
@@ -98,11 +120,47 @@ def test_live_capstone_attaches_and_lists_windows(
     assert any(w.handle > 0 for w in windows)
 
 
-def test_live_capstone_cdp_inventory_and_telemetry(
-    live_capstone_process: int,
+@pytest.mark.anyio
+async def test_live_capstone_reattaches_after_native_worker_timeout(
+    live_capstone_process: int, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    worker = AutomationWorker(timeout=15)
+    monkeypatch.setattr(server, "WORKER", worker)
+    attach_args = {"process_id": live_capstone_process}
+    try:
+        _ = await server.MCP.call_tool("capstone_attach", attach_args)
+        window_list = TypeAdapter(list[Window])
+        before = window_list.validate_python(
+            await server._native(NativeRequest(operation="windows")),
+        )
+        assert before
+        previous = worker.process
+        assert previous is not None
+        # Expire a read-only request while connected to the real application.
+        worker.timeout = 0
+        with pytest.raises(ToolError) as failure:
+            _ = await server.MCP.call_tool(
+                "capstone_snapshot", {"handle": before[0].handle},
+            )
+        assert json.loads(str(failure.value))["error_code"] == "TIMEOUT_ERROR"
+        assert previous.poll() is not None
+        assert psutil.pid_exists(live_capstone_process)
+
+        worker.timeout = 15
+        _ = await server.MCP.call_tool("capstone_attach", attach_args)
+        assert worker.process_id != previous.pid
+        windows = window_list.validate_python(
+            await server._native(NativeRequest(operation="windows")),
+        )
+        assert windows
+        assert {w.process_id for w in windows} == {live_capstone_process}
+    finally:
+        worker.close()
+
+
+@pytest.mark.usefixtures("live_capstone_cdp")
+def test_live_capstone_cdp_inventory_and_telemetry() -> None:
     # Given: live Capstone CDP port
-    del live_capstone_process
     mgr = UnifiedSessionManager(debug_port=DEFAULT_DEBUG_PORT)
 
     # When: querying live inventory
@@ -117,11 +175,8 @@ def test_live_capstone_cdp_inventory_and_telemetry(
 
 
 @pytest.mark.anyio
-async def test_live_capstone_mcp_resource(
-    live_capstone_process: int,
-) -> None:
-    # Given: live Capstone process
-    del live_capstone_process
+@pytest.mark.usefixtures("live_capstone_cdp")
+async def test_live_capstone_mcp_resource() -> None:
 
     # When: reading dynamic MCP resource capstone://measurements/live
     raw_json = await server.capstone_live_measurements_resource()
@@ -134,11 +189,9 @@ async def test_live_capstone_mcp_resource(
     assert isinstance(data["measurements"], list)
 
 
-def test_live_capstone_polymorphic_seam(
-    live_capstone_process: int,
-) -> None:
+@pytest.mark.usefixtures("live_capstone_cdp")
+def test_live_capstone_polymorphic_seam() -> None:
     # Given: live Capstone process with exposed CDP port
-    del live_capstone_process
 
     # When: querying polymorphic data source seam
     datasets = list_source_datasets("live://measurements")
@@ -147,8 +200,7 @@ def test_live_capstone_polymorphic_seam(
     assert isinstance(datasets, list)
     if datasets:
         target = datasets[0].name
-        series = get_experiment_series("live://measurements", "time", target)
-        assert series.x.name == "time"
-        assert series.y.name == target
-        assert len(series.y.values) >= 1
+        assert datasets[0].sample_count == 0
+        with pytest.raises(ValueError, match="at least two"):
+            get_experiment_series("live://measurements", "time", target)
 

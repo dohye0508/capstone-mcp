@@ -1,17 +1,25 @@
 # Copyright 2026 Capstone MCP contributors.
-"""Native graph clipboard parsing and fit catalog coverage."""
+"""Native graph parsing, saved graph reads, and fit catalog coverage."""
 
 import re
+from pathlib import Path
+from unittest.mock import AsyncMock
+from zipfile import ZipFile
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from capstone_mcp.graphs import (
     FIT_ROWS,
     FIT_TYPES,
     FitModel,
+    GraphAction,
+    GraphRequest,
     GraphStateError,
+    ReadGraphRequest,
     parse_graph_xml,
 )
+from capstone_mcp.tools.displays import register_display_tools
 
 
 def _fit(
@@ -123,6 +131,39 @@ def test_successful_fit_still_requires_result_values() -> None:
         _ = parse_graph_xml(_payload(_renderer(
             "renderer", source_id="x", dataset_id="run", unit="0", fits=fit,
         )))
+@pytest.mark.anyio
+async def test_manage_graph_reads_saved_workbook_without_native_worker(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "workbook.cap"
+    first = _payload(selections=(0,)).split(b"<PasteRoot>")[1].split(b"</PasteRoot>")[0]
+    second = first.replace(b'LineGraphCurveFitType="0"', b'LineGraphCurveFitType="1"')
+    with ZipFile(path, "x") as archive:
+        archive.writestr(
+            "main.xml",
+            b"<DSProExperiment><Workspace>"
+            + first + second + b"</Workspace></DSProExperiment>",
+        )
+    native = AsyncMock(side_effect=AssertionError("Archive reads must bypass native IPC"))
+    read_graph_tool = register_display_tools(FastMCP("saved-graph-test"), native)[
+        "capstone_manage_graph"
+    ]
+
+    with pytest.raises(GraphStateError, match="contains 2 graphs"):
+        _ = await read_graph_tool(GraphRequest(
+            action=GraphAction.READ, read=ReadGraphRequest(cap_file=str(path)),
+        ))
+    result = await read_graph_tool(GraphRequest(
+        action=GraphAction.READ,
+        read=ReadGraphRequest(cap_file=str(path), graph_index=1, allow_foreground=False),
+    ))
+
+    assert result.read is not None
+    assert result.read.state.selected_types == [1]
+    assert result.read.cap_file == str(path)
+    assert result.read.graph_index == 1
+    assert result.read.graph_count == 2
+    native.assert_not_awaited()
 
 
 def test_catalog_matches_native_rows_and_excludes_user_defined() -> None:

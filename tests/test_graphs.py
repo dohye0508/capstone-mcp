@@ -89,6 +89,7 @@ def test_manage_graph_create_action() -> None:
     app.click.assert_called_once_with(
         10,
         "ref:palette_graph",
+        double=True,
         allow_foreground=True,
     )
 

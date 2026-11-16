@@ -345,6 +345,7 @@ class Capstone:
 
     def act(
         self, ref: str, action: Action, *, allow_foreground: bool = True,
+        double: bool = False,
     ) -> Result:
         """Activate by physical click; use UIA for non-invoke control patterns."""
         node = self.control(ref)
@@ -367,7 +368,9 @@ class Capstone:
                 )
                 if modal:
                     self.require_uncovered(top_level, point)
-                node.click_input(button="left", coords=point, absolute=True)
+                node.click_input(
+                    button="left", coords=point, absolute=True, double=double,
+                )
                 return Result(detail="Control clicked; inspect to verify.")
             case Action.TOGGLE:
                 node.iface_toggle.Toggle()
@@ -415,10 +418,13 @@ class Capstone:
         ref: str,
         *,
         allow_foreground: bool = True,
+        double: bool = False,
     ) -> Result:
         """Click a control reference; handle parameter accepted for compatibility."""
         del handle
-        return self.act(ref, Action.INVOKE, allow_foreground=allow_foreground)
+        return self.act(
+            ref, Action.INVOKE, allow_foreground=allow_foreground, double=double,
+        )
 
     def type_text(self, text: str) -> None:
         """Type literal text without interpreting keyboard shortcut syntax."""

@@ -47,6 +47,7 @@ class NativeRequest(Model):
     action: Action = Action.INVOKE
     value: str = ""
     point: Point = Point(x=0, y=0)
+    fit_offset: Point | None = None
     end: Point = Point(x=0, y=0)
     button: Button = Button.LEFT
     double: bool = False
