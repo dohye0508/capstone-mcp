@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import time
 from collections import OrderedDict, deque
+from itertools import islice
 from threading import Lock
 from typing import Final
 
@@ -58,9 +59,12 @@ class TelemetryBuffer:
             return []
         with self._lock:
             buf = self._buffers.get(euid)
-            samples = list(buf) if buf else []
-        if limit is not None and limit > 0:
-            return samples[-limit:]
+            if not buf:
+                return []
+            if limit is None:
+                return list(buf)
+            samples = list(islice(reversed(buf), min(limit, len(buf))))
+        samples.reverse()
         return samples
 
     def sample_count(self, euid: str) -> int:

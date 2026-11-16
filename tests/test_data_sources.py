@@ -175,6 +175,7 @@ def test_live_measurement_adapter_class() -> None:
     session = MagicMock()
     session.read_live_inventory.return_value = mock_inv
     session.read_live_measurement.return_value = 3.3
+    session.telemetry.sample_count.return_value = 0
     adapter = LiveMeasurementAdapter(session=session)
     datasets = adapter.list_datasets()
     assert len(datasets) == 1
@@ -199,6 +200,7 @@ def test_list_source_datasets_live_measurements_mocked() -> None:
     ) as mock_cls:
         session_inst = MagicMock()
         session_inst.read_live_inventory.return_value = mock_inv
+        session_inst.telemetry.sample_count.return_value = 0
         mock_cls.return_value = session_inst
 
         datasets = list_source_datasets("live://measurements")

@@ -58,7 +58,7 @@ class LiveMeasurementAdapter:
                 name=name,
                 units=units,
                 run_id=None,
-                sample_count=len(self.session.telemetry.get_samples(euid)),
+                sample_count=self.session.telemetry.sample_count(euid),
             )
             for euid, name, units in _measurements(self._inventory())
         ]
@@ -85,7 +85,7 @@ class LiveMeasurementAdapter:
             msg = f"Expected one live measurement matching '{y_name}'; use its EUID."
             raise ValueError(msg)
         y_euid, y_units = matches[0]
-        samples = sorted(self.session.telemetry.get_samples(y_euid))
+        samples = self.session.telemetry.get_samples(y_euid)
         if len(samples) < MIN_SERIES_SAMPLES:
             msg = "Collect at least two samples in the same Capstone session first."
             raise ValueError(msg)

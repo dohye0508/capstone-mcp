@@ -151,13 +151,13 @@ def _live_adapter() -> tuple[LiveMeasurementAdapter, MagicMock]:
 def test_live_exact_channel_and_retained_sample_count() -> None:
     adapter, session = _live_adapter()
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 0]
-    session.telemetry.push_sample("v1", 2.0, timestamp=0.0)
+    session.telemetry.push_sample("v1", 3.0, timestamp=0.0)
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 1]
-    session.telemetry.push_sample("v1", 3.0, timestamp=1.0)
+    session.telemetry.push_sample("v1", 2.0, timestamp=0.0)
     series = adapter.get_series("index", "Voltage")
     session.read_live_measurement.assert_not_called()
     assert series.x.values == [0, 1]
-    assert series.y.values == [2.0, 3.0]
+    assert series.y.values == [3.0, 2.0]
     assert series.metadata["x_basis"] == "sample_index"
 
 
