@@ -7,6 +7,7 @@ from statistics import median
 from typing import Any, Final
 
 from capstone_mcp.desktop import Capstone
+from capstone_mcp.numerics.diffraction import fit_double_slit
 from capstone_mcp.recipes.base import ExperimentRecipe, RecipePhaseResult
 
 DEFAULT_LASER_WAVELENGTH_M: Final[float] = 650.0e-9  # Red diode laser (650 nm)
@@ -218,6 +219,7 @@ class SlitDiffractionRecipe(ExperimentRecipe):
                 "positions_mm": pos_mm,
                 "intensities": intensities,
                 "slit_type": slit_type,
+                "analysis_mode": params.get("analysis_mode", "separation_only"),
                 "wavelength_m": wl,
                 "screen_distance_m": l_dist,
             },
@@ -233,7 +235,7 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             details=details,
         )
 
-    def analyze(
+    def analyze(  # noqa: PLR0911
         self,
         parameters: dict[str, Any] | None = None,
     ) -> RecipePhaseResult:
@@ -248,16 +250,13 @@ class SlitDiffractionRecipe(ExperimentRecipe):
         )
         int_raw = params.get("intensities") or data.get("intensities")
 
-        wl = float(
-            params.get("wavelength_m")
-            or data.get("wavelength_m")
-            or DEFAULT_LASER_WAVELENGTH_M,
-        )
-        l_dist = float(
-            params.get("screen_distance_m")
-            or data.get("screen_distance_m")
-            or DEFAULT_SCREEN_DISTANCE_M,
-        )
+        wl = float(params.get(
+            "wavelength_m", data.get("wavelength_m", DEFAULT_LASER_WAVELENGTH_M),
+        ))
+        l_dist = float(params.get(
+            "screen_distance_m",
+            data.get("screen_distance_m", DEFAULT_SCREEN_DISTANCE_M),
+        ))
         slit_type = str(
             params.get("slit_type") or data.get("slit_type") or "single_slit",
         )
@@ -295,6 +294,42 @@ class SlitDiffractionRecipe(ExperimentRecipe):
                 message="Use a supported slit type and positive finite optics values.",
             )
 
+        mode = str(params.get(
+            "analysis_mode", data.get("analysis_mode", "separation_only"),
+        ))
+        if mode not in {"separation_only", "joint_envelope"}:
+            return RecipePhaseResult(
+                phase="analyze", status="failed", message="Unknown analysis_mode.",
+            )
+        if slit_type == "double_slit" and mode == "joint_envelope":
+            try:
+                fit = fit_double_slit(
+                    [value * 1e-3 for value in positions_mm],
+                    intensities,
+                    wl,
+                    l_dist,
+                )
+            except ValueError as exc:
+                return RecipePhaseResult(
+                    phase="analyze", status="failed", message=str(exc),
+                )
+            return RecipePhaseResult(
+                phase="analyze",
+                status="completed",
+                message="Fitted double-slit interference and diffraction envelope.",
+                details={
+                    "slit_type": slit_type,
+                    "derived_slit_width_mm": fit.width_m * 1000,
+                    "derived_slit_separation_mm": fit.separation_m * 1000,
+                    "central_maximum": {"position_mm": fit.center_m * 1000},
+                    "amplitude": fit.amplitude,
+                    "background": fit.background,
+                    "normalized_rms": fit.normalized_rms,
+                    "model": "equal-width Fraunhofer double slit + constant background",
+                    "wavelength_nm": wl * 1e9,
+                    "screen_distance_m": l_dist,
+                },
+            )
         try:
             x_center_mm, max_i = _central_peak(positions_mm, intensities)
             maxima_pts, minima_pts = _find_local_extrema(positions_mm, intensities)

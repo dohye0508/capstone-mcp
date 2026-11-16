@@ -17,6 +17,7 @@ from capstone_mcp.data_sources.adapters.csv_file import (
     read_csv_series,
 )
 from capstone_mcp.data_sources.adapters.live_telemetry import LiveMeasurementAdapter
+from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "cp949", "utf-16"])
@@ -103,16 +104,19 @@ def test_live_adapter_reads_native_inventory_fields_without_invented_time() -> N
         }],
     )
     session.debug_port = 9222
-    session.telemetry.sample_count.return_value = 2
-    session.telemetry.get_samples.return_value = [(10.0, 1.25), (10.5, 1.5)]
+    session.telemetry = Mock(wraps=TelemetryBuffer())
+    clock = TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero")
+    session.telemetry.push_sample("native-voltage", 1.25, 10.0, clock=clock)
+    session.telemetry.push_sample("native-voltage", 1.5, 10.5, clock=clock)
     adapter = LiveMeasurementAdapter(session=session)
     metadata = adapter.list_datasets()[0]
     assert (metadata.name, metadata.units, metadata.sample_count) == ("전압", "V", 2)
     session.telemetry.get_samples.assert_not_called()
+    session.telemetry.get_snapshot.assert_not_called()
     series = adapter.get_series("인덱스", unicodedata.normalize("NFD", "전압"))
     assert series.x.values == [0, 1]
     assert series.y.values == [1.25, 1.5]
     timed = adapter.get_series("시간", "전압")
     assert timed.x.values == [0.0, 0.5]
-    assert timed.metadata["x_basis"] == "host_monotonic_elapsed"
+    assert timed.metadata["x_basis"] == "declared_clock_elapsed"
     session.read_live_measurement.assert_not_called()

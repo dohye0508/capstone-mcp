@@ -20,6 +20,7 @@ from capstone_mcp.data_sources import (
 from capstone_mcp.data_sources.adapters.csv_file import read_csv_all_columns
 from capstone_mcp.displays import ReadTableResult
 from capstone_mcp.session import UnifiedSessionManager
+from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
 from tests.golden_samples import GOLDEN_MASTER_DIR
 from tests.test_capfiles import _payload, _write_cap, _xml
 
@@ -180,7 +181,7 @@ def test_live_measurement_adapter_class() -> None:
     datasets = adapter.list_datasets()
     assert len(datasets) == 1
     assert datasets[0].name == "Voltage"
-    session.telemetry.get_samples.return_value = []
+    session.telemetry = TelemetryBuffer()
     with pytest.raises(ValueError, match="at least two"):
         adapter.get_series("time", "Voltage")
     session.read_live_measurement.assert_not_called()
@@ -222,8 +223,8 @@ def test_get_experiment_series_uses_captured_telemetry(
     session = UnifiedSessionManager(debug_port=9234)
     inventory = MagicMock(return_value=mock_inv)
     monkeypatch.setattr(session, "read_live_inventory", inventory)
-    session.telemetry.push_sample("euid_force", 4.0, timestamp=100.0)
-    session.telemetry.push_sample("euid_force", 9.81, timestamp=100.25)
+    session.telemetry.push_sample("euid_force", 4.0, timestamp=100.0, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
+    session.telemetry.push_sample("euid_force", 9.81, timestamp=100.25, clock=TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero"))
 
     series = get_experiment_series(
         "live://measurements", "time", "force", live_session=session,

@@ -90,13 +90,21 @@ def _find_graph_control(
     """Find target graph display widget."""
     target = graph_name.strip().casefold() if graph_name else "graph"
     matches = [
-        ctrl for ctrl in controls
-        if ctrl.visible and ctrl.control_type in ("Custom", "Pane", "Group")
+        ctrl
+        for ctrl in controls
+        if ctrl.visible
+        and ctrl.control_type in ("Custom", "Pane", "Group")
         and (
-            (target == ctrl.name.strip().casefold() if graph_name
-             else target in ctrl.name.casefold())
-            or (target == ctrl.automation_id.casefold() if graph_name
-                else target in ctrl.automation_id.casefold())
+            (
+                target == ctrl.name.strip().casefold()
+                if graph_name
+                else target in ctrl.name.casefold()
+            )
+            or (
+                target == ctrl.automation_id.casefold()
+                if graph_name
+                else target in ctrl.automation_id.casefold()
+            )
         )
     ]
     if not matches:
@@ -112,6 +120,8 @@ def _find_toolbar_button(
     controls: list[Control],
     graph_ctrl: Control,
     keywords: tuple[str, ...],
+    *,
+    label: str | None = None,
 ) -> Control:
     """Locate a specific tool button on the graph toolbar."""
     by_ref = {control.ref: control for control in controls}
@@ -138,7 +148,13 @@ def _find_toolbar_button(
         name_lower = c.name.strip().lower()
         aid_lower = c.automation_id.lower()
 
-        if any(kw.lower() in name_lower or kw.lower() in aid_lower for kw in keywords):
+        if (
+            c.name == label
+            if label is not None
+            else any(
+                kw.lower() in name_lower or kw.lower() in aid_lower for kw in keywords
+            )
+        ):
             matches.append(c)
     if len(matches) == 1:
         return matches[0]
@@ -159,8 +175,12 @@ def _observed_toggle(app: Capstone, button: Control, *, visible: bool) -> bool |
 
 
 def _set_tool_state(
-    app: Capstone, handle: int, button: Control,
-    *, enable: bool | None, visible: bool,
+    app: Capstone,
+    handle: int,
+    button: Control,
+    *,
+    enable: bool | None,
+    visible: bool,
 ) -> None:
     if enable is not None:
         state = _observed_toggle(app, button, visible=visible)
@@ -258,13 +278,18 @@ def toggle_graph_statistics(
 
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
-    stats_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, STATS_KEYWORDS)
+    stats_btn = _find_toolbar_button(
+        snapshot.controls, graph_ctrl, STATS_KEYWORDS, label=request.tool_label,
+    )
 
     previous_stats = _parse_statistics(
         _extract_graph_controls(snapshot.controls, graph_ctrl),
     )
     _set_tool_state(
-        app, request.handle, stats_btn, enable=request.enable,
+        app,
+        request.handle,
+        stats_btn,
+        enable=request.enable,
         visible=bool(previous_stats.raw_values),
     )
 
@@ -281,7 +306,10 @@ def toggle_graph_statistics(
 
     g_name = request.graph_name or graph_ctrl.name or "Graph"
     observed_button = _find_toolbar_button(
-        snapshot.controls, graph_ctrl, STATS_KEYWORDS,
+        snapshot.controls,
+        graph_ctrl,
+        STATS_KEYWORDS,
+        label=request.tool_label,
     )
     observed = _observed_toggle(app, observed_button, visible=has_stats)
     detail = (
@@ -293,9 +321,8 @@ def toggle_graph_statistics(
         visible=has_stats,
         statistics=stats if has_stats else None,
         graph_name=g_name,
-        verified=observed is not None and (
-            request.enable is None or observed == request.enable
-        ),
+        verified=observed is not None
+        and (request.enable is None or observed == request.enable),
         detail=detail,
     )
 
@@ -330,13 +357,18 @@ def measure_graph_area(
 
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
-    area_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, AREA_KEYWORDS)
+    area_btn = _find_toolbar_button(
+        snapshot.controls, graph_ctrl, AREA_KEYWORDS, label=request.tool_label,
+    )
 
     previous_area, _, _ = _parse_area(
         _extract_graph_controls(snapshot.controls, graph_ctrl),
     )
     _set_tool_state(
-        app, request.handle, area_btn, enable=request.enable,
+        app,
+        request.handle,
+        area_btn,
+        enable=request.enable,
         visible=previous_area is not None,
     )
 
@@ -348,7 +380,9 @@ def measure_graph_area(
     area_val, unit, raw_text = _parse_area(overlay_ctrls)
 
     g_name = request.graph_name or graph_ctrl.name or "Graph"
-    observed_button = _find_toolbar_button(snapshot.controls, graph_ctrl, AREA_KEYWORDS)
+    observed_button = _find_toolbar_button(
+        snapshot.controls, graph_ctrl, AREA_KEYWORDS, label=request.tool_label,
+    )
     observed = _observed_toggle(app, observed_button, visible=area_val is not None)
     unit_str = f" {unit}" if unit else ""
     detail = (
@@ -363,9 +397,8 @@ def measure_graph_area(
         unit=unit,
         raw_text=raw_text,
         graph_name=g_name,
-        verified=observed is not None and (
-            request.enable is None or observed == request.enable
-        ),
+        verified=observed is not None
+        and (request.enable is None or observed == request.enable),
         detail=detail,
     )
 
@@ -454,7 +487,9 @@ def graph_delta(
 
     snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
     graph_ctrl = _find_graph_control(snapshot.controls, request.graph_name)
-    delta_btn = _find_toolbar_button(snapshot.controls, graph_ctrl, DELTA_KEYWORDS)
+    delta_btn = _find_toolbar_button(
+        snapshot.controls, graph_ctrl, DELTA_KEYWORDS, label=request.tool_label,
+    )
 
     # Click delta button to activate tool using display harness primitive
     click_control(app, request.handle, delta_btn, allow_foreground=True)

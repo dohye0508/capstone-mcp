@@ -18,7 +18,7 @@ from capstone_mcp.data_sources.adapters.capfile import (
 )
 from capstone_mcp.data_sources.adapters.live_telemetry import LiveMeasurementAdapter
 from capstone_mcp.session import UnifiedSessionManager
-from capstone_mcp.session.telemetry import TelemetryBuffer
+from capstone_mcp.session.telemetry import TelemetryBuffer, TelemetryClock
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,9 +151,10 @@ def _live_adapter() -> tuple[LiveMeasurementAdapter, MagicMock]:
 def test_live_exact_channel_and_retained_sample_count() -> None:
     adapter, session = _live_adapter()
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 0]
-    session.telemetry.push_sample("v1", 3.0, timestamp=0.0)
+    clock = TelemetryClock(clock_id="fixture", unit="seconds", origin="test-zero")
+    session.telemetry.push_sample("v1", 3.0, timestamp=0.0, clock=clock)
     assert [d.sample_count for d in adapter.list_datasets()] == [0, 1]
-    session.telemetry.push_sample("v1", 2.0, timestamp=0.0)
+    session.telemetry.push_sample("v1", 2.0, timestamp=0.0, clock=clock)
     series = adapter.get_series("index", "Voltage")
     session.read_live_measurement.assert_not_called()
     assert series.x.values == [0, 1]

@@ -53,17 +53,19 @@ from capstone_mcp.graphs.toolbox import (
     measure_graph_area,
     toggle_graph_statistics,
 )
-from capstone_mcp.models import Point, Result, Snapshot
+from capstone_mcp.models import Bounds, Point, Result, Snapshot
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 try:
+    import win32api
     import win32gui
     import win32process
 
     from capstone_mcp.ui_events import WindowEvents
 except ImportError:
+    win32api = None  # type: ignore[assignment]
     win32gui = None  # type: ignore[assignment]
     win32process = None  # type: ignore[assignment]
     WindowEvents = None  # type: ignore[assignment, misc]
@@ -122,40 +124,100 @@ def ready_graph_menu(app: Capstone, before: set[int], name: str) -> Snapshot | N
     return None
 
 
-def _fit_menu(app: Capstone, before: set[int]) -> Snapshot | None:
+def _matches_fit_popup(snapshot: Snapshot, label: str | None) -> bool:
+    if snapshot.truncated:
+        return False
+    items = [c for c in snapshot.controls
+             if c.control_type == "MenuItem" and c.visible and c.enabled]
+    if label is not None:
+        named = [c for c in items if c.name == label]
+        if len(named) > 1:
+            msg = "Observed fit label matches multiple menu items."
+            raise AutomationError(msg)
+        return len(named) == 1
+    return (len(items) == 1 and not items[0].name
+            and not snapshot.controls[0].automation_id)
+
+
+def _fit_menu(
+    app: Capstone, before: set[int], label: str | None = None,
+) -> Snapshot | None:
+    candidates: list[int] = []
     for window in app.windows():
-        if window.handle in before or window.title != "PASCO Capstone":
+        if window.handle in before or (
+            label is None and window.title != "PASCO Capstone"
+        ):
             continue
         try:
             snapshot = app.snapshot(window.handle, 3, 100)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "Failed to snapshot fit menu window %s: %s",
-                window.handle,
-                e,
-            )
+        except Exception as error:  # noqa: BLE001
+            logger.debug("Failed to snapshot fit window %s: %s", window.handle, error)
             continue
-        items = [c for c in snapshot.controls if c.control_type == "MenuItem"]
-        if (
-            len(items) == 1
-            and not items[0].name
-            and not snapshot.controls[0].automation_id
-        ):
-            return snapshot
-    return None
+        if _matches_fit_popup(snapshot, label):
+            candidates.append(window.handle)
+    if len(candidates) > 1:
+        msg = "Multiple native fit popups appeared; no fit menu was selected."
+        raise AutomationError(msg)
+    if not candidates:
+        return None
+    # snapshot() replaces app.refs globally: scanning a later window invalidates
+    # earlier refs. Reacquire and validate the unique target after the scan.
+    current = app.snapshot(candidates[0], 3, 100)
+    return current if _matches_fit_popup(current, label) else None
 
 
-def _toggle_fit(
+def _fit_popup_bounds(app: Capstone, popup: Snapshot) -> Bounds:
+    """Validate fresh owned popup geometry against a physical monitor, not its owner."""
+    if win32api is None:
+        msg = "Fit popup visibility requires Windows monitor geometry."
+        raise AutomationError(msg)
+    # window() verifies process ownership and visibility on every call.
+    rect = app.window(popup.window.handle).rectangle()
+    current = Bounds(left=rect.left, top=rect.top, right=rect.right, bottom=rect.bottom)
+    if current != popup.window.bounds:
+        msg = (
+            "Fit popup moved since inspection; inspect it again before choosing a fit."
+        )
+        raise AutomationError(msg)
+    if current.right <= current.left or current.bottom <= current.top:
+        msg = "Fit popup has empty bounds; no fit was selected."
+        raise AutomationError(msg)
+    # Pywin32 exposes this API at runtime; its bundled stub omits it.
+    monitors = [entry[2] for entry in win32api.EnumDisplayMonitors()]  # pyright: ignore[reportAttributeAccessIssue]
+    if not any(
+        left <= current.left
+        and top <= current.top
+        and current.right <= right
+        and current.bottom <= bottom
+        for left, top, right, bottom in monitors
+    ):
+        msg = "Fit popup is not wholly on a monitor; reposition it before choosing."
+        raise AutomationError(msg)
+    return current
+
+
+def _require_popup_point(bounds: Bounds, point: Point) -> None:
+    if not (bounds.left <= point.x < bounds.right
+            and bounds.top <= point.y < bounds.bottom):
+        msg = "Fit item lies outside its popup; no selection was sent."
+        raise AutomationError(msg)
+
+
+def _toggle_fit(  # noqa: PLR0913
     app: Capstone,
     handle: int,
     point: Point,
     native_type: int,
     *,
     allow_foreground: bool = True,
+    menu_label: str | None = None,
 ) -> Result:
     """Toggle one known native model; callers must verify the copied state."""
     if not allow_foreground:
         msg = "Graph fitting requires foreground input."
+        raise AutomationError(msg)
+    if native_type not in FIT_ROWS:
+        msg = "Unknown native fit type; no fit menu was opened."
         raise AutomationError(msg)
     window = app.window(handle)
     rect = window.rectangle()
@@ -172,32 +234,57 @@ def _toggle_fit(
     with WindowEvents(window.process_id()) as events:
         _ = app.focus_window(handle)
         window.click_input(button="left", coords=(point.x, point.y))
-        popup = events.changes.until(
-            lambda: _fit_menu(app, before),
-            TRANSITION_SECONDS,
-            description=f"Native fit menu at {point}",
-        )
-        bounds = popup.window.bounds
-        if bounds.top < rect.top or bounds.bottom > rect.bottom:
-            msg = "Fit menu is clipped; enlarge the window before choosing a fit."
-            raise AutomationError(msg)
-        item = next(c for c in popup.controls if c.control_type == "MenuItem")
-        invoke_graph_menu(
-            app,
-            item.ref,
-            screen_point=Point(
-                x=(bounds.left + bounds.right) // 2,
-                y=bounds.top
-                + (bounds.bottom - bounds.top) * (2 * FIT_ROWS[native_type] + 1) // 48,
-            ),
-        )
-        _ = app.keys(handle, "{ESC}")
-        _ = events.changes.until(
-            lambda: True if {w.handle for w in app.windows()} == before else None,
-            TRANSITION_SECONDS,
-        )
+        try:
+            popup = events.changes.until(
+                lambda: _fit_menu(app, before, menu_label),
+                TRANSITION_SECONDS,
+                description=f"Native fit menu at {point}",
+            )
+            bounds = _fit_popup_bounds(app, popup)
+            if menu_label is not None:
+                item = next(c for c in popup.controls
+                            if c.control_type == "MenuItem" and c.name == menu_label
+                            and c.visible and c.enabled)
+                click_point = Point(
+                    x=(item.bounds.left + item.bounds.right) // 2,
+                    y=(item.bounds.top + item.bounds.bottom) // 2,
+                )
+            else:
+                item = next(c for c in popup.controls if c.control_type == "MenuItem")
+                click_point = Point(
+                    x=(bounds.left + bounds.right) // 2,
+                    y=bounds.top + (bounds.bottom - bounds.top)
+                    * (2 * FIT_ROWS[native_type] + 1) // 48,
+                )
+            _require_popup_point(bounds, click_point)
+            app.require_uncovered(popup.window.handle, (click_point.x, click_point.y))
+            invoke_graph_menu(app, item.ref, screen_point=click_point)
+            _ = app.keys(handle, "{ESC}")
+            _ = events.changes.until(
+                lambda: True if {w.handle for w in app.windows()} == before else None,
+                TRANSITION_SECONDS,
+            )
+        except Exception:
+            try:
+                close_menus(app, handle)
+            except Exception:
+                logger.exception("Fit cleanup failed; preserving the original error.")
+            raise
     return Result(
         detail=f"Native fit type {native_type} toggled; verify copied graph state.",
+    )
+
+
+def _read_fitting_graph(
+    app: Capstone, handle: int, request: SetGraphFitsRequest,
+) -> GraphState:
+    if (request.display_menu_label is None
+            and request.copy_display_label is None):
+        return read_graph(app, handle, allow_foreground=request.allow_foreground)
+    return read_graph(
+        app, handle, allow_foreground=request.allow_foreground,
+        display_menu_label=request.display_menu_label,
+        copy_display_label=request.copy_display_label,
     )
 
 
@@ -205,6 +292,7 @@ def _enable_fitting(
     app: Capstone,
     handle: int,
     point: Point | None,
+    request: SetGraphFitsRequest | None = None,
 ) -> GraphState:
     if point is None:
         msg = "Native fitting remained disabled; inspect the fit toolbar."
@@ -218,6 +306,8 @@ def _enable_fitting(
         raise AutomationError(msg)
     _ = app.focus_window(handle)
     window.click_input(button="left", coords=(point.x, point.y))
+    if request is not None:
+        return _read_fitting_graph(app, handle, request)
     return read_graph(app, handle)
 
 
@@ -252,11 +342,14 @@ def create_graph(
         msg = "Graph creation requires foreground input."
         raise AutomationError(msg)
 
-    snapshot = app.snapshot(request.handle, depth=12, limit=800)
+    snapshot = app.snapshot(request.handle, depth=16, limit=10_000)
+    if snapshot.truncated:
+        msg = "Graph palette selection requires a complete snapshot."
+        raise AutomationError(msg)
     matches = [
         c
         for c in snapshot.controls
-        if c.name == "Graph"
+        if c.name == request.palette_label
         and c.control_type in ("Text", "Button", "ListItem", "Custom")
         and c.visible
         and c.enabled
@@ -405,7 +498,7 @@ def set_graph_fits(
     """Apply an exact model set and verify it against Capstone's own graph XML."""
     progress = progress or GraphProgress()
     progress.stage = "inspect_graph_for_fitting"
-    before = read_graph(app, handle, allow_foreground=request.allow_foreground)
+    before = _read_fitting_graph(app, handle, request)
     verify_graph_binding(before, request.expected_data_signature)
 
     desired = {FIT_TYPES[model] for model in request.models}
@@ -425,10 +518,17 @@ def set_graph_fits(
     changed = False
     for native_type in sorted(current.symmetric_difference(desired)):
         progress.begin_input(f"select_fit_{native_type}")
-        _ = _toggle_fit(app, handle, request.menu_point, native_type)
+        labels_by_type = {FIT_TYPES[model]: label
+                          for model, label in request.menu_labels.items()}
+        label = labels_by_type.get(native_type)
+        if label is None:
+            _ = _toggle_fit(app, handle, request.menu_point, native_type)
+        else:
+            _ = _toggle_fit(app, handle, request.menu_point, native_type,
+                            menu_label=label)
         progress.stage = f"verify_fit_{native_type}"
         expected = set(state.selected_types).symmetric_difference({native_type})
-        observed = read_graph(app, handle)
+        observed = _read_fitting_graph(app, handle, request)
         if set(observed.selected_types) != expected:
             msg = (
                 f"Native fit selection was not confirmed for type {native_type}; "
@@ -446,7 +546,7 @@ def set_graph_fits(
 
     if desired and not state.fit_enabled:
         progress.begin_input("enable_fitting")
-        state = _enable_fitting(app, handle, request.master_point)
+        state = _enable_fitting(app, handle, request.master_point, request)
         changed = True
 
     if set(state.selected_types) != desired or (desired and not state.fit_enabled):
@@ -485,7 +585,7 @@ def analyze_graph(
     progress = progress or GraphProgress()
     fitting = request.fitting
     if request.x is not None or request.y is not None:
-        before = read_graph(app, handle, allow_foreground=fitting.allow_foreground)
+        before = _read_fitting_graph(app, handle, fitting)
         verify_graph_binding(before, fitting.expected_data_signature)
 
     for name, axis in (("x", request.x), ("y", request.y)):
@@ -501,7 +601,7 @@ def analyze_graph(
             progress.confirmed(f"{name}_menu_selection_delivered")
 
     if request.x is not None or request.y is not None:
-        current = read_graph(app, handle)
+        current = _read_fitting_graph(app, handle, fitting)
         fitting = fitting.model_copy(
             update={"expected_data_signature": current.data_signature},
         )
@@ -525,13 +625,15 @@ class GraphManager:
         return create_graph(self.app, request)
 
     def read(self, request: ReadGraphRequest) -> ReadGraphResult:
-        """Read graph state from a saved archive or from the active display."""
+        """Read graph state via native clipboard."""
         if request.cap_file is not None:
             return read_saved_graph(request.cap_file, request.graph_index)
         state = read_graph(
             self.app,
             request.handle,
             allow_foreground=request.allow_foreground,
+            display_menu_label=request.display_menu_label,
+            copy_display_label=request.copy_display_label,
         )
         return ReadGraphResult(state=state, verified=True)
 

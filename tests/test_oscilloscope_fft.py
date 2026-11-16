@@ -264,7 +264,7 @@ def test_set_scope_trigger_success() -> None:
         truncated=False,
     ))
 
-    lvl_node = _value_node("1.25 V")
+    lvl_node = _value_node("1.25")
     slope_node = _value_node("falling")
     mode_node = _value_node("single")
 
@@ -309,7 +309,7 @@ def test_set_scope_trigger_success() -> None:
     assert res.trigger_slope == "falling"
     assert res.trigger_mode == "single"
     assert res.verified is True
-    lvl_node.iface_value.SetValue.assert_called_once_with("1.25 V")
+    lvl_node.iface_value.SetValue.assert_called_once_with("1.25")
     slope_node.iface_value.SetValue.assert_called_once_with("falling")
     mode_node.iface_value.SetValue.assert_called_once_with("single")
 

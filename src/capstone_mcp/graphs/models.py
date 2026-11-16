@@ -91,8 +91,30 @@ class FitModel(StrEnum):
 
 
 _NATIVE_TYPES_BY_ROW: Final[tuple[int, ...]] = (
-    0, 1, 21, 2, 18, 3, 4, 23, 5, 24, 6, 7,
-    8, 9, 10, 11, 12, 13, 14, 20, 22, 15, 19, 16,
+    0,
+    1,
+    21,
+    2,
+    18,
+    3,
+    4,
+    23,
+    5,
+    24,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    20,
+    22,
+    15,
+    19,
+    16,
 )
 
 FIT_TYPES: Final[Mapping[FitModel, int]] = MappingProxyType(
@@ -323,9 +345,13 @@ class GraphAnalysisReport(Model):
 # 6. Execution Tracking & Failure Envelopes
 # ---------------------------------------------------------------------------
 
-GRAPH_INPUT_OPERATIONS: Final = frozenset({
-    "select_graph_measurement", "set_graph_fits", "analyze_graph",
-})
+GRAPH_INPUT_OPERATIONS: Final = frozenset(
+    {
+        "select_graph_measurement",
+        "set_graph_fits",
+        "analyze_graph",
+    },
+)
 
 
 class GraphFrame(Model):
@@ -362,7 +388,10 @@ class GraphFailure(Model):
     completed_steps: list[str] = Field(default_factory=list)
     graph_input_may_have_been_sent: bool
     next_action: Literal[
-        "observe_graph", "inspect_windows", "read_graph", "reattach_and_inspect",
+        "observe_graph",
+        "inspect_windows",
+        "read_graph",
+        "reattach_and_inspect",
     ]
     detail: str
 
@@ -404,6 +433,7 @@ class GraphProgress:
 class CreateGraphRequest(Model):
     """Specification for inserting a graph display onto the active page."""
 
+    palette_label: str = Field(default="Graph", min_length=1, pattern=r"\S")
     handle: int = 0
     allow_foreground: bool = True
 
@@ -418,6 +448,8 @@ class CreateGraphResult(Model):
 class ReadGraphRequest(Model):
     """Read live graph state or a saved graph in a Capstone archive."""
 
+    display_menu_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    copy_display_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     handle: int = 0
     allow_foreground: bool = True
     cap_file: str | None = Field(default=None, min_length=1)
@@ -487,6 +519,12 @@ class GraphFitRequest(Model):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
 
+    display_menu_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    copy_display_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    menu_labels: dict[FitModel, str] = Field(
+        default_factory=dict,
+        description="Exact observed labels for accessible native fit menu items.",
+    )
     menu_point: Point = Field(description="Dropdown arrow in fresh screenshot.")
     frame_id: str = Field(min_length=1, description="Frame ID from observe_graph.")
     models: list[FitModel] = Field(description="Exact desired model set.")
@@ -503,6 +541,12 @@ class GraphFitRequest(Model):
         """Validate that all requested fit models are unique."""
         if len(self.models) != len(set(self.models)):
             msg = "Choose each fitting model only once."
+            raise ValueError(msg)
+        if any(not label.strip() for label in self.menu_labels.values()):
+            msg = "Observed fit menu labels must not be blank."
+            raise ValueError(msg)
+        if len(set(self.menu_labels.values())) != len(self.menu_labels):
+            msg = "Observed fit menu labels must identify different items uniquely."
             raise ValueError(msg)
         return self
 
@@ -522,8 +566,12 @@ class GraphFitOutcome(Model):
 
     @computed_field
     @property
-    def next_action(self) -> Literal[
-        "inspect_graph", "inspect_fit_status", "no_fits_requested",
+    def next_action(
+        self,
+    ) -> Literal[
+        "inspect_graph",
+        "inspect_fit_status",
+        "no_fits_requested",
     ]:
         """Keep configured selection distinct from successful numerical analysis."""
         if not self.requested_models:
@@ -561,6 +609,7 @@ class AnalyzeGraphResult(Model):
 class GraphDeltaRequest(Model):
     """Specification for activating delta tool and reading coordinate differences."""
 
+    tool_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     handle: int = 0
     graph_name: str | None = None
     point: Point | None = None
@@ -594,6 +643,7 @@ class GraphDeltaResult(Model):
 class MeasureGraphAreaRequest(Model):
     """Specification for area under curve (integral) measurement."""
 
+    tool_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     handle: int = 0
     graph_name: str | None = None
     enable: bool | None = None
@@ -616,6 +666,7 @@ class MeasureGraphAreaResult(Model):
 class ToggleGraphStatisticsRequest(Model):
     """Specification for toggling statistics box and extracting values."""
 
+    tool_label: str | None = Field(default=None, min_length=1, pattern=r"\S")
     handle: int = 0
     graph_name: str | None = None
     enable: bool | None = None

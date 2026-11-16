@@ -8,6 +8,7 @@ import pytest
 
 from capstone_mcp.automation_models import NativeRequest
 from capstone_mcp.automation_worker import AutomationWorker
+from capstone_mcp.desktop import AutomationError
 from capstone_mcp.graphs import GraphOperationError
 from capstone_mcp.native.runtime import NativeDesktop
 
@@ -41,6 +42,17 @@ def test_legacy_fit_rejects_changed_pixels_before_input() -> None:
     with pytest.raises(GraphOperationError, match="visible graph image changed"):
         runtime.dispatch(NativeRequest(operation="fit_graph", handle=12, frame_id="fresh"))
     runtime.handlers["fit_graph"].assert_not_called()
+
+
+def test_legacy_fit_default_point_does_not_become_observed_offset() -> None:
+    runtime = NativeDesktop()
+    runtime.app = Mock()
+    request = NativeRequest(operation="fit_graph", handle=12)
+    request = NativeRequest.model_validate_json(request.model_dump_json())
+    with pytest.raises(AutomationError, match="observed toolbar offset"):
+        runtime.handlers["fit_graph"](request)
+    runtime.app.snapshot.assert_not_called()
+    runtime.app.click_point.assert_not_called()
 
 
 @pytest.mark.parametrize("operation", ["fit_graph", "graph_delta", "measure_graph_area", "toggle_graph_statistics", "manage_graph"])

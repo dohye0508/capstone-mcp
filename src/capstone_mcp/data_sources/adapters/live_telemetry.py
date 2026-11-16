@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import unicodedata
 from typing import TYPE_CHECKING, Final
 
@@ -85,19 +86,33 @@ class LiveMeasurementAdapter:
             msg = f"Expected one live measurement matching '{y_name}'; use its EUID."
             raise ValueError(msg)
         y_euid, y_units = matches[0]
-        samples = self.session.telemetry.get_samples(y_euid)
+        snapshot = self.session.telemetry.get_snapshot(y_euid)
+        samples = snapshot.samples
         if len(samples) < MIN_SERIES_SAMPLES:
             msg = "Collect at least two samples in the same Capstone session first."
             raise ValueError(msg)
 
-        start = samples[0][0]
+        clock = snapshot.clock
+        start = snapshot.first_timestamp
+        if clock is None or start is None:
+            msg = "Telemetry history has no timestamp provenance."
+            raise ValueError(msg)
+        elapsed = [timestamp - start for timestamp, _ in samples]
+        if by_time and not all(math.isfinite(value) for value in elapsed):
+            msg = "Telemetry elapsed time exceeds finite numeric range."
+            raise ValueError(msg)
+        units = {"seconds": "s", "milliseconds": "ms", "microseconds": "us",
+                 "nanoseconds": "ns", "ticks": "ticks"}
         return ExperimentSeries(
             x=DataSeries(
                 name=x_name,
-                units="s" if by_time else "",
+                units=units[clock.unit] if by_time else "",
                 values=(
-                    [timestamp - start for timestamp, _ in samples]
-                    if by_time else [float(i) for i in range(len(samples))]
+                    list[float | None](elapsed)
+                    if by_time else [
+                        float(snapshot.first_sample_index + i)
+                        for i in range(len(samples))
+                    ]
                 ),
             ),
             y=DataSeries(name=y_name, units=y_units, values=[v for _, v in samples]),
@@ -105,7 +120,13 @@ class LiveMeasurementAdapter:
             metadata={
                 "source": "live_telemetry",
                 "uri": "live://measurements",
-                "x_basis": "host_monotonic_elapsed" if by_time else "sample_index",
+                "x_basis": (
+                    "host_monotonic_elapsed"
+                    if by_time and clock.clock_id.startswith("host-monotonic:")
+                    else "declared_clock_elapsed" if by_time else "sample_index"
+                ),
+                "clock_id": clock.clock_id, "clock_unit": clock.unit,
+                "clock_origin": clock.origin, "elapsed_origin": str(start),
                 "y_euid": y_euid,
             },
         )

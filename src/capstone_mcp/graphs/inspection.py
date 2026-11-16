@@ -55,8 +55,8 @@ try:
     from capstone_mcp.ui_events import WindowEvents
 except ImportError:
     pywintypes = None  # type: ignore[assignment]
-    win32clipboard = None  # type: ignore[assignment]
     win32con = None  # type: ignore[assignment]
+    win32clipboard = None  # type: ignore[assignment]
     win32gui = None  # type: ignore[assignment]
     win32process = None  # type: ignore[assignment]
     WindowEvents = None  # type: ignore[assignment, misc]
@@ -198,7 +198,8 @@ def _fit_metric(element: Element, *, error_status: int) -> FitMetric:
 def _native_fit(element: Element) -> NativeFit:
     parameter_count = _required_integer(element, "ZCFDICurveFitCountOfParameters")
     description_count = _required_integer(
-        element, "ZCFDICurveFitCountOfParameterDescriptions",
+        element,
+        "ZCFDICurveFitCountOfParameterDescriptions",
     )
     result_count = _required_integer(element, "ZCFDICurveFitCountOfResults")
     if min(parameter_count, description_count, result_count) < 0:
@@ -210,14 +211,10 @@ def _native_fit(element: Element) -> NativeFit:
         if child.tag == "ZCFDICurveFitParameterDescriptionDefinition"
     ]
     definitions = [
-        child
-        for child in element
-        if child.tag == "ZCFDICurveFitParameterDefinition"
+        child for child in element if child.tag == "ZCFDICurveFitParameterDefinition"
     ]
     results = [
-        child
-        for child in element
-        if child.tag == "ZCFDICurveFitResultsDefinition"
+        child for child in element if child.tag == "ZCFDICurveFitResultsDefinition"
     ]
     if (
         len(definitions) != parameter_count
@@ -229,7 +226,8 @@ def _native_fit(element: Element) -> NativeFit:
         raise GraphStateError(msg)
     indices = [
         _required_integer(
-            description, "ZCFDICurveFitParameterDescriptionIndexToActual",
+            description,
+            "ZCFDICurveFitParameterDescriptionIndexToActual",
         )
         for description in descriptions
     ]
@@ -252,18 +250,14 @@ def _native_fit(element: Element) -> NativeFit:
             _fit_parameter(description, definitions, error_status=error_status)
             for description in descriptions
         ],
-        metrics=[
-            _fit_metric(result, error_status=error_status) for result in results
-        ],
+        metrics=[_fit_metric(result, error_status=error_status) for result in results],
     )
 
 
 def _graph_series(element: Element) -> GraphSeries:
     return GraphSeries(
         renderer_id=_required(element, "ZTDDRUniqueId"),
-        inputs=[
-            _graph_input(child) for child in element if child.tag == "BundleInput"
-        ],
+        inputs=[_graph_input(child) for child in element if child.tag == "BundleInput"],
         fits=[_native_fit(fit) for fit in element.iter("ZRSCurveFit")],
     )
 
@@ -316,8 +310,7 @@ def _parse_graph_item(workbook: Element) -> GraphState:
         fit_enabled=fit_enabled,
         selected_types=selected_types,
         series=[
-            _graph_series(renderer)
-            for renderer in graph.iter("ZRSIndividualRenederer")
+            _graph_series(renderer) for renderer in graph.iter("ZRSIndividualRenederer")
         ],
     )
 
@@ -325,8 +318,12 @@ def _parse_graph_item(workbook: Element) -> GraphState:
 def read_saved_graph(cap_file: str, graph_index: int | None) -> ReadGraphResult:
     """Read a saved graph in workbook order without using Capstone or the clipboard."""
     workspace = read_cap_workspace(cap_file)
-    items = [] if workspace is None else workspace.findall(
-        ".//WorkbookItem[@GUID='CSLineGraph']",
+    items = (
+        []
+        if workspace is None
+        else workspace.findall(
+            ".//WorkbookItem[@GUID='CSLineGraph']",
+        )
     )
     count = len(items)
     if not count:
@@ -402,7 +399,9 @@ def _backup_clipboard() -> tuple[dict[int, Any], int]:
 
 
 def _restore_clipboard(
-    backup: dict[int, Any], *, copied_sequence: int | None,
+    backup: dict[int, Any],
+    *,
+    copied_sequence: int | None,
 ) -> None:
     if copied_sequence is None or win32clipboard is None:
         return
@@ -442,7 +441,11 @@ def _copied_graph(sequence: int, process_id: int) -> tuple[object, int] | None:
 
 
 def _copy_graph_payload(
-    app: Capstone, popup: Snapshot, pid: int, changes: StateChanges,
+    app: Capstone,
+    popup: Snapshot,
+    pid: int,
+    changes: StateChanges,
+    copy_label: str | None = None,
 ) -> bytes:
     if win32clipboard is None:
         msg = "Native clipboard events require Windows pywin32 environment."
@@ -450,7 +453,9 @@ def _copy_graph_payload(
     copies = [
         c
         for c in popup.controls
-        if label_matches(c.name, "STR_MENU_DISPLAY_COPY_DISPLAY")
+        if _graph_label(
+            c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+        )
         and c.control_type == "MenuItem"
         and c.enabled
         and c.visible
@@ -479,21 +484,29 @@ def _copy_graph_payload(
     return payload
 
 
+def _graph_label(text: str, observed: str | None, resource_key: str) -> bool:
+    return label_matches(text, resource_key) if observed is None else text == observed
+
+
 def read_graph(
     app: Capstone,
     handle: int,
     *,
     allow_foreground: bool = True,
+    display_menu_label: str | None = None,
+    copy_display_label: str | None = None,
 ) -> GraphState:
-    """Read selected graph state via native Copy Display, preserving user clipboard."""
+    """Read the graph using installed locale labels or exact observed overrides."""
     if not allow_foreground:
         msg = "Graph inspection uses the native Copy Display menu."
         raise AutomationError(msg)
     windows = app.windows()
-    if len(windows) != 1 or windows[0].handle != handle:
-        msg = "Select one graph and close existing menus before graph inspection."
+    target = next((w for w in windows if w.handle == handle), None)
+    if target is None:
+        msg = "Target graph window is unavailable."
         raise AutomationError(msg)
-    pid = windows[0].process_id
+    app.require_input_ready(handle)
+    baseline = {w.handle for w in windows}
     if (
         WindowEvents is None
         or win32clipboard is None
@@ -502,18 +515,20 @@ def read_graph(
     ):
         msg = "Native clipboard events require Windows pywin32 environment."
         raise AutomationError(msg)
-
-    with WindowEvents(pid, clipboard=True) as events:
+    with WindowEvents(target.process_id, clipboard=True) as events:
         _ = app.focus_window(handle)
         release_menu_bar(app, handle)
-        snapshot = app.snapshot(handle, 3, 400)
+        snapshot = app.snapshot(handle, 16, 10_000)
+        if snapshot.truncated:
+            msg = "Graph menu selection requires a complete snapshot."
+            raise AutomationError(msg)
         menus = [
             c
             for c in snapshot.controls
             if c.control_type == "MenuItem"
-            and label_matches(c.name, "STR_DISPLAY")
             and c.visible
             and c.enabled
+            and _graph_label(c.name, display_menu_label, "STR_DISPLAY")
         ]
         if len(menus) != 1:
             msg = "Expected one enabled Display menu."
@@ -521,46 +536,76 @@ def read_graph(
         try:
             _ = app.control(menus[0].ref).expand()
             popup = events.changes.until(
-                lambda: _display_popup(app, handle),
+                lambda: _display_popup(
+                    app, handle, copy_display_label, before=baseline,
+                ),
                 TRANSITION_SECONDS,
                 description="Display menu popup window",
             )
-            payload = _copy_graph_payload(app, popup, pid, events.changes)
+            payload = _copy_graph_payload(
+                app, popup, target.process_id, events.changes, copy_display_label,
+            )
             state = parse_graph_xml(payload.rstrip(b"\0"))
             if any(w.handle == popup.window.handle for w in app.windows()):
                 _ = app.keys(handle, "{ESC}")
             _ = events.changes.until(
-                lambda: True if {w.handle for w in app.windows()} == {handle} else None,
+                lambda: True if {w.handle for w in app.windows()} == baseline else None,
                 TRANSITION_SECONDS,
                 description="Copy Display menu dismissal",
             )
             release_menu_bar(app, handle)
-        except (AutomationError, GraphStateError):
-            close_menus(app, handle)
+        except Exception:
+            try:
+                close_menus(app, handle)
+            except Exception:
+                logger.exception("Graph cleanup failed; preserving original error.")
             raise
-        return state
+        else:
+            return state
 
 
-def _display_popup(app: Capstone, main_handle: int) -> Snapshot | None:
+def _display_popup(
+    app: Capstone,
+    main_handle: int,
+    copy_label: str | None = None,
+    *,
+    before: set[int] | None = None,
+) -> Snapshot | None:
+    candidates: list[int] = []
     for window in app.windows():
-        if window.handle == main_handle:
+        if window.handle == main_handle or (before and window.handle in before):
             continue
         try:
             snapshot = app.snapshot(window.handle, 3, 100)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "Failed to snapshot window handle %s: %s", window.handle, e,
-            )
+        except Exception as error:  # noqa: BLE001
+            logger.debug("Failed to snapshot window %s: %s", window.handle, error)
             continue
-        if any(
-            label_matches(c.name, "STR_MENU_DISPLAY_COPY_DISPLAY")
+        if not snapshot.truncated and any(
+            _graph_label(
+                c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+            )
             and c.control_type == "MenuItem"
             and c.visible
             and c.enabled
             for c in snapshot.controls
         ):
-            return snapshot
-    return None
+            candidates.append(window.handle)
+    if len(candidates) > 1:
+        msg = "Multiple Copy Display popups match the observed label."
+        raise AutomationError(msg)
+    if not candidates:
+        return None
+    current = app.snapshot(candidates[0], 3, 100)
+    valid = not current.truncated and any(
+        _graph_label(
+            c.name, copy_label, "STR_MENU_DISPLAY_COPY_DISPLAY",
+        )
+        and c.control_type == "MenuItem"
+        and c.visible
+        and c.enabled
+        for c in current.controls
+    )
+    return current if valid else None
 
 
 def close_menus(app: Capstone, handle: int) -> None:
@@ -718,10 +763,12 @@ def _build_group(series: GraphSeries) -> RendererAnalysisGroup:
     minima: list[MetricMinimum] = []
     limitations = [code for item in prepared for code in item.row.limitations]
     if series.fits:
-        limitations.extend((
-            LimitationCode.SAMPLE_COUNT_UNAVAILABLE,
-            LimitationCode.RESIDUALS_UNAVAILABLE,
-        ))
+        limitations.extend(
+            (
+                LimitationCode.SAMPLE_COUNT_UNAVAILABLE,
+                LimitationCode.RESIDUALS_UNAVAILABLE,
+            ),
+        )
     else:
         limitations.append(LimitationCode.NO_NATIVE_FITS)
     if len(successful) >= MIN_MODELS_FOR_COMPARISON:

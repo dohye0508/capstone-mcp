@@ -427,6 +427,13 @@ def test_adiabatic_report_rejects_invalid_absolute_pressure(invalid: float) -> N
         )
 
 
+def test_explicit_sample_is_labeled_as_demonstration() -> None:
+    with pytest.raises(ValueError, match="No experimental data"):
+        generate_report(experiment_id="photoelectric_effect")
+    report = generate_report(
+        file_path_or_run="sample", experiment_id="photoelectric_effect",
+    )
+    assert "Sample / Demonstration" in report.metadata.title
 def test_report_output_preserves_existing_html(tmp_path: Path) -> None:
     markdown = tmp_path / "report.md"
     html = markdown.with_suffix(".html")

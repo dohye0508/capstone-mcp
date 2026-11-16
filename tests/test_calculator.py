@@ -8,11 +8,29 @@ import pytest
 from capstone_mcp.calculator import (
     CreateCalculationRequest,
     CreateCalculationResult,
+    _find_editor_controls,
     _parse_calculation_name,
     create_calculation,
 )
 from capstone_mcp.desktop import AutomationError, Capstone
 from capstone_mcp.models import Bounds, Control, Snapshot, Window
+
+
+def _editor(ref: str, name: str, *, enabled: bool = True) -> Control:
+    return Control(ref=ref, parent=None, name=name, control_type="Edit",
+                   automation_id="", enabled=enabled, visible=True,
+                   bounds=Bounds(left=0, top=0, right=100, bottom=30))
+
+
+@pytest.mark.parametrize(("name", "enabled"), [("Search", True), ("Formula", False)])
+def test_unrelated_or_disabled_edit_is_never_used(name: str, *, enabled: bool) -> None:
+    bounds = Bounds(left=0, top=0, right=800, bottom=600)
+    snapshot = Snapshot(
+        window=Window(handle=1, title="Capstone", process_id=1, bounds=bounds),
+        controls=[_editor("a", name, enabled=enabled)], truncated=False,
+    )
+    with pytest.raises(AutomationError, match="formula editor"):
+        _find_editor_controls(snapshot, require_unit=False)
 
 
 def test_create_calculation_rejects_empty_expression() -> None:

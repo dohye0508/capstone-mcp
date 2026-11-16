@@ -209,6 +209,7 @@ class NativeDesktop:
                     r.handle,
                     r.value,
                     allow_foreground=r.allow_foreground,
+                    workflow_labels=r.workflow_labels,
                 ),
             ),
             "export_data": lambda r: _json(
@@ -217,6 +218,7 @@ class NativeDesktop:
                     r.handle,
                     r.value,
                     allow_foreground=r.allow_foreground,
+                    workflow_labels=r.workflow_labels,
                 ),
             ),
             "open_experiment": lambda r: _json(
@@ -226,6 +228,7 @@ class NativeDesktop:
                     r.value,
                     discard_unsaved=r.discard_unsaved,
                     allow_foreground=r.allow_foreground,
+                    workflow_labels=r.workflow_labels,
                 ),
             ),
             "manage_graph": lambda r: _json(
@@ -296,7 +299,7 @@ class NativeDesktop:
                         handle=r.handle,
                         mode=r.mode,
                         graph_name=r.target,
-                        offset=r.point,
+                        offset=r.fit_offset,
                         allow_foreground=r.allow_foreground,
                     ),
                 ),

@@ -267,3 +267,28 @@ def test_invalid_graph_payload_still_restores_owned_clipboard(
     with pytest.raises(inspection.GraphStateError):
         inspection.read_graph(app, 1)
     restore.assert_called_once_with({1: "original"}, copied_sequence=10)
+
+
+def test_export_cleanup_failure_reports_original_error_and_unresolved_dialog() -> None:
+    app, events = MagicMock(), MagicMock()
+    app.windows.return_value = [_snapshot([]).window]
+    app.snapshot.side_effect = AutomationError("blocked by child dialog")
+
+    def fail_and_cleanup() -> None:
+        try:
+            msg = "export timed out"
+            raise AutomationError(msg)
+        finally:
+            file_workflows._close_export_dialog(app, events, 1, failing=True)
+
+    with pytest.raises(AutomationError, match=r"export timed out.*unresolved native") as error:
+        fail_and_cleanup()
+    assert "blocked by child dialog" in str(error.value)
+    assert isinstance(error.value.__cause__, AutomationError)
+    app.act.assert_not_called()
+
+
+def test_truncated_file_dialog_cannot_prove_unique_target() -> None:
+    snapshot = _snapshot([_control("Save", "Button")]).model_copy(update={"truncated": True})
+    with pytest.raises(AutomationError, match="truncated"):
+        file_workflows._one(snapshot, lambda c: c.name == "Save")

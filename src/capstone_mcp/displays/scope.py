@@ -216,7 +216,7 @@ def set_scope_trigger(
     verified = _write_settings(
         app, snapshot, widget,
         (
-            (("triggerlevel",), f"{request.trigger_level} V"),
+            (("triggerlevel",), str(request.trigger_level)),
             (("triggerslope",), normalized_slope),
             (("triggermode",), normalized_mode),
             (("triggersource",), request.trigger_source),
@@ -269,6 +269,7 @@ def create_fft(
 
 def _parse_peak_text(text: str) -> FftPeak | None:
     """Parse FFT coordinates or named frequency and amplitude labels."""
+    text = text.replace("\u2212", "-")
     match = re.search(
         rf"\(\s*{_PEAK_FREQUENCY}\s*,\s*{_PEAK_AMPLITUDE}\s*\)",
         text,

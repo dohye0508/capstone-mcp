@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field, JsonValue
 
+from capstone_mcp.file_workflow_models import FileWorkflowLabels
 from capstone_mcp.graphs import GraphFailure
 from capstone_mcp.models import Action, Button, Model, Point
 
@@ -46,6 +47,7 @@ class NativeRequest(Model):
     action: Action = Action.INVOKE
     value: str = ""
     point: Point = Point(x=0, y=0)
+    fit_offset: Point | None = None
     end: Point = Point(x=0, y=0)
     button: Button = Button.LEFT
     double: bool = False
@@ -68,6 +70,7 @@ class NativeRequest(Model):
     instrument_request: JsonValue = None
     display_request: JsonValue = None
     run_request: JsonValue = None
+    workflow_labels: FileWorkflowLabels | None = None
     frame_id: str = ""
     mode: str = "scale_to_fit"
     offset_x: int = 20
