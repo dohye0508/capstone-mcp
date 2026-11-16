@@ -240,11 +240,19 @@ def _render_svg_plot(
         y2_fit = slope * max_x + intercept
         start_y, end_y = map_y(y1_fit), map_y(y2_fit)
         if math.isfinite(start_y) and math.isfinite(end_y):
-            svg_elements.append(
-                f'<line x1="{map_x(min_x):.1f}" y1="{start_y:.1f}" '
-                f'x2="{map_x(max_x):.1f}" y2="{end_y:.1f}" '
-                'stroke="#2563eb" stroke-width="2.5" stroke-dasharray="4,2"/>',
-            )
+            svg_elements.extend([
+                (
+                    '<defs><clipPath id="report-plot-clip">'
+                    f'<rect x="{margin_left}" y="{margin_top}" '
+                    f'width="{plot_w}" height="{plot_h}"/></clipPath></defs>'
+                ),
+                (
+                    f'<line x1="{map_x(min_x):.1f}" y1="{start_y:.1f}" '
+                    f'x2="{map_x(max_x):.1f}" y2="{end_y:.1f}" '
+                    'stroke="#2563eb" stroke-width="2.5" stroke-dasharray="4,2" '
+                    'clip-path="url(#report-plot-clip)"/>'
+                ),
+            ])
 
     if count > MAX_SVG_POINTS:
         svg_elements.append(f"<desc>Sampled plot of {count} finite points.</desc>")
@@ -496,6 +504,11 @@ def _render_html_body_regression(report: LabReport) -> list[str]:
 
 
 def _render_html_body_errors(report: LabReport) -> list[str]:
+    if not report.error_analysis:
+        return [
+            "  <h2>6. Error Analysis</h2>",
+            "  <p>No constant comparisons configured for this experiment.</p>",
+        ]
     sections = [
         "  <h2>6. Error Analysis</h2>",
         "  <table>",

@@ -365,6 +365,27 @@ def test_report_svg_omits_nonfinite_points_and_bounds_its_output() -> None:
     assert 'cx="inf"' not in html
 
 
+def test_report_svg_clips_regression_outside_sample_bounds() -> None:
+    report = generate_report(data_series={"x": [0, 1, 2], "y": [0, 0, 1]})
+    rendered = render_html(report)
+
+    assert (
+        '<clipPath id="report-plot-clip"><rect x="60" y="30" '
+        'width="550" height="260"/></clipPath>'
+    ) in rendered
+    assert 'y1="333.3"' in rendered
+    assert 'stroke-dasharray="4,2" clip-path="url(#report-plot-clip)"' in rendered
+
+
+def test_html_report_without_constant_comparisons_omits_empty_table() -> None:
+    report = generate_report(data_series={"x": [0, 1], "y": [0, 2]})
+    section = render_html(report).split("<h2>6. Error Analysis</h2>", 1)[1]
+    section = section.split("<h2>", 1)[0]
+
+    assert "No constant comparisons configured for this experiment." in section
+    assert "<table>" not in section
+
+
 @pytest.mark.parametrize("source", [None, "missing_run_sample"])
 def test_report_requires_explicit_sample_request(source: str | None) -> None:
     with pytest.raises(ValueError, match="No experimental"):
