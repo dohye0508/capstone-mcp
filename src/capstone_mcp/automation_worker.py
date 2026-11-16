@@ -293,13 +293,24 @@ class AutomationWorker:
     ) -> GraphFailure | None:
         if request.operation not in GRAPH_INPUT_OPERATIONS | {
             "read_graph", "observe_graph", "create_graph",
+            "manage_graph", "fit_graph", "graph_delta", "measure_graph_area",
+            "toggle_graph_statistics",
         }:
             return None
         failure = GraphFailure(
             code=code, request_id=identifier, operation=request.operation,
             stage="transport",
             graph_input_may_have_been_sent=request.operation in
-            GRAPH_INPUT_OPERATIONS | {"create_graph"},
+            GRAPH_INPUT_OPERATIONS | {
+                "create_graph", "fit_graph", "graph_delta", "measure_graph_area",
+                "toggle_graph_statistics",
+            } or (
+                request.operation == "manage_graph"
+                and (
+                    not isinstance(request.graph_request, dict)
+                    or request.graph_request.get("action") != "read"
+                )
+            ),
             next_action="reattach_and_inspect", detail=detail,
         )
         self.last_graph_failure = failure

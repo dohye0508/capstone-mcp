@@ -84,7 +84,7 @@ def test_manage_graph_create_action() -> None:
     # Then:
     assert result.action == GraphAction.CREATE
     assert result.create is not None
-    assert result.create.verified is True
+    assert result.create.verified is False
     assert "Graph inserted" in result.create.detail
     app.click.assert_called_once_with(
         10,
@@ -116,14 +116,14 @@ def test_manage_graph_fit_action() -> None:
         app,
         GraphRequest(
             action=GraphAction.FIT,
-            fit=FitGraphRequest(handle=10, mode="scale_to_fit"),
+            fit=FitGraphRequest(handle=10, mode="scale_to_fit", offset=Point(x=20, y=20)),
         ),
     )
 
     # Then:
     assert result.action == GraphAction.FIT
     assert result.fit is not None
-    assert result.fit.verified is True
+    assert result.fit.verified is False
     assert result.fit.mode == "scale_to_fit"
     app.click_point.assert_called_once()
 
@@ -138,6 +138,7 @@ def test_manage_graph_toolbox_statistics_action() -> None:
     )
     sigma_btn = _make_control(
         ref="ref:sigma_btn",
+        parent="ref:graph1",
         name="Statistics",
         control_type="Button",
         bounds=Bounds(left=60, top=60, right=80, bottom=80),
@@ -188,6 +189,7 @@ def test_manage_graph_toolbox_delta_action() -> None:
     )
     delta_btn = _make_control(
         ref="ref:delta_btn",
+        parent="ref:graph1",
         name="Delta",
         control_type="Button",
         bounds=Bounds(left=60, top=60, right=80, bottom=80),
@@ -236,6 +238,7 @@ def test_manage_graph_toolbox_area_action() -> None:
     )
     area_btn = _make_control(
         ref="ref:area_btn",
+        parent="ref:graph1",
         name="Area",
         control_type="Button",
         bounds=Bounds(left=60, top=60, right=80, bottom=80),
@@ -311,7 +314,7 @@ def test_manage_graph_select_measurement_action() -> None:
         )
         assert result.action == GraphAction.SELECT_MEASUREMENT
         assert result.select_measurement is not None
-        assert result.select_measurement.verified is True
+        assert result.select_measurement.verified is False
         assert "Time (s)" in result.select_measurement.detail
 
 

@@ -10,7 +10,7 @@ Scope: offline internal verification only. No Capstone GUI, sensor, or real debu
 | NAT09 | cross-owner | desktop cached-window identity validation belongs to UI ledger. |
 | NAT10 | unsupported/false | initialize_recording production caller is RemoteRecordingBackend using a dedicated worker, not the shared desktop session. |
 | NAT13 | fixed-now | native `_json` validates JSON-mode model_dump directly instead of serializing and parsing; Decimal/tuple regression preserves wire values. P0 memory exhaustion claim not measured. |
-| NAT18 | partially fixed; interface work remains | unified manage_graph analyze now validates its existing fitting.frame_id before dispatch; regression rejects missing/stale receipt before handler. Other coordinate operations lack frame_id in public schema: requiring it needs interface migration and observed UI contracts, not a guessed guard-set addition. |
+| NAT18 | fixed-now internal admission/uncertainty | Unified fit/select now expose optional frame_id and require fresh receipt before coordinate input; analyze existing receipt remains enforced, legacy fit now guarded. Reported legacy and unified graph transport errors preserve possible-input metadata. Semantic-control toolbox operations are distinguished from caller coordinates; unsupported delta endpoints already fail closed. See RUNTIME_REMAINING_LIVE_PLAN.md for tightened caller contract and live acceptance. |
 | NAT19 | fixed-now | foreground/focus failures give AUTOMATION_ERROR with reacquisition guidance, not invalid-coordinate guidance. |
 | NAT25 | unsupported/false as global-hook claim | SetWinEventHook supplies target process_id. Broad events within that process need live profiling before narrowing event coverage. |
 | NAT26 | fixed-now | pump now TranslateMessage/DispatchMessage for retrieved messages; GetMessage -1 terminates with error. Fake Win32 queue test verifies dispatch. Real external event delivery remains untested. |
@@ -78,5 +78,3 @@ Scope: offline internal verification only. No Capstone GUI, sensor, or real debu
 | MOCK02, MOCK03 | requires-live; cross-owner guards | actual Automation IDs require observed UI evidence; no guessed production IDs introduced. |
 
 Validation: 97 scoped tests passed before final NAT18 addition; runtime_round2 subsequently 16 passed including NAT18. Includes real fixture subprocesses and ephemeral local mock sockets only. Final root aggregate checks and CI remain necessary before merge.
-
-

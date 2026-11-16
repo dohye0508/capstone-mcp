@@ -677,23 +677,23 @@ class NativeDesktop:
             "observe_graph",
             "create_graph",
             "manage_graph",
+            "fit_graph", "graph_delta", "measure_graph_area",
+            "toggle_graph_statistics",
         }:
             return self.handlers[request.operation](request)
         self.graph_progress = GraphProgress()
         try:
-            if request.operation in GRAPH_INPUT_OPERATIONS:
+            if request.operation in GRAPH_INPUT_OPERATIONS | {"fit_graph"}:
                 self._verify_frame(request)
             elif request.operation == "manage_graph":
-                graph_request = GraphRequest.model_validate(request.graph_request)
-                if (
-                    graph_request.action == "analyze"
-                    and graph_request.analyze is not None
-                ):
-                    analysis = graph_request.analyze
-                    self._verify_frame(request.model_copy(update={
-                        "handle": analysis.handle,
-                        "frame_id": analysis.fitting.frame_id,
-                    }))
+                action = self._verify_unified_graph_frame(request)
+                if action != "read":
+                    self.graph_progress.begin_input(action)
+            if request.operation in {
+                "fit_graph", "graph_delta", "measure_graph_area",
+                "toggle_graph_statistics",
+            }:
+                self.graph_progress.begin_input(request.operation)
             if request.operation == "select_graph_measurement":
                 self.graph_progress.begin_input("select_measurement")
             if request.operation == "create_graph":
@@ -724,6 +724,25 @@ class NativeDesktop:
             ) from error
         finally:
             self.graph_progress = None
+
+    def _verify_unified_graph_frame(self, request: NativeRequest) -> str:
+        graph = GraphRequest.model_validate(request.graph_request)
+        coordinates = (
+            graph.fit if graph.action == "fit"
+            else graph.select_measurement if graph.action == "select_measurement"
+            else None
+        )
+        if coordinates is not None:
+            self._verify_frame(request.model_copy(update={
+                "handle": coordinates.handle,
+                "frame_id": coordinates.frame_id or "",
+            }))
+        if graph.action == "analyze" and graph.analyze is not None:
+            self._verify_frame(request.model_copy(update={
+                "handle": graph.analyze.handle,
+                "frame_id": graph.analyze.fitting.frame_id,
+            }))
+        return str(graph.action)
 
     def _resolve_default_window(self, request: NativeRequest) -> NativeRequest:
         """Resolve optional unified-action handles only when the target is unique."""
