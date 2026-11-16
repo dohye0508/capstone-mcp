@@ -342,10 +342,13 @@ def test_render_report_formats() -> None:
 
 def test_report_svg_omits_nonfinite_points_and_bounds_its_output() -> None:
     report = generate_report(data_series={"x": [1, 2], "y": [2, 4]})
-    raw = {"x": [math.nan, math.inf, *range(5_000)], "y": list(range(5_002))}
+    values = [0.0] * 5_000
+    values[503] = 100.0
+    raw = {"x": [None, math.nan, math.inf, *range(5_000)], "y": [200.0] * 3 + values}
     html = render_html(report.model_copy(update={"raw_data_points": raw}))
 
     assert 2 <= html.count("<circle ") <= 1_000
+    assert 'cy="30.0"' in html
     assert 'cx="nan"' not in html
     assert 'cx="inf"' not in html
 

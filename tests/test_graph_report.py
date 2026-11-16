@@ -185,7 +185,7 @@ def test_report_marks_failed_and_unavailable_native_metrics() -> None:
         LimitationCode.NONFINITE_NATIVE_METRIC,
     ]
     assert failed.successful is False
-    assert failed.status == "FAIL_MAX_ITERATONS"
+    assert failed.status == "FAIL_MAX_ITERATIONS"
     assert failed.parameters[0].value is None
     assert failed.limitations == [
         LimitationCode.INVALID_NATIVE_METRIC,

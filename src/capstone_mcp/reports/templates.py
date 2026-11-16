@@ -188,8 +188,7 @@ def _render_svg_plot(
     keys = list(points)
     if len(keys) < MIN_DATA_POINTS_FOR_PLOT:
         return ""
-    x_vals = [math.nan if value is None else value for value in points[keys[0]]]
-    y_vals = [math.nan if value is None else value for value in points[keys[1]]]
+    x_vals, y_vals = points[keys[0]], points[keys[1]]
     bounds = plot_bounds(x_vals, y_vals) if len(x_vals) == len(y_vals) else None
     if bounds is None or bounds[0] < MIN_DATA_POINTS_FOR_PLOT:
         return ""
@@ -245,7 +244,7 @@ def _render_svg_plot(
 
     if count > MAX_SVG_POINTS:
         svg_elements.append(f"<desc>Sampled plot of {count} finite points.</desc>")
-    for px, py in sampled_svg_points(x_vals, y_vals, count):
+    for px, py in sampled_svg_points(x_vals, y_vals, bounds):
         svg_elements.append(
             f'<circle cx="{map_x(px):.1f}" cy="{map_y(py):.1f}" r="4.5" '
             'fill="#dc2626" stroke="#ffffff" stroke-width="1.5"/>',

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import html
 import math
+from itertools import islice
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -12,22 +13,23 @@ if TYPE_CHECKING:
 
 MIN_FIT_POINTS: Final[int] = 2
 MAX_SVG_POINTS: Final[int] = 1000
+type PlotBounds = tuple[int, float, float, float, float]
 
 
 def finite_plot_points(
-    x: Sequence[float], y: Sequence[float],
+    x: Sequence[float | None], y: Sequence[float | None],
 ) -> Iterator[tuple[float, float]]:
     """Yield finite pairs without shifting one series across missing rows."""
     return (
         (px, py)
         for px, py in zip(x, y, strict=False)
-        if math.isfinite(px) and math.isfinite(py)
+        if px is not None and py is not None and math.isfinite(px) and math.isfinite(py)
     )
 
 
 def plot_bounds(
-    x: Sequence[float], y: Sequence[float],
-) -> tuple[int, float, float, float, float] | None:
+    x: Sequence[float | None], y: Sequence[float | None],
+) -> PlotBounds | None:
     """Count finite points and determine axis bounds without retaining points."""
     min_x = min_y = math.inf
     max_x = max_y = -math.inf
@@ -42,13 +44,46 @@ def plot_bounds(
 
 
 def sampled_svg_points(
-    x: Sequence[float], y: Sequence[float], count: int,
+    x: Sequence[float | None], y: Sequence[float | None], bounds: PlotBounds,
 ) -> Iterator[tuple[float, float]]:
-    """Sample finite points in order, preserving endpoints and bounding SVG size."""
-    step = max(1, math.ceil((count - 1) / (MAX_SVG_POINTS - 1)))
-    for index, point in enumerate(finite_plot_points(x, y)):
-        if index % step == 0 or index == count - 1:
-            yield point
+    """Apply largest-triangle-three-buckets, buffering only two buckets."""
+    count, min_x, max_x, min_y, max_y = bounds
+    points = finite_plot_points(x, y)
+    if count <= MAX_SVG_POINTS:
+        yield from points
+        return
+
+    span_x, span_y = max_x - min_x or 1.0, max_y - min_y or 1.0
+
+    def normalized(point: tuple[float, float]) -> tuple[float, float]:
+        px, py = point
+        return (px - min_x) / span_x, (py - min_y) / span_y
+
+    previous = next(points)
+    yield previous
+    bucket_count = MAX_SVG_POINTS - 2
+    inner_count = count - 2
+    end = inner_count // bucket_count
+    bucket = list(islice(points, end))
+    for index in range(2, bucket_count + 2):
+        # The final lookahead is the last endpoint, outside the interior buckets.
+        stop = min(inner_count + 1, index * inner_count // bucket_count)
+        following = list(islice(points, stop - end))
+        ax, ay = normalized(previous)
+        next_x = sum((px - min_x) / span_x for px, _ in following) / len(following)
+        next_y = sum((py - min_y) / span_y for _, py in following) / len(following)
+        dx, dy = next_x - ax, next_y - ay
+
+        best_area = -1.0
+        for point in bucket:
+            bx, by = normalized(point)
+            area = abs(dx * (by - ay) - dy * (bx - ax))
+            if area > best_area:
+                best_area = area
+                previous = point
+        yield previous
+        bucket, end = following, stop
+    yield bucket[0]
 
 
 def _validate_plot_values(x: Sequence[float], y: Sequence[float]) -> None:
@@ -164,11 +199,12 @@ def render_svg_sparkline(
     plot_w = width - pad_left - pad_right
     plot_h = height - pad_top - pad_bottom
 
-    count, min_x, max_x, min_y, max_y = bounds
+    _, min_x, max_x, min_y, max_y = bounds
     fit_bounds = plot_bounds(fit_x, fit_y)
-    fit_count = 0
-    if fit_bounds and fit_bounds[0] >= MIN_FIT_POINTS:
-        fit_count, fit_min_x, fit_max_x, fit_min_y, fit_max_y = fit_bounds
+    if fit_bounds is not None and fit_bounds[0] < MIN_FIT_POINTS:
+        fit_bounds = None
+    if fit_bounds is not None:
+        _, fit_min_x, fit_max_x, fit_min_y, fit_max_y = fit_bounds
         min_x, max_x = min(min_x, fit_min_x), max(max_x, fit_max_x)
         min_y, max_y = min(min_y, fit_min_y), max(max_y, fit_max_y)
 
@@ -199,9 +235,9 @@ def render_svg_sparkline(
     )
 
     # Fitted line if present
-    if fit_count:
+    if fit_bounds is not None:
         path_data: list[str] = []
-        for i, (fx, fy) in enumerate(sampled_svg_points(fit_x, fit_y, fit_count)):
+        for i, (fx, fy) in enumerate(sampled_svg_points(fit_x, fit_y, fit_bounds)):
             sx, sy = to_svg(fx, fy)
             cmd = "M" if i == 0 else "L"
             path_data.append(f"{cmd} {sx:.1f} {sy:.1f}")
@@ -210,7 +246,7 @@ def render_svg_sparkline(
         )
 
     # Scatter points
-    for xi, yi in sampled_svg_points(x, y, count):
+    for xi, yi in sampled_svg_points(x, y, bounds):
         sx, sy = to_svg(xi, yi)
         elements.append(
             f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="3.5" fill="#2563eb" opacity="0.85"/>',

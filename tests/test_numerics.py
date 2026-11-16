@@ -12,6 +12,11 @@ from capstone_mcp.numerics import (
     render_ascii_sparkline,
     render_svg_sparkline,
 )
+from capstone_mcp.numerics.sparklines import (
+    MAX_SVG_POINTS,
+    plot_bounds,
+    sampled_svg_points,
+)
 
 
 def test_compute_series_summary_valid() -> None:
@@ -145,3 +150,20 @@ def test_svg_sparkline_bounds_scatter_and_fit_and_preserves_title() -> None:
     assert 'cx="nan"' not in svg
     assert "Force &amp; &lt;Motion&gt;" in svg
     assert ">2999.00<" in svg
+
+
+@pytest.mark.parametrize("count", [MAX_SVG_POINTS + 1, 5_000])
+def test_svg_sampling_preserves_a_narrow_peak_and_endpoints(count: int) -> None:
+    x = list(range(count))
+    y = [0.0] * count
+    y[503] = 100.0
+    bounds = plot_bounds(x, y)
+    assert bounds is not None
+
+    sampled = list(sampled_svg_points(x, y, bounds))
+
+    assert len(sampled) == MAX_SVG_POINTS
+    assert sampled[0] == (0, 0)
+    assert sampled[-1] == (count - 1, 0)
+    assert (503, 100) in sampled
+    assert [px for px, _ in sampled] == sorted({px for px, _ in sampled})
