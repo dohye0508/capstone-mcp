@@ -17,6 +17,7 @@ _ENGLISH: Final = {
     "STR_TABLE_DATA_ALIGNMENT_MODE_INDEX": "Align by Index",
     "STR_EXPORT_DATA_DIALOG_EXPORT": "Export to file...",
     "STR_CLOSE": "Close",
+    "STR_PROPERTY_SENSOR_ZERO_SENSOR": "Zero Sensor Now",
 }
 
 
