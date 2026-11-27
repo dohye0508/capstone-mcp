@@ -34,15 +34,21 @@ def _find_local_extrema(
     if n < MIN_PROFILE_POINTS:
         return maxima, minima
 
-    for i in range(1, n - 1):
-        prev_v = values[i - 1]
-        curr_v = values[i]
-        next_v = values[i + 1]
-
-        if curr_v > prev_v and curr_v >= next_v:
-            maxima.append((positions[i], curr_v))
-        elif curr_v < prev_v and curr_v <= next_v:
-            minima.append((positions[i], curr_v))
+    start = 1
+    while start < n - 1:
+        end = start
+        level = values[start]
+        while end + 1 < n and values[end + 1] == level:
+            end += 1
+        if end + 1 == n:
+            break
+        previous, following = values[start - 1], values[end + 1]
+        center = positions[start] / 2 + positions[end] / 2
+        if level > max(previous, following):
+            maxima.append((center, level))
+        elif level < min(previous, following):
+            minima.append((center, level))
+        start = end + 1
 
     return maxima, minima
 

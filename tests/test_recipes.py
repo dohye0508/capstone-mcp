@@ -19,6 +19,7 @@ from capstone_mcp.recipes import (
     run_experiment_macro,
 )
 from capstone_mcp.recipes.base import RecipePhaseResult
+from capstone_mcp.recipes.slit_diffraction import _find_local_extrema
 from capstone_mcp.server import capstone_run_experiment_macro
 
 # ---------------------------------------------------------------------------
@@ -392,3 +393,10 @@ def test_diffraction_isolated_outer_spike_is_rejected() -> None:
     assert result.status == "failed"
     assert "spike" in result.message
     assert not result.details
+
+
+def test_quantized_diffraction_profiles_have_only_two_sided_extrema() -> None:
+    positions = [0.0, 1.0, 3.0, 4.0, 6.0, 8.0, 9.0, 10.0]
+    levels = [0.0, 1.0, 1.0, 2.0, 2.0, 0.0, 0.0, 1.0]
+    assert _find_local_extrema(positions, levels) == ([(5.0, 2.0)], [(8.5, 0.0)])
+    assert _find_local_extrema(positions[:4], [0.0, 1.0, 1.0, 1.0]) == ([], [])
