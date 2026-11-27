@@ -153,6 +153,8 @@ MCP: Final = CapstoneMCP(
     lifespan=_lifespan,
     instructions=INSTRUCTIONS,
 )
+# FastMCP otherwise advertises the SDK distribution's version during initialize.
+MCP._mcp_server.version = __version__  # noqa: SLF001
 
 # ---------------------------------------------------------------------------
 # Tool & Resource Router Registrations

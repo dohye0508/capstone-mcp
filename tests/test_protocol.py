@@ -13,6 +13,7 @@ from mcp.client.stdio import stdio_client
 from mcp.types import ImageContent
 from pydantic import BaseModel
 
+from capstone_mcp import __version__
 from capstone_mcp.agent_instructions import INSTRUCTIONS
 from capstone_mcp.analysis import LinearFit
 from capstone_mcp.models import Snapshot, Window
@@ -49,6 +50,7 @@ async def exercise_protocol(*, process_id: int | None = None) -> None:
             ClientSession(reader, writer) as session,
         ):
             initialized = await session.initialize()
+            assert initialized.serverInfo.version == __version__
             assert initialized.instructions == INSTRUCTIONS
             tools = await session.list_tools()
             assert len(tools.tools) <= 22

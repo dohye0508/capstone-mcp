@@ -217,6 +217,7 @@ async def test_dynamic_resources_contract(monkeypatch: pytest.MonkeyPatch) -> No
     # Status resource read
     status_raw = await server.capstone_status_resource()
     status = json.loads(status_raw)
+    assert status["version"] == server.__version__
     assert "attached" in status
     assert "process_id" in status
     assert "windows_count" in status
