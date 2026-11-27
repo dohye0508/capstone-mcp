@@ -432,6 +432,24 @@ async def test_capstone_generate_lab_report_tool(tmp_path: Path) -> None:
     assert "Sample / Demonstration" in saved_text
 
 
+@pytest.mark.anyio
+async def test_large_tool_report_preserves_statistics_and_declares_preview_lengths(
+    tmp_path: Path,
+) -> None:
+    count = 9_000
+    path = tmp_path / "observations.csv"
+    path.write_text("x,y\n" + "".join(f"{i},{2 * i}\n" for i in range(count)))
+    result = await capstone_generate_lab_report(file_path_or_run=str(path))
+    report = result.lab_report
+    assert report.original_point_counts == {"raw_data_points": {"x": count, "y": count}}
+    x, y = report.raw_data_points["x"], report.raw_data_points["y"]
+    assert 0 < len(x) < count
+    assert len(x) == len(y)
+    assert y == [2 * i for i in range(len(x))]
+    assert report.data_summaries[1].max == 2 * (count - 1)
+    assert report.data_summaries[0].count == count
+
+
 @pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan"), float("inf")])
 def test_adiabatic_report_rejects_invalid_absolute_pressure(invalid: float) -> None:
     with pytest.raises(ValueError, match="finite"):

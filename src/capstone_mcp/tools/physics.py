@@ -179,7 +179,8 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             format: Output format ('markdown', 'html', or 'both').
 
         Returns:
-            GenerateLabReportResult containing report model, rendered text, and status.
+            Report, rendered text, and status. Large sample arrays are returned as
+            aligned prefixes with original_point_counts. Fits use all input samples.
         """
         report = await anyio.to_thread.run_sync(
             partial(
@@ -216,7 +217,7 @@ def register_physics_tools(mcp: FastMCP, native: NativeCaller) -> dict[str, Any]
             report_markdown=md_text,
             report_html=html_text,
             summary=summary_text,
-            lab_report=report,
+            lab_report=report.transport_preview(),
         )
 
     @mcp.tool(
