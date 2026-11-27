@@ -82,6 +82,12 @@ class LabReport(Model):
     discussion_questions: list[str] = Field(default_factory=list)
     conclusion: str = ""
 
+    @property
+    def regressions(self) -> list[RegressionSummary]:
+        """Return fitted models in the order used by both report formats."""
+        primary = [self.regression] if self.regression is not None else []
+        return [*primary, *self.additional_regressions]
+
     def transport_preview(self) -> Self:
         """Bound sample arrays in an MCP reply after full analysis and rendering."""
         channels = {"raw_data_points": self.raw_data_points}

@@ -313,6 +313,17 @@ def test_markdown_keeps_external_labels_inside_their_sections() -> None:
     assert "````text\ntrial\n```\nend\n````" in md
 
 
+def test_additional_regressions_appear_in_both_report_formats() -> None:
+    report = generate_report(experiment_id="generic", data_series={"x": [1, 2], "y": [3, 4]})
+    extra = RegressionSummary(model_name="Second observation", slope=2.0, intercept=1.0)
+    report.additional_regressions.append(extra)
+    for rendered in (render_markdown(report), render_html(report)):
+        assert rendered.index("Linear Fit") < rendered.index("Second observation")
+    only_extra = report.model_copy(update={"regression": None})
+    assert "Second observation" in render_markdown(only_extra)
+    assert "Second observation" in render_html(only_extra)
+
+
 def test_render_html_output() -> None:
     x = [1.0, 2.0, 3.0]
     y = [2.0, 4.0, 6.0]

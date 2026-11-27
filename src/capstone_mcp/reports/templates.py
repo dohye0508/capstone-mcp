@@ -115,8 +115,7 @@ def _format_standard_error(value: float | None) -> str:
 
 def _render_md_regression(report: LabReport) -> list[str]:
     lines = ["## 5. Regression & Curve Fitting", ""]
-    if report.regression:
-        reg = report.regression
+    for reg in report.regressions:
         se_m = _format_standard_error(reg.slope_error)
         se_b = _format_standard_error(reg.intercept_error)
         r2_s = f"`{reg.r_squared:.4f}`" if reg.r_squared is not None else "'N/A'"
@@ -487,8 +486,7 @@ def _render_html_body_data(report: LabReport) -> list[str]:
 
 def _render_html_body_regression(report: LabReport) -> list[str]:
     sections = ["  <h2>5. Regression & Curve Fitting</h2>"]
-    if report.regression:
-        reg = report.regression
+    for reg in report.regressions:
         se_m = _format_standard_error(reg.slope_error)
         se_b = _format_standard_error(reg.intercept_error)
         r2 = f"{reg.r_squared:.4f}" if reg.r_squared is not None else "N/A"
