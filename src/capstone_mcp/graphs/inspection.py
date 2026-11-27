@@ -655,7 +655,7 @@ def verify_graph_binding(state: GraphState, expected: str | None) -> None:
     if expected is not None and state.data_signature != expected:
         msg = (
             "Graph data bindings changed. Use capstone_manage_graph action read, "
-            "then inspect the source, dataset and unit IDs before issuing a new request."
+            "then inspect the source, dataset and unit IDs before the next request."
         )
         raise AutomationError(msg)
 
