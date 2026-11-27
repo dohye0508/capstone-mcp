@@ -299,6 +299,20 @@ def test_render_markdown_output() -> None:
     assert "```text" in md
 
 
+def test_markdown_keeps_external_labels_inside_their_sections() -> None:
+    report = generate_report(
+        experiment_id="generic", data_series={"x": [1, 2], "y": [3, 4]},
+        title="Trial\n# 2", apparatus=["Sensor <optical>"],
+    )
+    report.metadata.channels_or_sensors["A | B"] = "`meter`"
+    report = report.model_copy(update={"ascii_plot": "trial\n```\nend"})
+    md = render_markdown(report)
+    assert "Trial &#35; 2" in md
+    assert "Sensor &lt;optical&gt;" in md
+    assert "| A &#124; B | &#96;meter&#96; |" in md
+    assert "````text\ntrial\n```\nend\n````" in md
+
+
 def test_render_html_output() -> None:
     x = [1.0, 2.0, 3.0]
     y = [2.0, 4.0, 6.0]
