@@ -19,10 +19,6 @@ from capstone_mcp.analysis import LinearFit
 from capstone_mcp.models import Snapshot, Window
 
 ROOT: Final = str(Path(__file__).resolve().parents[1])
-pytestmark = pytest.mark.skipif(
-    os.environ.get("CAPSTONE_RUN_LIVE_TESTS") != "1",
-    reason="Set CAPSTONE_RUN_LIVE_TESTS=1 to allow desktop interaction",
-)
 
 
 class WindowsResult(BaseModel):
@@ -124,5 +120,9 @@ async def test_headless_calls_over_stdio() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(
+    os.environ.get("CAPSTONE_RUN_LIVE_TESTS") != "1",
+    reason="Set CAPSTONE_RUN_LIVE_TESTS=1 to allow desktop interaction",
+)
 async def test_real_capstone_observation_over_stdio() -> None:
     await exercise_protocol(check_desktop=True)
