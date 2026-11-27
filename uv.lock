@@ -201,11 +201,14 @@ name = "capstone-mcp"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "defusedxml" },
     { name = "httpx2", extra = ["brotli", "http2", "zstd"] },
     { name = "mcp" },
     { name = "pillow" },
     { name = "psutil" },
+    { name = "pydantic" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywinauto" },
     { name = "websockets" },
 ]
@@ -221,11 +224,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "defusedxml", specifier = ">=0.7.1,<0.8" },
     { name = "httpx2", extras = ["http2", "brotli", "zstd"] },
     { name = "mcp", specifier = ">=1.20,<2" },
     { name = "pillow", specifier = ">=11" },
     { name = "psutil", specifier = ">=7,<9" },
+    { name = "pydantic", specifier = ">=2,<3" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=305" },
     { name = "pywinauto", specifier = ">=0.6.9,<0.7" },
     { name = "websockets", specifier = ">=15,<18" },
 ]
