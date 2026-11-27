@@ -244,6 +244,16 @@ def test_generate_report_rlc_resonance() -> None:
     assert any(r.symbol in ("f_0", "f0") for r in report.error_analysis)
 
 
+def test_adiabatic_cycle_is_summarized_without_a_spurious_gamma() -> None:
+    report = generate_report(
+        experiment_id="adiabatic_gas",
+        data_series={"Volume": [30, 20, 10, 20, 30], "Pressure": [10, 20, 30, 22, 10]},
+    )
+    assert report.data_summaries[0].count == 5
+    assert report.regression is None
+    assert not report.error_analysis
+
+
 def test_generate_report_adiabatic_gas() -> None:
     volumes = [100.0, 80.0, 60.0, 40.0]
     pressures = [100.0 * ((100.0 / v) ** 1.4) for v in volumes]

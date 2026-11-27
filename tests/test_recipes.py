@@ -183,6 +183,8 @@ def test_adiabatic_gas_user_data_cycle() -> None:
     assert res.status == "completed"
     assert abs(res.details["cyclic_work_joules"] - 3.0) < 1e-4
     assert abs(res.details["cyclic_work_mj"] - 3000.0) < 1e-1
+    assert res.details["gamma_fit_status"] == "requires_single_stroke"
+    assert "adiabatic_index_gamma_exp" not in res.details
 
 
 def test_open_compression_integrates_only_measured_segments() -> None:
@@ -259,8 +261,11 @@ def test_adiabatic_constant_volume_does_not_return_theory() -> None:
     assert "distinct volumes" in result.message
 
 
-def test_adiabatic_measured_power_law() -> None:
+@pytest.mark.parametrize("expanding", [False, True])
+def test_adiabatic_measured_power_law(*, expanding: bool) -> None:
     volumes = [50.0, 40.0, 30.0, 20.0, 10.0]
+    if expanding:
+        volumes.reverse()
     pressures = [1000.0 / v**1.25 for v in volumes]
     result = AdiabaticGasRecipe().analyze(
         {"pressure_kpa": pressures, "volume_cm3": volumes},
