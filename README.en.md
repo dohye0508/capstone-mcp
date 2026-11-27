@@ -68,7 +68,7 @@ Add this entry to your client's MCP configuration. Replace `C:/Projects/capstone
       "command": "uv",
       "args": [
         "--directory", "C:/Projects/capstone-mcp",
-        "run", "capstone-mcp"
+        "run", "--no-sync", "capstone-mcp"
       ]
     }
   }
