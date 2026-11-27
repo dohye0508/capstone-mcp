@@ -2,6 +2,7 @@
 """Regression contract test for capstone_mcp.server public exports."""
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -33,6 +34,32 @@ class DummyBackend:
 
     def close(self) -> None:
         pass
+
+
+@pytest.mark.parametrize("program", ["capstone-mcp", "capstone-mcp-http"])
+def test_help_exits_before_starting_a_transport(
+    program: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    run = Mock()
+    monkeypatch.setattr(server.MCP, "run", run)
+    monkeypatch.setattr(sys, "argv", [program, "--help"])
+    command = server.main if program == "capstone-mcp" else server.http_main
+    with pytest.raises(SystemExit) as exit_info:
+        command()
+    assert exit_info.value.code == 0
+    assert program in capsys.readouterr().out
+    run.assert_not_called()
+
+
+def test_http_port_can_change_while_binding_stays_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Mock()
+    monkeypatch.setattr(server.MCP, "run", run)
+    monkeypatch.setattr(server.MCP.settings, "port", 8766)
+    monkeypatch.setattr(sys, "argv", ["capstone-mcp-http", "--port", "9001"])
+    server.http_main()
+    assert server.MCP.settings.port == 9001
+    assert server.MCP.settings.host == "127.0.0.1"
+    run.assert_called_once_with(transport="streamable-http")
 
 
 def test_server_public_exports_complete() -> None:
