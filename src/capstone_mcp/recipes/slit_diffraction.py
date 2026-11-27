@@ -82,6 +82,29 @@ def _derive_slit_width(
     return first_min_delta_mm, slit_width_a_m
 
 
+def _compare_nominal(
+    width: float, params: dict[str, Any],
+) -> tuple[dict[str, float], str]:
+    if "nominal_slit_width_m" not in params:
+        return {}, ""
+    try:
+        nominal = float(params["nominal_slit_width_m"])
+    except (TypeError, ValueError, OverflowError) as exc:
+        msg = "Nominal slit width must be positive and finite."
+        raise ValueError(msg) from exc
+    if not math.isfinite(nominal) or nominal <= 0:
+        msg = "Nominal slit width must be positive and finite."
+        raise ValueError(msg)
+    deviation = abs(width - nominal) / nominal * 100
+    if not math.isfinite(deviation) or not math.isfinite(nominal * 1000):
+        msg = "Nominal comparison exceeds finite numerical range."
+        raise ValueError(msg)
+    return {
+        "nominal_slit_width_mm": round(nominal * 1000, 4),
+        "slit_width_error_pct": round(deviation, 2),
+    }, f" (deviation from supplied nominal width: {deviation:.1f}%)"
+
+
 def _derive_slit_separation(
     maxima_pts: list[tuple[float, float]],
     x_center_mm: float,
@@ -354,17 +377,13 @@ class SlitDiffractionRecipe(ExperimentRecipe):
                 wl,
                 l_dist,
             )
+            comparison, reference_text = _compare_nominal(slit_width_a_m, params)
         except ValueError as exc:
             return RecipePhaseResult(
                 phase="analyze",
                 status="failed",
                 message=str(exc),
             )
-
-        nominal_a = float(
-            params.get("nominal_slit_width_m", DEFAULT_SLIT_WIDTH_M),
-        )
-        a_error_pct = abs(slit_width_a_m - nominal_a) / nominal_a * 100.0
 
         details: dict[str, Any] = {
             "central_maximum": {
@@ -375,17 +394,15 @@ class SlitDiffractionRecipe(ExperimentRecipe):
             "diffraction_maxima_count": len(maxima_pts),
             "first_minimum_distance_mm": round(first_min_delta_mm, 3),
             "derived_slit_width_mm": round(slit_width_a_m * 1000.0, 4),
-            "nominal_slit_width_mm": round(nominal_a * 1000.0, 4),
-            "slit_width_error_pct": round(a_error_pct, 2),
             "wavelength_nm": round(wl * 1e9, 1),
             "screen_distance_m": l_dist,
             "slit_type": slit_type,
+            **comparison,
         }
 
         msg = (
             f"Central peak at {x_center_mm:.2f} mm (I={max_i:.2f}), "
-            f"Slit width a = {slit_width_a_m * 1000.0:.3f} mm "
-            f"(Nominal: {nominal_a * 1000.0:.3f} mm, Error: {a_error_pct:.1f}%)"
+            f"Slit width a = {slit_width_a_m * 1000.0:.3f} mm{reference_text}"
         )
 
         return RecipePhaseResult(

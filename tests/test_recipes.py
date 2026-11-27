@@ -315,6 +315,11 @@ def test_single_slit_input_units_match() -> None:
     assert mm.status == metres.status == "completed"
     assert mm.details == metres.details
     assert mm.details["derived_slit_width_mm"] == pytest.approx(0.04)
+    assert "nominal_slit_width_mm" not in mm.details
+    assert "slit_width_error_pct" not in mm.details
+    with_nominal = {"positions_mm": positions, "intensities": intensity, "nominal_slit_width_m": 8e-5}
+    assert recipe.analyze(with_nominal).details["slit_width_error_pct"] == pytest.approx(50, abs=0.1)
+    assert recipe.analyze({**with_nominal, "nominal_slit_width_m": 0}).status == "failed"
 
 
 @pytest.mark.parametrize(
