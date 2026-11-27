@@ -43,7 +43,7 @@ from capstone_mcp.ui_strings import label_matches
 
 if TYPE_CHECKING:
     from capstone_mcp.models import Snapshot
-    from capstone_mcp.ui_events import StateChanges
+    from capstone_mcp.ui_events import WindowEvents as NativeWindowEvents
 
 try:
     import pywintypes
@@ -401,27 +401,37 @@ def _backup_clipboard() -> tuple[dict[int, Any], int]:
 def _restore_clipboard(
     backup: dict[int, Any],
     *,
-    copied_sequence: int | None,
+    copied_sequence: int,
+    owner_handle: int,
 ) -> None:
-    if copied_sequence is None or win32clipboard is None:
-        return
+    if not owner_handle or win32clipboard is None or pywintypes is None:
+        msg = "A clipboard owner window is required to restore Copy Display data."
+        raise AutomationError(msg)
     clip: Any = win32clipboard
-    with suppress(Exception):
-        clip.OpenClipboard()
+    failed_formats = []
+    try:
+        clip.OpenClipboard(owner_handle)
         try:
             if clip.GetClipboardSequenceNumber() != copied_sequence:
                 return
             clip.EmptyClipboard()
             for fmt, data in backup.items():
-                with suppress(Exception):
+                try:
                     clip.SetClipboardData(fmt, data)
+                except (pywintypes.error, TypeError, ValueError):
+                    failed_formats.append(fmt)
         finally:
-            with suppress(Exception):
-                clip.CloseClipboard()
+            clip.CloseClipboard()
+    except pywintypes.error as exc:
+        msg = "Unable to restore the clipboard after Copy Display."
+        raise AutomationError(msg) from exc
+    if failed_formats:
+        msg = f"Copy Display could not restore clipboard formats {failed_formats}."
+        raise AutomationError(msg)
 
 
 def _copied_graph(sequence: int, process_id: int) -> tuple[object, int] | None:
-    if win32clipboard is None or win32process is None:
+    if win32clipboard is None or win32process is None or pywintypes is None:
         return None
     if win32clipboard.GetClipboardSequenceNumber() == sequence:
         return None
@@ -434,7 +444,11 @@ def _copied_graph(sequence: int, process_id: int) -> tuple[object, int] | None:
         format_id = win32clipboard.RegisterClipboardFormat(GRAPH_MIME)
         if not win32clipboard.IsClipboardFormatAvailable(format_id):
             return None, win32clipboard.GetClipboardSequenceNumber()
-        payload = win32clipboard.GetClipboardData(format_id)
+        try:
+            payload = win32clipboard.GetClipboardData(format_id)
+        except pywintypes.error as exc:
+            # Return the observed generation so its backup can still be restored.
+            return exc, win32clipboard.GetClipboardSequenceNumber()
         return payload, win32clipboard.GetClipboardSequenceNumber()
     finally:
         win32clipboard.CloseClipboard()
@@ -444,10 +458,10 @@ def _copy_graph_payload(
     app: Capstone,
     popup: Snapshot,
     pid: int,
-    changes: StateChanges,
+    events: NativeWindowEvents,
     copy_label: str | None = None,
 ) -> bytes:
-    if win32clipboard is None:
+    if win32clipboard is None or not events.clipboard_handle:
         msg = "Native clipboard events require Windows pywin32 environment."
         raise AutomationError(msg)
     copies = [
@@ -469,12 +483,17 @@ def _copy_graph_payload(
         raise AutomationError(msg)
     _ = app.control(copies[0].ref).invoke()
     app.refs.clear()
-    payload, copied_sequence = changes.until(
+    payload, copied_sequence = events.changes.until(
         lambda: _copied_graph(sequence, pid),
         TRANSITION_SECONDS,
         description="New native graph clipboard data",
     )
-    _restore_clipboard(backup, copied_sequence=copied_sequence)
+    _restore_clipboard(
+        backup, copied_sequence=copied_sequence, owner_handle=events.clipboard_handle,
+    )
+    if isinstance(payload, Exception):
+        msg = "Unable to read the native graph clipboard data."
+        raise AutomationError(msg) from payload
     if payload is None:
         msg = "Copy Display did not provide native graph data."
         raise AutomationError(msg)
@@ -543,7 +562,7 @@ def read_graph(
                 description="Display menu popup window",
             )
             payload = _copy_graph_payload(
-                app, popup, target.process_id, events.changes, copy_display_label,
+                app, popup, target.process_id, events, copy_display_label,
             )
             state = parse_graph_xml(payload.rstrip(b"\0"))
             if any(w.handle == popup.window.handle for w in app.windows()):
