@@ -654,8 +654,8 @@ def verify_graph_binding(state: GraphState, expected: str | None) -> None:
     """Reject stale data identity before changing axes or fit selections."""
     if expected is not None and state.data_signature != expected:
         msg = (
-            "Graph data bindings changed. Call capstone_read_graph and inspect "
-            "the source, dataset and unit IDs before issuing a new request."
+            "Graph data bindings changed. Use capstone_manage_graph action read, "
+            "then inspect the source, dataset and unit IDs before issuing a new request."
         )
         raise AutomationError(msg)
 
