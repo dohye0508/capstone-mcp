@@ -179,10 +179,19 @@ def test_adiabatic_gas_user_data_cycle() -> None:
     # Area = Delta P * Delta V = 100 kPa * 30 cm^3 = 3000 mJ = 3.0 J
     p_pts = [100.0, 200.0, 200.0, 100.0]
     v_pts = [20.0, 20.0, 50.0, 50.0]
-    res = recipe.analyze({"pressure_kpa": p_pts, "volume_cm3": v_pts})
+    res = recipe.analyze({"pressure_kpa": p_pts, "volume_cm3": v_pts, "closed_cycle": True})
     assert res.status == "completed"
     assert abs(res.details["cyclic_work_joules"] - 3.0) < 1e-4
     assert abs(res.details["cyclic_work_mj"] - 3000.0) < 1e-1
+
+
+def test_open_compression_integrates_only_measured_segments() -> None:
+    result = AdiabaticGasRecipe().analyze({
+        "pressure_kpa": [100, 120, 150, 200], "volume_cm3": [50, 40, 30, 20],
+    })
+    assert result.status == "completed"
+    assert result.details["path_work_joules"] == pytest.approx(-4.2)
+    assert "cyclic_work_joules" not in result.details
 
 
 # ---------------------------------------------------------------------------

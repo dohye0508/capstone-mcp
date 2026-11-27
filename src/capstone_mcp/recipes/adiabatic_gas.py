@@ -2,6 +2,7 @@
 """Adiabatic Gas Law and Heat Engine Cycle experiment automation recipe."""
 
 import math
+from itertools import pairwise
 from typing import Any, Final
 
 from capstone_mcp.desktop import Capstone
@@ -13,23 +14,28 @@ MIN_CYCLE_POINTS: Final[int] = 3
 MIN_ANALYSIS_POINTS: Final[int] = 4
 
 
-def _compute_closed_loop_work(
+def _pressure_volume_work(
     pressure_kpa: list[float],
     volume_cm3: list[float],
-) -> float:
-    """Compute cyclic work oint P dV using trapezoidal rule (in mJ)."""
-    n = len(pressure_kpa)
-    if n < MIN_CYCLE_POINTS:
-        return 0.0
-
-    work = 0.0
-    for i in range(n):
-        next_i = (i + 1) % n
-        p_avg = (pressure_kpa[i] + pressure_kpa[next_i]) / 2.0
-        dv = volume_cm3[next_i] - volume_cm3[i]
-        work += p_avg * dv
-
-    return work
+    *, closed: object,
+) -> dict[str, float]:
+    """Integrate P dV along consecutive observations in acquisition order."""
+    if not isinstance(closed, bool):
+        msg = "closed_cycle must be a boolean."
+        raise TypeError(msg)
+    work = math.fsum(
+        (p0 * 0.5 + p1 * 0.5) * (v1 - v0)
+        for (p0, v0), (p1, v1) in pairwise(zip(pressure_kpa, volume_cm3, strict=True))
+    )
+    result = {"path_work_mj": work, "path_work_joules": work * 1e-3}
+    if closed:
+        mean_pressure = pressure_kpa[-1] * 0.5 + pressure_kpa[0] * 0.5
+        cycle = work + mean_pressure * (volume_cm3[0] - volume_cm3[-1])
+        result.update(cyclic_work_mj=cycle, cyclic_work_joules=cycle * 1e-3)
+    if not all(math.isfinite(value) for value in result.values()):
+        msg = "Pressure-volume work exceeds finite numerical range."
+        raise ValueError(msg)
+    return result
 
 
 def _fit_adiabatic_index(
@@ -201,17 +207,16 @@ class AdiabaticGasRecipe(ExperimentRecipe):
                 details={"points_count": len(pressures)},
             )
 
-        # 1. Closed Cycle Work: oint P dV (kPa * cm^3 = 10^-3 J = 1 mJ)
-        work_mj = _compute_closed_loop_work(pressures, volumes)
-        work_joules = work_mj * 1e-3
-
+        same_endpoint = (pressures[0], volumes[0]) == (pressures[-1], volumes[-1])
+        closed = params.get("closed_cycle", same_endpoint)
         # 2. Adiabatic Index Gamma Fit: ln(P) = -gamma * ln(V) + ln(C)
         try:
             gamma_exp, r_squared, gamma_error_pct = _fit_adiabatic_index(
                 pressures,
                 volumes,
             )
-        except ValueError as exc:
+            work = _pressure_volume_work(pressures, volumes, closed=closed)
+        except (OverflowError, TypeError, ValueError) as exc:
             return RecipePhaseResult(
                 phase="analyze",
                 status="failed",
@@ -225,8 +230,7 @@ class AdiabaticGasRecipe(ExperimentRecipe):
         compression_ratio = v_max / v_min if v_min > 0 else 1.0
 
         details: dict[str, Any] = {
-            "cyclic_work_joules": round(work_joules, 6),
-            "cyclic_work_mj": round(work_mj, 4),
+            **work,
             "adiabatic_index_gamma_exp": round(gamma_exp, 4),
             "adiabatic_index_gamma_theory": GAMMA_AIR_THEORY,
             "gamma_error_pct": round(gamma_error_pct, 2),
@@ -240,7 +244,7 @@ class AdiabaticGasRecipe(ExperimentRecipe):
         }
 
         msg = (
-            f"Cyclic Work oint P dV = {work_joules:.4f} J ({work_mj:.2f} mJ), "
+            f"Measured path work P dV = {work['path_work_joules']:.4f} J, "
             f"gamma = {gamma_exp:.3f} (Theory: {GAMMA_AIR_THEORY:.3f}, "
             f"Error: {gamma_error_pct:.2f}%, R^2 = {r_squared:.4f}), "
             f"Compression ratio = {compression_ratio:.1f}:1"
