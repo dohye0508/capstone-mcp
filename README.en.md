@@ -83,7 +83,7 @@ Apply the configuration or restart the client. Check that the `capstone` server 
 Run the server from the repository folder:
 
 ```powershell
-uv run capstone-mcp-http
+uv run --no-sync capstone-mcp-http
 ```
 
 Register `http://127.0.0.1:8766/mcp` as the MCP server URL in your client and keep the terminal running. The server listens only on the local loopback address.
