@@ -7,6 +7,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -622,6 +623,7 @@ class CaptureSession:
             msg = "Record requires a captured baseline."
             raise CaptureError(msg)
         artifact = self.save(str(self.directory / f"run-{ordinal:03d}.cap"))
+        saved_at = datetime.now(UTC)
         parsed: CapFile | None = None
         changes: list[_Delta] = []
         removed: list[DatasetIdentity] = []
@@ -648,6 +650,7 @@ class CaptureSession:
         finally:
             self.runs.append(
                 CapturedRun(
+                    saved_at_utc=saved_at,
                     ordinal=ordinal,
                     interrupted=interrupted,
                     artifact=artifact,
