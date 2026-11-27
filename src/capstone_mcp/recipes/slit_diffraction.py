@@ -77,7 +77,11 @@ def _derive_slit_width(
         msg = "No resolvable diffraction minimum; slit width cannot be measured."
         raise ValueError(msg)
     delta_x_m = first_min_delta_mm * 1e-3
-    slit_width_a_m = (wl * l_dist) / delta_x_m
+    sine = delta_x_m / math.hypot(l_dist, delta_x_m)
+    if sine <= 0 or not math.isfinite(wl / sine * 1000):
+        msg = "First minimum geometry exceeds finite numerical range."
+        raise ValueError(msg)
+    slit_width_a_m = wl / sine
 
     return first_min_delta_mm, slit_width_a_m
 
@@ -118,14 +122,13 @@ def _derive_slit_separation(
     if len(side_maxima) < MIN_SIDE_MAXIMA_COUNT:
         return None
 
-    peak_positions = sorted([*side_maxima, x_center_mm])
+    offsets = [(position - x_center_mm) * 1e-3 for position in side_maxima]
+    peak_positions = sorted([0.0, *(x / math.hypot(l_dist, x) for x in offsets)])
     spacings = [right - left for left, right in pairwise(peak_positions)]
-    fringe_spacing_mm = median(spacings)
-    if fringe_spacing_mm <= 0:
+    angular_spacing = median(spacings)
+    if angular_spacing <= 0:
         return None
-
-    delta_d_m = fringe_spacing_mm * 1e-3
-    return (1.0 * wl * l_dist) / delta_d_m
+    return wl / angular_spacing
 
 
 def _analyze_double_slit(

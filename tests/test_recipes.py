@@ -1,6 +1,7 @@
 # Copyright 2026 Capstone MCP contributors.
 """Comprehensive unit and integration tests for Experiment Automation Macro Engine."""
 
+import math
 from typing import Any
 
 import pytest
@@ -304,6 +305,16 @@ def test_double_slit_does_not_misidentify_interference_minima() -> None:
     assert "derived_slit_width_mm" not in result.details
 
 
+def test_single_slit_first_minimum_uses_measured_angle() -> None:
+    result = SlitDiffractionRecipe().analyze({
+        "positions_mm": [-15, -10, -5, 0, 5, 10, 15],
+        "intensities": [1, 0, 3, 5, 3, 0, 1],
+        "screen_distance_m": 0.01, "wavelength_m": 1e-5,
+    })
+    assert result.status == "completed"
+    assert result.details["derived_slit_width_mm"] == pytest.approx(0.0141)
+
+
 def test_single_slit_input_units_match() -> None:
     recipe = SlitDiffractionRecipe()
     positions = [-20, -16.25, -8, 0, 8, 16.25, 20]
@@ -387,7 +398,9 @@ def test_slit_separation_counts_spacing_through_central_fringe() -> None:
     })
     assert result.status == "completed"
     assert "derived_slit_width_mm" not in result.details
-    assert result.details["derived_slit_separation_mm"] == pytest.approx(0.325)
+    # The second-order fringe is 4 mm from center on a screen 1 m away.
+    expected_mm = 2 * 650e-6 / math.sin(math.atan(4 / 1000))
+    assert result.details["derived_slit_separation_mm"] == pytest.approx(expected_mm)
 
 
 # ---------------------------------------------------------------------------
